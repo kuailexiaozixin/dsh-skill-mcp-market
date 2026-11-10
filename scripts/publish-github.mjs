@@ -6,7 +6,7 @@ import { join, relative } from "node:path";
 
 const ROOT = process.cwd();
 const TOKEN = process.env.GITHUB_TOKEN || "";
-const REPO = process.env.DSH_MARKET_REPO || "dsh-market";
+const REPO = process.env.DSH_MARKET_REPO || "dsh-skill-mcp-market";
 const PRIVATE = (process.env.DSH_MARKET_PRIVATE || "true") !== "false";
 const IPS = (process.env.GITHUB_API_IPS || "140.82.112.5,20.205.243.168").split(",").map((s) => s.trim());
 
