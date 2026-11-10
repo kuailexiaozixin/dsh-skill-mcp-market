@@ -143,6 +143,12 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = useState({});
       const [source, setSource] = useState('clawhub');
       const [mcpSource, setMcpSource] = useState('registry');
+      const [mcpCategory, setMcpCategory] = useState('all');
+      const [mcpSort, setMcpSort] = useState('default');
+      const [mcpPage, setMcpPage] = useState(1);
+      const [mcpTotalPages, setMcpTotalPages] = useState(1);
+      const [mcpTotal, setMcpTotal] = useState(0);
+      const [mcpCategories, setMcpCategories] = useState([]);
       const [size, setSize] = useState(24);
       const [sort, setSort] = useState('default');
       const [importPath, setImportPath] = useState('');
@@ -198,15 +204,28 @@ window.__ModuleLoader__.load({
         }
       }, []);
 
-      const searchMcps = useCallback(async (text) => {
+      const searchMcps = useCallback(async (text, options) => {
+        const opts = options || {};
+        const nextSource = opts.source || mcpSource;
+        const nextCategory = opts.category !== undefined ? opts.category : mcpCategory;
+        const nextSort = opts.sort !== undefined ? opts.sort : mcpSort;
+        const nextPage = opts.page || 1;
         setBusy('mcp.search');
         setError('');
         try {
           const d = await call('mcp.search', {
             query: text,
-            source: (options && options.source) || mcpSource,
+            source: nextSource,
+            category: nextCategory === 'all' ? '' : nextCategory,
+            sort: nextSort === 'default' ? '' : nextSort,
+            page: nextPage,
           });
-          setMcps(d.items || []);
+          const rows = d.items || [];
+          setMcps(opts.append ? (prev) => prev.concat(rows) : rows);
+          setMcpPage(d.page || nextPage);
+          setMcpTotalPages(d.totalPages || 1);
+          setMcpTotal(d.total || rows.length);
+          setMcpCategories(d.categories || []);
           // The host reports catalogue degradation separately from "no match", so both the
           // reason and the still-usable path (install by registry name) reach the user.
           if (d.hint) setNotice(d.hint);
@@ -466,7 +485,13 @@ window.__ModuleLoader__.load({
                   onClick: () => doInstallSkill(item),
                 }, busy === `install:${item.slug}` ? '安装中…' : '安装'))));
 
-      const mcpCards = mcps.map((item) =>
+      const orderedMcps = mcps.slice().sort((a, b) => {
+        if (mcpSort === 'name') return String(a.name || a.slug).localeCompare(String(b.name || b.slug));
+        if (mcpSort === 'installCount') return (b.installs || 0) - (a.installs || 0);
+        if (mcpSort === 'ratingAverage') return (b.rating || 0) - (a.rating || 0);
+        return 0;
+      });
+      const mcpCards = orderedMcps.map((item) =>
         h('div', { key: item.id || item.slug, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
           h('div', { style: S.desc }, item.description || ''),
@@ -487,6 +512,49 @@ window.__ModuleLoader__.load({
               onClick: () => doInstallMcp(item),
             }, busy === `install:${item.slug}` ? '安装中…' : '安装'))));
 
+      const CATEGORY_LABELS = {
+        developer: '开发者',
+        'developer-tools': '开发者工具',
+        development: '开发',
+        'data-analytics': '数据分析',
+        database: '数据库',
+        search: '搜索',
+        'web-search': '网页搜索',
+        'media-generate': '媒体生成',
+        productivity: '效率办公',
+        business: '商业服务',
+        finance: '金融',
+        tools: '实用工具',
+        utility: '实用工具',
+        'travel-transport': '出行交通',
+        social: '社交',
+        communication: '通信',
+        cloud: '云服务',
+        security: '安全',
+        education: '教育',
+        'education-science': '教育科研',
+        'gaming-entertainment': '游戏娱乐',
+        'health-wellness': '健康',
+        healthcare: '医疗',
+        news: '新闻',
+        research: '研究',
+        'real-estate': '房产',
+        shopping: '购物',
+        services: '服务',
+        hardware: '硬件',
+        networking: '网络',
+        government: '政务',
+        legal: '法律',
+        industrial: '工业',
+        robotics: '机器人',
+        lifestyle: '生活',
+        entertainment: '娱乐',
+        blockchain: '区块链',
+        'home-automation': '智能家居',
+        'jobs-search': '招聘',
+        science: '科学',
+      };
+      const categoryLabel = (code) => CATEGORY_LABELS[code] || code;
       const disabledSet = new Set(((settings && settings.settings && settings.settings.disabledSkills) || []).map((x) => String(x).toLowerCase()));
       const installedSkills = installed.map((item) => {
         const off = disabledSet.has(String(item.slug).toLowerCase());
@@ -576,26 +644,69 @@ window.__ModuleLoader__.load({
                           style: S.chip(mcpSource === key),
                           onClick: () => {
                             setMcpSource(key);
-                            searchMcps(query, { source: key });
+                            setMcpCategory('all');
+                            setMcpSort('default');
+                            setMcpPage(1);
+                            searchMcps(query, { source: key, category: 'all', sort: 'default', page: 1 });
                           },
                         }, key === 'registry' ? 'MCP 官方注册表' : 'LobeHub')),
                   h('div', { style: { flex: 1 } }),
-                  h('select', {
-                    style: { ...S.input, flex: '0 0 120px', height: 30 },
-                    value: sort,
-                    onChange: (e) => setSort(e.target.value),
-                  },
-                    h('option', { value: 'default' }, '默认顺序'),
-                    h('option', { value: 'name' }, '按名称')),
-                  h('button', {
-                    style: S.btn(),
-                    disabled: busy === 'skills.search' || busy === 'mcp.search',
-                    onClick: () => {
-                      const next = size + 24;
-                      setSize(next);
-                      (tab === 'skills' ? searchSkills : searchMcps)(query, { source, size: next });
-                    },
-                  }, '加载更多'))
+                  tab === 'mcp'
+                    ? h('select', {
+                        style: { ...S.input, flex: '0 0 132px', height: 30 },
+                        value: mcpSort,
+                        onChange: (e) => {
+                          const next = e.target.value;
+                          setMcpSort(next);
+                          setMcpPage(1);
+                          searchMcps(query, { sort: next, page: 1 });
+                        },
+                      },
+                        h('option', { value: 'default' }, '默认顺序'),
+                        mcpSource === 'lobehub'
+                          ? h('option', { value: 'installCount' }, '安装最多')
+                          : h('option', { value: 'name' }, '按名称'),
+                        mcpSource === 'lobehub' ? h('option', { value: 'ratingAverage' }, '评分最高') : null)
+                    : h('select', {
+                        style: { ...S.input, flex: '0 0 120px', height: 30 },
+                        value: sort,
+                        onChange: (e) => setSort(e.target.value),
+                      },
+                        h('option', { value: 'default' }, '默认顺序'),
+                        h('option', { value: 'name' }, '按名称')),
+                  tab === 'mcp' && mcpSource !== 'lobehub'
+                    ? null
+                    : h('button', {
+                        style: S.btn(),
+                        disabled: busy === 'skills.search' || busy === 'mcp.search' ||
+                          (tab === 'mcp' && mcpPage >= mcpTotalPages),
+                        onClick: () => {
+                          if (tab === 'mcp') {
+                            const next = mcpPage + 1;
+                            setMcpPage(next);
+                            searchMcps(query, { page: next, append: true });
+                            return;
+                          }
+                          const next = size + 24;
+                          setSize(next);
+                          searchSkills(query, { source, size: next });
+                        },
+                      }, tab === 'mcp'
+                        ? `加载更多（${mcpPage}/${mcpTotalPages}）`
+                        : '加载更多'))
+              : null,
+            tab === 'mcp' && mcpSource === 'lobehub' && mcpCategories.length > 0
+              ? h('div', { style: S.row },
+                  ['all', ...mcpCategories.slice(0, 12)].map((cat) =>
+                    h('button', {
+                      key: cat,
+                      style: S.chip(mcpCategory === cat),
+                      onClick: () => {
+                        setMcpCategory(cat);
+                        setMcpPage(1);
+                        searchMcps(query, { category: cat, page: 1 });
+                      },
+                    }, cat === 'all' ? '全部分类' : categoryLabel(cat))))
               : null,
             tab === 'skills' && categories.length > 0
               ? h('div', { style: S.row },
@@ -605,6 +716,12 @@ window.__ModuleLoader__.load({
                       style: S.chip(category === cat),
                       onClick: () => setCategory(cat),
                     }, cat === 'all' ? '全部分类' : cat)))
+              : null,
+            tab === 'mcp' && mcpTotal > 0
+              ? h('div', { style: S.status },
+                  mcpSource === 'lobehub'
+                    ? `LobeHub · 共 ${mcpTotal.toLocaleString()} 个连接器 · 第 ${mcpPage}/${mcpTotalPages} 页`
+                    : `MCP 官方注册表 · ${mcpTotal} 个结果`)
               : null,
             error ? h('div', { style: S.err }, error) : null,
             notice ? h('div', { style: S.status }, notice) : null,

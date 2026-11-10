@@ -161,7 +161,7 @@ DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层�
 | `skill_market_install` | 装技能：`github`（可带 `@ref`）/ `skills.sh`（页面 URL 或裸 `owner/repo`）/ `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub` / `url` / `local` / `zip` |
 | `skill_market_list` | 列已装技能（含 `SKILL.md` 路径） |
 | `skill_market_uninstall` | 卸载（移到 `market/trash/`） |
-| `mcp_market_search` | 搜 MCP：`source: "registry"`（官方注册表，默认）或 `"lobehub"`（LobeHub 市场）；目录不可达时返回降级列表与 `catalogHint` |
+| `mcp_market_search` | 搜 MCP：`source: "registry"`（官方注册表，默认）或 `"lobehub"`（LobeHub 市场）；可选 `category` / `sort`（`installCount`·`ratingAverage`·`createdAt`）/ `page`；目录不可达时返回降级列表与 `catalogHint` |
 | `mcp_market_install` | 装 MCP：`slug`（官方注册表名称，如 `io.github.Async23/chrome-devtools-mcp`）/ 手工定义 / `importJson`（Claude·Cursor 的 `mcpServers`），装完立即探活 |
 | `mcp_market_list` | 列已装 MCP（transport、enabled、mounted、已发布工具名） |
 | `mcp_market_set_enabled` | 启停（断开即撤销工具，启用即重连） |
@@ -213,7 +213,8 @@ dsh-skill-mcp-market/
 - MCP 定义是标准写法，能否真跑由安装时的探活结果决定，不预先保证；注册表里标记为必填的环境变量会在安装时提示。
 - 市场不伪造下载量/热度：上游没给就显示 0。
 - 两个 MCP 市场**各自独立**，面板一次只看一个（和技能页签一样，不做合并）：官方注册表偏结构化启动方式，LobeHub 偏卡片信息与分类。
-- LobeHub 需要注册一次市场客户端（`npx -y @lobehub/market-cli register --base-url https://market.lobehub.com --name "DSH Market" --source dsh`），插件首次使用会自动完成；其搜索分页上限 40 条。
+- LobeHub 需要注册一次市场客户端（`npx -y @lobehub/market-cli register --base-url https://market.lobehub.com --name "DSH Market" --source dsh`），插件首次使用会自动完成。
+- LobeHub 页签支持分类、排序、分页（每页 40 条）；官方注册表页签支持按名称排序，分页由上游游标控制，面板暂只展示第一页。
 - MCP 目录不可达时按「上次缓存 → 内置条目」降级，并在面板上提示可直接按名称安装。
 
 ## 开发

@@ -94,13 +94,25 @@ function shortError(error) {
  * identifiers, categories and install manifests, so the panel switches between the two
  * markets instead of blending them.
  */
-async function loadLobeHubCatalog(cache, query = "") {
-  const key = `lobehub:list:${String(query || "").trim().toLowerCase() || "all"}:60`;
+async function loadLobeHubCatalog(cache, query = "", options = {}) {
+  const category = String(options.category || "").trim();
+  const sort = String(options.sort || "").trim();
+  const page = Math.max(1, Number(options.page) || 1);
+  const key = `lobehub:list:${String(query || "").trim().toLowerCase() || "all"}:${category}:${sort}:${page}`;
   try {
-    const result = await searchLobeHubMarket({ query, pageSize: 40, sort: query ? "" : "installCount", cache });
+    const result = await searchLobeHubMarket({ query, pageSize: 40, category, sort, page, cache });
     if (result.items.length > 0) {
       await cache.put(key, result.items);
-      return { items: result.items, hint: "", live: true, categories: result.categories, source: "lobehub" };
+      return {
+        items: result.items,
+        hint: "",
+        live: true,
+        categories: result.categories,
+        source: "lobehub",
+        page: result.page,
+        totalPages: result.totalPages,
+        total: result.total,
+      };
     }
     return {
       items: [],
@@ -110,6 +122,9 @@ async function loadLobeHubCatalog(cache, query = "") {
       live: true,
       categories: result.categories,
       source: "lobehub",
+      page: result.page,
+      totalPages: result.totalPages,
+      total: result.total,
     };
   } catch (error) {
     const stale = await cache.get(key, 7 * 24 * 3600 * 1000);
@@ -123,8 +138,8 @@ async function loadLobeHubCatalog(cache, query = "") {
   }
 }
 
-async function loadMcpCatalog(cache, query = "", source = "registry") {
-  if (source === "lobehub") return loadLobeHubCatalog(cache, query);
+async function loadMcpCatalog(cache, query = "", source = "registry", options = {}) {
+  if (source === "lobehub") return loadLobeHubCatalog(cache, query, options);
   const key = `registry:v2:${String(query || "").trim().toLowerCase() || "all"}:60`;
   const problems = [];
   let answered = false;
@@ -520,13 +535,22 @@ export async function apply(ctx, config = {}) {
           description:
             "Which MCP market to search: `registry` (official Model Context Protocol registry, default) or `lobehub` (LobeHub marketplace, richer cards with author/install counts).",
         },
+        sort: {
+          type: "string",
+          description: "Ordering (LobeHub only): `installCount`, `ratingAverage` or `createdAt`. Omit for the market default.",
+        },
+        page: { type: "number", description: "1-based page (LobeHub returns 40 per page). Defaults to 1." },
       },
       additionalProperties: false,
     },
     handler: async (args) => {
       const query = String(args.query || "").trim();
       const wanted = String(args.source || "registry") === "lobehub" ? "lobehub" : "registry";
-      const catalog = await loadMcpCatalog(marketCache, query, wanted);
+      const catalog = await loadMcpCatalog(marketCache, query, wanted, {
+        category: args.category,
+        sort: args.sort,
+        page: args.page,
+      });
       const rows = catalog.live
         ? catalog.items
         : catalog.items.filter((item) =>
@@ -548,13 +572,20 @@ export async function apply(ctx, config = {}) {
           installable: item.installable !== false,
           note: item.note,
           homepage: item.homepage,
+          owner: item.owner,
+          installs: item.installs,
+          rating: item.rating,
           source: item.source || "registry",
         }));
       const installed = args.includeInstalled === false ? [] : await mcp.list();
       return {
-        total: items.length,
+        total: catalog.total || items.length,
         items,
         installed,
+        page: catalog.page || 1,
+        totalPages: catalog.totalPages || 1,
+        categories: catalog.categories || [],
+        source: wanted,
         mcpDirs: settings.mcpDirs,
         // A degraded catalogue must say so; an empty list alone cannot distinguish
         // "no match" from "the catalogue is unreachable".
@@ -847,7 +878,11 @@ export async function apply(ctx, config = {}) {
       case "mcp.search": {
         const query = String(body.query || "").trim();
         const wanted = String(body.source || "registry") === "lobehub" ? "lobehub" : "registry";
-        const catalog = await loadMcpCatalog(marketCache, query, wanted);
+        const catalog = await loadMcpCatalog(marketCache, query, wanted, {
+          category: body.category,
+          sort: body.sort,
+          page: body.page,
+        });
         // A live registry search is already filtered server-side; fallback and cached lists
         // are not, so only those get a local filter.
         const rows = catalog.live
@@ -873,6 +908,9 @@ export async function apply(ctx, config = {}) {
           hint: catalog.hint,
           categories: catalog.categories || [],
           source: wanted,
+          page: catalog.page || 1,
+          totalPages: catalog.totalPages || 1,
+          total: catalog.total || catalog.items.length,
         };
       }
       case "mcp.install": {

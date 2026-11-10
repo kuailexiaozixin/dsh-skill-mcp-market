@@ -112,6 +112,7 @@ function mapItem(raw) {
     rating: Number(raw.ratingAverage) || 0,
     ratingCount: Number(raw.ratingCount) || 0,
     stars: Number(raw.github?.stars) || 0,
+    createdAt: raw.createdAt || "",
     featured: Boolean(raw.isFeatured),
     validated: Boolean(raw.isValidated),
     source: "lobehub",
@@ -141,24 +142,50 @@ export async function searchLobeHubMarket({ query = "", pageSize = 24, category 
   // and the requested ordering is applied to the returned page locally.
   if (sort && hasQuery) args.push("--sort", sort);
 
+  const attempt = async (timeoutMs) => {
+    // "fetch failed" from the CLI is a transient reachability error on this network (the same
+    // class of flakiness GitHub shows here), so a couple of retries turn it into a success.
+    let lastError;
+    for (let tries = 0; tries < 3; tries += 1) {
+      try {
+        return await runCli(args, timeoutMs);
+      } catch (error) {
+        lastError = error;
+        if (!/fetch failed|ETIMEDOUT|ECONNRESET|socket hang up/i.test(String(error.message || error))) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 400 * (tries + 1)));
+      }
+    }
+    throw lastError;
+  };
+
   let text;
   try {
-    text = await runCli(args);
+    text = await attempt(90000);
   } catch (error) {
     // A missing or rejected registration is the one failure worth repairing automatically.
     if (lobehubRegistered()) throw error;
     await registerLobeHubClient();
-    text = await runCli(args, 120000);
+    text = await attempt(120000);
   }
   const data = parseJsonOutput(text);
   const items = (data.items || []).map(mapItem);
-  if (sort === "installCount" && !hasQuery) items.sort((a, b) => (b.installs || 0) - (a.installs || 0));
+  if (!hasQuery && sort) {
+    const byInstalls = (a, b) => (b.installs || 0) - (a.installs || 0);
+    const byRating = (a, b) => (b.rating || 0) - (a.rating || 0) || (b.ratingCount || 0) - (a.ratingCount || 0);
+    const byNewest = (a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+    const order = sort === "ratingAverage" ? byRating : sort === "createdAt" ? byNewest : byInstalls;
+    items.sort(order);
+  }
   const result = {
     source: "lobehub",
     sourceLabel: "LobeHub",
     items,
     total: Number(data.totalCount) || items.length,
-    categories: Array.isArray(data.categories) ? data.categories : [],
+    // Upstream mixes display names ("Finance") with real filter codes ("finance"); only the
+    // lowercase codes are valid `--category` values, so they are what the panel offers.
+    categories: Array.isArray(data.categories)
+      ? [...new Set(data.categories.filter((code) => typeof code === "string" && /^[a-z0-9-]+$/.test(code)))]
+      : [],
     page: Number(data.currentPage) || 1,
     pageSize: Number(data.pageSize) || size,
     totalPages: Number(data.totalPages) || 1,
