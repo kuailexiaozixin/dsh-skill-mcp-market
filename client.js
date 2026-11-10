@@ -531,6 +531,7 @@ window.__ModuleLoader__.load({
                           style: S.chip(source === key),
                           onClick: () => {
                             setSource(key);
+                            setCategory('all');
                             searchSkills(query, { source: key, size });
                           },
                         }, key === 'all' ? '全部来源' : key))
@@ -553,7 +554,7 @@ window.__ModuleLoader__.load({
                     },
                   }, '加载更多'))
               : null,
-            tab === 'skills' && categories.length > 1
+            tab === 'skills' && categories.length > 0
               ? h('div', { style: S.row },
                   ['all', ...categories].map((cat) =>
                     h('button', {

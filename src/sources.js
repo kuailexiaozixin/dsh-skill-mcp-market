@@ -195,7 +195,7 @@ export async function searchBrowseSh({ query = "", pageSize = 24, cache }) {
   if (!rows) {
     const data = JSON.parse(await fetchText("https://browse.sh/api/skills", 25000));
     rows = Array.isArray(data.skills) ? data.skills : [];
-    await cache.put("browse_sh_api", rows);
+    if (rows.length) await cache.put("browse_sh_api", rows);
   }
   const q = query.trim().toLowerCase();
   const items = [];
