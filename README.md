@@ -7,6 +7,18 @@ DSH 的**技能市场**与 **MCP 连接器市场**：浏览实时技能源、装
 - 默认技能目录：`~/.dsh/market/skills`；默认 MCP 目录：`~/.dsh/market/mcp`
 - 左侧面板：**「SKILL技能&MCP连接器」**
 
+## 截图
+
+真机截图（DSH 桌面版，左侧菜单「SKILL技能&MCP连接器」）。
+
+### 技能市场
+
+顶部按来源切换（`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub`），卡片上直接「预览 / 安装」：
+
+![技能市场：来源筛选与卡片](docs/screenshots/panel-skills.png)
+
+> 「MCP 连接器」「已安装」「路径」三个页签的截图待补。
+
 ## 安装
 
 已发布到 npm：**`dsh-skill-mcp-market`**（MIT，公共包，无需登录）。
