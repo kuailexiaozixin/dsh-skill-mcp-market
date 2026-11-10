@@ -233,8 +233,8 @@ export async function apply(ctx, config = {}) {
   const marketCache = makeCache(join(dirname(settingsPath()), "cache"));
 
   // ---------------------------------------------------------------- skill provider
-  // We own the provider so `disabledSkills` (Hermes' config.yaml `skills.disabled`
-  // equivalent) is a real configuration item instead of a directory trick.
+  // We own the provider so `disabledSkills` (a `skills.disabled: [name]` list, as used by
+  // several agent runtimes) is a real configuration item instead of a directory trick.
   let disposeProvider = null;
   let invalidateSkills = null;
   let skillProviderError = "";
@@ -301,8 +301,8 @@ export async function apply(ctx, config = {}) {
     }
   }, "dsh-market.lifecycle");
 
-  /** Enable/disable a skill by writing settings.disabledSkills, mirroring Hermes'
-   *  config.yaml `skills.disabled` + prompt-cache invalidation. */
+  /** Enable/disable a skill by writing settings.disabledSkills: the name stays on disk but
+   *  leaves the catalog, then the prompt cache is invalidated. */
   async function setSkillEnabled(slug, enabled) {
     const key = String(slug || "").trim().toLowerCase();
     if (!key) throw new Error("slug 不能为空");

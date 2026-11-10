@@ -39,8 +39,8 @@ export function defaultSettings() {
     skillDirs: [join(home, "market", "skills")],
     // Where MCP server definitions (<serverName>.json) live.
     mcpDirs: [join(home, "market", "mcp")],
-    // DSH equivalent of Hermes' config.yaml `skills.disabled`: names that stay on disk but
-    // are hidden from the catalog. Absent from this list means enabled.
+    // The `skills.disabled` idea as a DSH config item: names that stay on disk but are
+    // hidden from the catalog. Absent from this list means enabled.
     disabledSkills: [],
     // Extra root that holds the shipped dsh packages (app.asar). Empty means auto-detect.
     shippedRoot: "",

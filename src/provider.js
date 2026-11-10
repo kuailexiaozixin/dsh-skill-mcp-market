@@ -1,8 +1,8 @@
 // Own skill provider: scans user-configured directories, honours the disabled list,
 // and invalidates the catalog whenever the directories or the settings change.
 //
-// This replaces the shipped filesystem provider so that `disabledSkills` (the DSH
-// equivalent of Hermes' config.yaml `skills.disabled`) is a real configuration item.
+// This replaces the shipped filesystem provider so that `disabledSkills` becomes a real
+// configuration item rather than a directory trick.
 import { readFile, readdir, stat } from "node:fs/promises";
 import { existsSync, watch } from "node:fs";
 import { join } from "node:path";
