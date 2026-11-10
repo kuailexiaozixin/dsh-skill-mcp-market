@@ -1,4 +1,4 @@
-# @local/dsh-market
+# dsh-skill-mcp-market
 
 DSH 的**技能市场**与 **MCP 连接器市场**：装完即刻生效，安装路径由用户决定，无需重启 DSH。
 
@@ -23,12 +23,12 @@ DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层�
 |---|---|
 | `market_get_settings` | 看两个目录、provider 挂载状态、官方包解析结果、可用来源 |
 | `market_set_paths` | 改技能/MCP 目录（支持 `~`、`$DSH_HOME`、`%ENV%`），即时重挂 provider 与 MCP |
-| `skill_market_search` | 搜技能：`curated`（17 个真实技能）/ `skillhub`（社区 API）/ `all` |
-| `skill_market_install` | 装技能：`github` / `url` / `local` / `skillhub` 四种来源 |
+| `skill_market_search` | 搜技能（全部实时源）：`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub`，`all` 聚合 |
+| `skill_market_install` | 装技能：`github`（可带 `@ref`）/ `skills.sh`（页面 URL 或裸 `owner/repo`）/ `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub` / `url` / `local` / `zip` |
 | `skill_market_list` | 列已装技能（含 `SKILL.md` 路径） |
 | `skill_market_uninstall` | 卸载（移到 `market/trash/`） |
-| `mcp_market_search` | 搜 MCP：内置精选 8 条 + 已安装列表 |
-| `mcp_market_install` | 装 MCP：`slug`（精选）/ 手工定义 / `importJson`（Claude·Cursor 的 `mcpServers`），装完立即探活 |
+| `mcp_market_search` | 搜 MCP：官方注册表（实时）+ 已安装列表；目录不可达时返回降级列表与 `catalogHint` |
+| `mcp_market_install` | 装 MCP：`slug`（官方注册表名称，如 `io.github.Async23/chrome-devtools-mcp`）/ 手工定义 / `importJson`（Claude·Cursor 的 `mcpServers`），装完立即探活 |
 | `mcp_market_list` | 列已装 MCP（transport、enabled、mounted、已发布工具名） |
 | `mcp_market_set_enabled` | 启停（断开即撤销工具，启用即重连） |
 | `mcp_market_probe` | 等 MCP 发布工具并回报 |
@@ -37,7 +37,7 @@ DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层�
 ## 目录结构
 
 ```
-dsh-market/
+dsh-skill-mcp-market/
 ├─ package.json          # dsh.bundle.patch 指向 cordis.patch.yml
 ├─ cordis.patch.yml      # 插入一行 dsh-market 插件
 ├─ index.js              # 插件入口：挂载 provider + 注册 12 个工具
@@ -66,6 +66,6 @@ dsh-market/
 
 ## 开发
 
-改完代码后，`plugin_manager` 无法原地替换模块。用 `plugin_manager set_plugin` 把 `include:dsh-market` 关一次再开一次，新代码即生效（本机已验证）。
+改完代码后，`plugin_manager` 无法原地替换模块。用 `plugin_manager set_plugin` 把 `include:dsh-skill-mcp-market` 关一次再开一次，新代码即生效（本机已验证）。
 
 冒烟脚本在 `../tools/`：`smoke-market.mjs`（技能安装/卸载、MCP 配置映射）、`smoke-demo-mcp.mjs`（MCP 协议自检）。

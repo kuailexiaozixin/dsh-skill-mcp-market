@@ -1,7 +1,7 @@
-// Client half of dsh-market: a floating market panel registered into `shell.overlay`.
+// Client half of dsh-skill-mcp-market: a floating market panel registered into `shell.overlay`.
 // No build step; React comes from the browser module table.
 window.__ModuleLoader__.load({
-  id: '@local/dsh-market',
+  id: 'dsh-skill-mcp-market',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
@@ -10,10 +10,13 @@ window.__ModuleLoader__.load({
     const RPC = '/api/dsh-market/rpc';
 
     async function call(op, payload) {
+      // A hung response must surface as an error instead of an endless spinner.
       const response = await fetch(RPC, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ op, ...(payload || {}) }),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(90000),
       });
       let data = null;
       try {
@@ -169,7 +172,19 @@ window.__ModuleLoader__.load({
             pageSize: (options && options.size) || 24,
           });
           setSkills(d.items || []);
-          if ((d.degraded || []).length) setNotice(`部分来源不可用：${d.degraded.map((x) => x.source).join(', ')}`);
+          if (!(d.items || []).length) {
+            // An empty market is either "no match" or "upstream refused us"; say which.
+            const reasons = (d.sourceErrors || []).length
+              ? d.sourceErrors
+              : (d.degraded || []).length
+                ? [`部分来源不可用：${d.degraded.map((x) => x.source).join(', ')}`]
+                : ['没有找到匹配的技能。'];
+            setNotice(reasons.join('；'));
+          } else if ((d.degraded || []).length) {
+            setNotice(`部分来源不可用：${d.degraded.map((x) => x.source).join(', ')}`);
+          } else {
+            setNotice('');
+          }
         } catch (e) {
           setError(String(e.message || e));
         } finally {
@@ -183,7 +198,11 @@ window.__ModuleLoader__.load({
         try {
           const d = await call('mcp.search', { query: text });
           setMcps(d.items || []);
-          if (!(d.items || []).length) setNotice('LobeHub 目录没有返回条目，稍后再试或检查网络');
+          // The host reports catalogue degradation separately from "no match", so both the
+          // reason and the still-usable path (install by registry name) reach the user.
+          if (d.hint) setNotice(d.hint);
+          else if (!(d.items || []).length) setNotice('没有找到匹配的连接器；可直接按注册表名称安装，例如 io.github.Async23/chrome-devtools-mcp。');
+          else setNotice('');
         } catch (e) {
           setError(String(e.message || e));
         } finally {
@@ -279,6 +298,7 @@ window.__ModuleLoader__.load({
             source: item.source,
             reference: item.source === 'skills.sh' ? item.homepage : item.source === 'clawhub' ? item.installRef : item.source === 'lobehub-agent' ? item.slug : item.upstreamUrl || item.id,
             skillDir: item.skillDir || '',
+            ref: item.ref || '',
             name: item.slug,
           });
           setPreview({ slug: item.slug, name: d.name || item.slug, content: d.content || '', files: d.files });
@@ -445,10 +465,13 @@ window.__ModuleLoader__.load({
             h('span', null, item.transport || 'stdio'),
             item.source ? h('span', null, `· ${item.source}`) : null,
             (item.envRequired || []).length ? h('span', null, `· 需要 ${item.envRequired.join(', ')}`) : null),
+          // "name" is the registry identifier users may need to copy into a manual install.
+          h('div', { style: S.meta }, h('span', null, item.slug)),
+          item.note ? h('div', { style: S.status }, item.note) : null,
           h('div', { style: S.row },
             h('button', {
               style: S.btn('primary'),
-              disabled: busy === `install:${item.slug}`,
+              disabled: item.installable === false || busy === `install:${item.slug}`,
               onClick: () => doInstallMcp(item),
             }, busy === `install:${item.slug}` ? '安装中…' : '安装'))));
 
@@ -525,7 +548,7 @@ window.__ModuleLoader__.load({
             (tab === 'skills' || tab === 'mcp')
               ? h('div', { style: S.row },
                   tab === 'skills'
-                    ? ['skills.sh', 'clawhub', 'trusttools', 'browse.sh', 'lobehub-agent', 'skillhub'].map((key) =>
+                    ? ['skills.sh', 'clawhub', 'skillsmp', 'trusttools', 'browse.sh', 'lobehub-agent', 'skillhub'].map((key) =>
                         h('button', {
                           key,
                           style: S.chip(source === key),
@@ -535,7 +558,7 @@ window.__ModuleLoader__.load({
                             searchSkills(query, { source: key, size });
                           },
                         }, key === 'all' ? '全部来源' : key))
-                    : h('span', { style: S.status }, '来源：LobeHub 实时目录'),
+                    : h('span', { style: S.status }, '来源：MCP 官方注册表（实时）'),
                   h('div', { style: { flex: 1 } }),
                   h('select', {
                     style: { ...S.input, flex: '0 0 120px', height: 30 },

@@ -6,7 +6,7 @@
 // the skill's own SKILL.md frontmatter (GitHub) or the page's own meta description.
 import { parseFrontmatter } from "./frontmatter.js";
 
-const UA = { "User-Agent": "dsh-market/0.3 (+skill market)" };
+const UA = { "User-Agent": "dsh-skill-mcp-market/0.3 (+skill market)" };
 
 async function fetchText(url, timeoutMs = 15000) {
   const controller = new AbortController();

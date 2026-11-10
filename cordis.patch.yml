@@ -1,6 +1,6 @@
 - insert:
-    - id: dsh-market
-      name: '@local/dsh-market'
+    - id: dsh-skill-mcp-market
+      name: 'dsh-skill-mcp-market'
       config:
         skillDirs: []
         mcpDirs: []

@@ -92,7 +92,7 @@ async function existingSlugs(dirs) {
  * Install a skill into the first configured skill directory.
  * Supported sources: `github` (owner/repo[/sub/path]), `url` (a SKILL.md or raw file URL), `skillhub` (needs upstream_url), `local` (a directory on disk).
  */
-export async function installSkill({ source = "github", reference = "", skillDir = "", dir = "", name = "", force = false, skillDirs }) {
+export async function installSkill({ source = "github", reference = "", skillDir = "", dir = "", name = "", ref = "", force = false, skillDirs }) {
   const roots = skillDirs && skillDirs.length > 0 ? skillDirs : [];
   if (roots.length === 0) throw new Error("no skill directories are configured");
   const targetRoot = dir ? expandPath(dir) : roots[0];
@@ -147,7 +147,7 @@ export async function installSkill({ source = "github", reference = "", skillDir
   if (source === "url") {
     const url = String(reference || "");
     if (!/^https?:\/\//i.test(url)) throw new Error("url source needs an http(s) reference");
-    const response = await fetch(url, { headers: { "User-Agent": "dsh-market/0.1" } });
+    const response = await fetch(url, { headers: { "User-Agent": "dsh-skill-mcp-market/0.1" } });
     if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
     const text = await response.text();
     if (!text.startsWith("---")) throw new Error("the fetched file is not a SKILL.md (missing frontmatter)");
@@ -175,10 +175,16 @@ export async function installSkill({ source = "github", reference = "", skillDir
       const candidates = skillDirsFrom(files);
       if (candidates.length === 0) throw new Error(`no SKILL.md found in ${repo}@${resolvedRef}`);
       const wanted = kebab(name || "");
+      // A bare `owner/repo` usually means "the skill named like the repo": repos that ship
+      // several skills still carry the flagship one under the repo's own name. Without this
+      // a plain `owner/repo` install would stop at the ambiguity error.
+      const repoWanted = kebab(String(repo || "").split("/").pop() || "");
       const basenameOf = (path) => (path || "").split("/").pop().toLowerCase();
       chosen =
         (wanted && candidates.find((path) => basenameOf(path) === wanted)) ||
         (wanted && candidates.find((path) => path.toLowerCase().endsWith(`/${wanted}`))) ||
+        (!wanted && repoWanted && candidates.find((path) => basenameOf(path) === repoWanted)) ||
+        (!wanted && repoWanted && candidates.find((path) => path.toLowerCase().endsWith(`/${repoWanted}`))) ||
         (candidates.length === 1 ? candidates[0] : "");
       if (chosen === "" && candidates.length > 1) {
         throw new Error(
@@ -210,6 +216,21 @@ export async function installSkill({ source = "github", reference = "", skillDir
     } finally {
       await rm(staging, { recursive: true, force: true });
     }
+  }
+
+  if (source === "skillsmp") {
+    // Every skillsmp row carries its exact GitHub location, so installation is the plain
+    // github path. `upstreamUrl` is already shaped as `owner/repo@ref` by the source.
+    if (!reference) throw new Error("该 skillsmp 条目没有给出 GitHub 源仓库，无法下载");
+    return installSkill({
+      source: "github",
+      reference,
+      skillDir: skillDir || "",
+      name: name || "",
+      dir: targetRoot,
+      force,
+      skillDirs,
+    });
   }
 
   if (source === "browse.sh") {
@@ -248,10 +269,29 @@ export async function installSkill({ source = "github", reference = "", skillDir
   }
 
   if (source === "skills.sh" || source === "skillssh") {
-    const { repo, skill } = await resolveSkillsShInstall(reference);
+    const raw = String(reference || "").trim();
+    // Accept a bare `owner/repo` (what the tool interface and CLI users type) as well as a
+    // skills.sh page URL. Only a URL needs the extra hop through the page to learn the repo
+    // and the skill name; a bare repo is already the install target.
+    if (!/^https?:\/\//i.test(raw)) {
+      if (!/^[\w.-]+\/[\w.-]+/.test(raw)) {
+        throw new Error(`skills.sh 引用应为页面 URL 或 owner/repo，收到 "${raw}"`);
+      }
+      return installSkill({
+        source: "github",
+        reference: raw,
+        skillDir: skillDir || "",
+        name: name || "",
+        dir: targetRoot,
+        force,
+        skillDirs,
+      });
+    }
+    const { repo, skill } = await resolveSkillsShInstall(raw);
     return installSkill({
       source: "github",
-      reference: repo,
+      reference: ref ? `${repo}@${ref}` : repo,
+      skillDir: skillDir || "",
       name: name || skill,
       dir: targetRoot,
       force,

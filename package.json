@@ -1,9 +1,9 @@
 {
-  "name": "@local/dsh-market",
-  "version": "0.2.0",
+  "name": "dsh-skill-mcp-market",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Skill market and MCP connector market for DeepSeek Harness: browse, install, and use plain SKILL.md skills and plain MCP servers without restarting DSH.",
+  "description": "SKILL skill market and MCP connector market for DeepSeek Harness: browse live catalogues, install SKILL.md skills and MCP servers, and use them without restarting DSH.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -14,7 +14,6 @@
     "index.js",
     "client.js",
     "src",
-    "catalog",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg"
@@ -27,5 +26,9 @@
       "platform": "web",
       "immediately": true
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kuailexiaozixin/dsh-skill-mcp-market.git"
   }
 }

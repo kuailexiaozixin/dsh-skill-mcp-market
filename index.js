@@ -19,13 +19,14 @@ import { rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { installSkill, listInstalledSkills, uninstallSkill, updateSkill } from "./src/skills.js";
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
+import { fallbackCards, registryDefinitionByName, searchMcpRegistry } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
-import { lobehubMcpConfig, makeCache, searchLobeHubMcp, searchSkills } from "./src/sources.js";
+import { lobehubMcpConfig, makeCache, searchLobeHubMcp, searchSkills, warmMarketCache } from "./src/sources.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-export const name = "dsh-market";
+export const name = "dsh-skill-mcp-market";
 export const inject = ["tools"];
 
 function textResult(value) {
@@ -70,10 +71,71 @@ function makeLogger(ctx) {
   return emit;
 }
 
-/** LobeHub is the only MCP source: every list and every install comes from the live site. */
+/** The MCP market is a live registry lookup; nothing is a hand-maintained definition list. */
+function shortError(error) {
+  return String((error && error.message) || error || "").slice(0, 160);
+}
+
+/**
+ * The MCP catalogue, in four levels of degradation:
+ *   1. the official registry (free, anonymous, carries the real launch recipe),
+ *   2. LobeHub's live index (richer descriptions, but its edge intermittently answers
+ *      402 "Automated access to LobeHub marketplace pages requires an API plan"),
+ *   3. the last catalogue that actually worked (cached on disk),
+ *   4. a tiny built-in list of verified names.
+ * Levels 2-4 attach a `hint` that names the degradation, because an empty list is
+ * unreadable on its own: "nothing matched" and "the catalogue is down" look identical, and
+ * only one of them is worth acting on. Installation never depends on this function — a
+ * `slug` resolves on its own — so a degraded list never blocks a real install.
+ */
 async function loadMcpCatalog(cache, query = "") {
-  const result = await searchLobeHubMcp({ query, pageSize: 60, cache });
-  return result.items;
+  const key = `registry:v2:${String(query || "").trim().toLowerCase() || "all"}:60`;
+  const problems = [];
+  let answered = false;
+
+  try {
+    const result = await searchMcpRegistry({ query, pageSize: 60, cache });
+    answered = true;
+    if (result.items.length > 0) return { items: result.items, hint: "", live: true };
+  } catch (error) {
+    problems.push(`官方注册表：${shortError(error)}`);
+  }
+
+  try {
+    const result = await searchLobeHubMcp({ query, pageSize: 60, cache });
+    answered = true;
+    if (result.items.length > 0) {
+      return {
+        items: result.items,
+        hint: problems.length > 0 ? `官方注册表暂时不可用（${problems[0]}），下面来自 LobeHub 目录。` : "",
+        live: true,
+      };
+    }
+  } catch (error) {
+    problems.push(`LobeHub：${shortError(error)}`);
+  }
+
+  // Both catalogues answered and neither had a match: that is an empty search result, not
+  // an outage, and it must not be dressed up as a degraded catalogue.
+  if (answered && problems.length === 0) {
+    return {
+      items: [],
+      hint: `没有匹配「${String(query || "").trim()}」的连接器。换个关键词（单个词更好），或直接按注册表名称安装。`,
+      live: true,
+    };
+  }
+
+  const stale = await cache.get(key, 30 * 24 * 3600 * 1000);
+  if (Array.isArray(stale) && stale.length > 0) {
+    return {
+      items: stale,
+      hint: `目录暂时不可达（${problems.join("；")}），下面是上次成功获取的目录；仍可直接按名称安装。`,
+    };
+  }
+  return {
+    items: fallbackCards(query),
+    hint: `目录暂时不可达（${problems.join("；")}）。下面是内置的常见条目；也可以直接 mcp_market_install({slug:"registry 名称"})，或用 command/args 手动配置。`,
+  };
 }
 
 /** Write user-supplied values into the system environment, then keep only ${VAR} placeholders. */
@@ -104,6 +166,49 @@ async function resolveLobeHubDefinition(slug, serverName) {
     source: "lobehub",
     slug,
     homepage: `https://lobehub.com/mcp/${slug}`,
+  };
+}
+
+/**
+ * Resolve one identifier into a runnable MCP definition. Registry names win (that is the
+ * catalogue the panel shows); a LobeHub slug is still tried afterwards for compatibility,
+ * but that site now requires a paid API plan, so its failure is reported as such instead of
+ * as a generic network error.
+ */
+async function resolveMcpDefinition(slug, serverName) {
+  let registryError = null;
+  try {
+    const definition = await registryDefinitionByName(slug, serverName);
+    if (definition) return definition;
+  } catch (error) {
+    registryError = error;
+  }
+  try {
+    return await resolveLobeHubDefinition(slug, serverName);
+  } catch (error) {
+    const detail = registryError ? `注册表查询失败：${shortError(registryError)}` : "注册表里没有这个名称";
+    throw new Error(
+      `无法解析 MCP 连接器 "${slug}"（${detail}）。LobeHub 目录已改为付费接口（HTTP 402）。` +
+        `请改用 MCP 官方注册表名称，例如 mcp_market_install({slug:"io.github.Async23/chrome-devtools-mcp"})，` +
+        `或直接给 command/args（stdio）或 url（streamable-http）手动安装。原始错误：${shortError(error)}`,
+    );
+  }
+}
+
+/** A definition built purely from caller-supplied fields — no catalogue lookup at all. */
+function manualMcpDefinition(body) {
+  const rawName = body.serverName || body.slug || body.title || "mcp";
+  return {
+    serverName: normalizeServerName(rawName),
+    title: body.title || rawName,
+    description: body.description || "",
+    transport: body.transport || (body.url ? "streamable-http" : "stdio"),
+    command: body.command || "",
+    args: Array.isArray(body.args) ? body.args : [],
+    env: body.env && typeof body.env === "object" ? body.env : {},
+    url: body.url || "",
+    headers: body.headers && typeof body.headers === "object" ? body.headers : {},
+    source: "manual",
   };
 }
 
@@ -313,13 +418,21 @@ export async function apply(ctx, config = {}) {
   defineTool(ctx, {
     name: "skill_market_install",
     description:
-      "Install a SKILL skill into the configured skill directory and make it live immediately (no restart). `github` takes `owner/repo` or `owner/repo/sub/path` or a GitHub URL; `url` takes a raw SKILL.md URL; `local` copies a directory from disk; `skillhub` takes an upstream URL.",
+      "Install a SKILL skill into the configured skill directory and make it live immediately (no restart). `github` takes `owner/repo` or `owner/repo@ref` or `owner/repo/sub/path` or a GitHub URL; `skills.sh` takes either a skills.sh page URL or a bare `owner/repo`; `url` takes a raw SKILL.md URL; `local` copies a directory from disk; `skillhub` takes an upstream URL.",
     parameters: {
       type: "object",
       properties: {
-        source: { type: "string", enum: ["github", "url", "local", "skillhub（社区实时 API）"], description: "Defaults to github." },
-        reference: { type: "string", description: "owner/repo[/path], an http(s) URL, or a local directory." },
+        source: {
+          type: "string",
+          enum: ["github", "skills.sh", "clawhub", "skillsmp", "trusttools", "browse.sh", "lobehub-agent", "skillhub", "url", "local", "zip"],
+          description: "Market source; defaults to github.",
+        },
+        reference: {
+          type: "string",
+          description: "For skills.sh: a page URL or `owner/repo`. For github: `owner/repo[/path]` or `owner/repo@ref` or a GitHub URL. Otherwise a URL or local directory.",
+        },
         skillDir: { type: "string", description: "Sub-directory inside the repository that holds SKILL.md (multi-skill repos)." },
+        ref: { type: "string", description: "Git ref (branch/tag) to read; defaults to the repository's default branch." },
         name: { type: "string", description: "Override the installed directory name." },
         dir: { type: "string", description: "Override the install target directory." },
         force: { type: "boolean", description: "Replace an existing skill with the same name." },
@@ -332,6 +445,7 @@ export async function apply(ctx, config = {}) {
         source: args.source || "github",
         reference: args.reference,
         skillDir: args.skillDir || "",
+        ref: args.ref || "",
         name: args.name || "",
         dir: args.dir || "",
         force: Boolean(args.force),
@@ -379,7 +493,7 @@ export async function apply(ctx, config = {}) {
   defineTool(ctx, {
     name: "mcp_market_search",
     description:
-      "Search the MCP connector market: the curated catalog of standard MCP servers plus everything already installed. Entries that need environment values report them in `envRequired`.",
+      "Search the MCP connector market: the official Model Context Protocol registry (live, registry.modelcontextprotocol.io) plus everything already installed. Each entry reports `slug` (the registry name to install), `transport`, and the `envRequired` values it needs. When the catalogue is unreachable the result is a degraded list plus `catalogHint`; an empty list never means installation is impossible — `mcp_market_install({slug})` can still resolve any registry name directly.",
     parameters: {
       type: "object",
       properties: {
@@ -390,12 +504,14 @@ export async function apply(ctx, config = {}) {
       additionalProperties: false,
     },
     handler: async (args) => {
-      const query = String(args.query || "").trim().toLowerCase();
-      const catalog = await loadMcpCatalog(marketCache);
-      const items = catalog
-        .filter((item) =>
-          !query ? true : `${item.slug} ${item.name} ${item.description} ${item.category}`.toLowerCase().includes(query),
-        )
+      const query = String(args.query || "").trim();
+      const catalog = await loadMcpCatalog(marketCache, query);
+      const rows = catalog.live
+        ? catalog.items
+        : catalog.items.filter((item) =>
+            !query ? true : `${item.slug} ${item.name} ${item.description} ${item.category}`.toLowerCase().includes(query.toLowerCase()),
+          );
+      const items = rows
         .filter((item) => !args.category || item.category === args.category)
         .map((item) => ({
           id: `mcp:${item.slug}`,
@@ -408,8 +524,10 @@ export async function apply(ctx, config = {}) {
           args: item.args,
           envRequired: item.envRequired || [],
           envHints: item.envHints || {},
+          installable: item.installable !== false,
+          note: item.note,
           homepage: item.homepage,
-          source: "curated",
+          source: item.source || "registry",
         }));
       const installed = args.includeInstalled === false ? [] : await mcp.list();
       return {
@@ -417,7 +535,13 @@ export async function apply(ctx, config = {}) {
         items,
         installed,
         mcpDirs: settings.mcpDirs,
-        hint: "Install with mcp_market_install({slug, env}) or mcp_market_install({serverName, transport, command|url, ...}).",
+        // A degraded catalogue must say so; an empty list alone cannot distinguish
+        // "no match" from "the catalogue is unreachable".
+        catalogHint: catalog.hint || undefined,
+        hint:
+          items.length === 0
+            ? "列表为空时仍可直接安装：mcp_market_install({slug}) 传 MCP 官方注册表名称（如 io.github.Async23/chrome-devtools-mcp），或 mcp_market_install({serverName, transport, command|url, ...}) 手动配置。"
+            : "Install with mcp_market_install({slug, env}) or mcp_market_install({serverName, transport, command|url, ...}).",
       };
     },
   });
@@ -425,11 +549,11 @@ export async function apply(ctx, config = {}) {
   defineTool(ctx, {
     name: "mcp_market_install",
     description:
-      "Install an MCP connector and connect it immediately (no restart). Either pass `slug` from the curated catalog (plus `env`), or pass a full definition: `serverName` with `transport` and `command`/`args`/`env` (stdio) or `url`/`headers` (streamable-http). Also accepts `importJson` containing a Claude/Cursor `mcpServers` object. Returns a live probe of the connection.",
+      "Install an MCP connector and connect it immediately (no restart). Pass `slug` with any MCP registry name (e.g. `io.github.Async23/chrome-devtools-mcp`) and the launch recipe is fetched and resolved for you; a legacy LobeHub slug is still attempted afterwards. Or pass a full definition: `serverName` with `transport` and `command`/`args`/`env` (stdio) or `url`/`headers` (streamable-http). Also accepts `importJson` containing a Claude/Cursor `mcpServers` object. Returns a live probe of the connection.",
     parameters: {
       type: "object",
       properties: {
-        slug: { type: "string", description: "Curated catalog slug, e.g. filesystem." },
+        slug: { type: "string", description: "MCP registry server name, e.g. io.github.Async23/chrome-devtools-mcp (a legacy LobeHub slug also works)." },
         serverName: { type: "string", description: "[A-Za-z0-9_-]{1,32}." },
         title: { type: "string" },
         description: { type: "string" },
@@ -470,7 +594,9 @@ export async function apply(ctx, config = {}) {
         }
       } else if (args.slug) {
         applyEnvValues(args.envValues);
-        const live = await resolveLobeHubDefinition(args.slug, args.serverName);
+        // Registry name first (that is what the market lists); a LobeHub slug still resolves
+        // when the registry does not know it, so older instructions keep working.
+        const live = await resolveMcpDefinition(args.slug, args.serverName);
         definitions.push({
           ...live,
           env: { ...live.env, ...(args.env || {}) },
@@ -616,6 +742,7 @@ export async function apply(ctx, config = {}) {
           reference: body.reference,
           skillDir: body.skillDir || "",
           name: body.name || "",
+          ref: body.ref || "",
           dir: body.dir || "",
           force: Boolean(body.force),
           skillDirs: settings.skillDirs,
@@ -646,6 +773,7 @@ export async function apply(ctx, config = {}) {
             reference: body.reference,
             skillDir: body.skillDir || "",
             name: body.name || "",
+            ref: body.ref || "",
             dir: tmpRoot,
             force: true,
             skillDirs: [tmpRoot],
@@ -696,26 +824,37 @@ export async function apply(ctx, config = {}) {
       case "mcp.update":
         return mcp.update(body.serverName, body.patch || {});
       case "mcp.search": {
-        const query = String(body.query || "").trim().toLowerCase();
-        const catalog = await loadMcpCatalog(marketCache);
+        const query = String(body.query || "").trim();
+        const catalog = await loadMcpCatalog(marketCache, query);
+        // A live registry search is already filtered server-side; fallback and cached lists
+        // are not, so only those get a local filter.
+        const rows = catalog.live
+          ? catalog.items
+          : catalog.items.filter((item) =>
+              !query ? true : `${item.slug} ${item.name} ${item.description}`.toLowerCase().includes(query.toLowerCase()),
+            );
         return {
-          items: catalog
-            .filter((item) => (!query ? true : `${item.slug} ${item.name} ${item.description}`.toLowerCase().includes(query)))
-            .map((item) => ({
-              id: `mcp:${item.slug}`,
-              slug: item.slug,
-              name: item.name,
-              description: item.description,
-              category: item.category,
-              transport: item.transport,
-              envRequired: item.envRequired || [],
-              source: "curated",
-            })),
+          items: rows.map((item) => ({
+            id: `mcp:${item.slug}`,
+            slug: item.slug,
+            name: item.name,
+            description: item.description,
+            category: item.category,
+            transport: item.transport,
+            envRequired: item.envRequired || [],
+            envHints: item.envHints || {},
+            installable: item.installable !== false,
+            note: item.note,
+            homepage: item.homepage,
+            source: item.source || "registry",
+          })),
+          hint: catalog.hint,
         };
       }
       case "mcp.install": {
         const envWritten = applyEnvValues(body.envValues);
-        const definition = await resolveLobeHubDefinition(body.slug, body.serverName);
+        const definition =
+          body.command || body.url ? manualMcpDefinition(body) : await resolveMcpDefinition(body.slug, body.serverName);
         if (body.env && typeof body.env === "object") definition.env = { ...definition.env, ...body.env };
         const overrideOf = ["command", "args", "url", "headers", "transport"];
         for (const key of overrideOf) {
@@ -781,6 +920,12 @@ export async function apply(ctx, config = {}) {
   }
 
   log("info", `dsh-market ready: ${settings.skillDirs.length} skill dir(s), ${settings.mcpDirs.length} MCP dir(s)`);
+
+  // Warm the two slow catalogues in the background so the first panel open is instant.
+  // A failed warmup is harmless: the search path retries on demand.
+  void warmMarketCache(marketCache).catch((error) => {
+    log("debug", `dsh-market warmup skipped: ${String((error && error.message) || error).slice(0, 120)}`);
+  });
 }
 
 export { defaultSettings };

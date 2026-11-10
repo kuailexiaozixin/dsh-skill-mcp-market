@@ -26,10 +26,10 @@
 |---|---|
 | `routes/skills.py`（19 个接口） | `index.js` 的 `dispatch()` + 12 个 host 工具 |
 | `routes/mcp.py`（13 个接口） | 同上 |
-| `unified_skills_client.py` | `src/sources.js`（实时源聚合） |
-| `skillhub_client.py` | `src/skillhub.js` + `src/github.js` |
+| `unified_skills_client.py` | `src/sources.js`（实时源聚合）+ `src/http.js`（python/curl/fetch 三级取数） |
+| `skillhub_client.py` | `src/skillhub.js` + `src/github.js`（含 contents API / tarball 兜底） |
 | `hermes_skills_client.py` | 待接（官方 optional-skills，需「拉全量 + 本地过滤」） |
-| `mcpstore_client.py` | `src/sources.js` 的 LobeHub 部分 |
+| `mcpstore_client.py` | `src/mcp-registry.js`（官方注册表，主源）+ `src/sources.js` 的 LobeHub 部分（备用源，会 402） |
 | `hermes_config/_skills.py` | `src/provider.js` + `setSkillEnabled()` |
 | `hermes_config/_mcp.py` | `src/mcp.js` |
 | `hermes_config/_paths.py` | `src/home.js` |

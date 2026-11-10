@@ -17,7 +17,7 @@
 export GITHUB_TOKEN=ghp_xxx
 
 # 可选：仓库名、可见性
-export DSH_MARKET_REPO=dsh-market
+export DSH_MARKET_REPO=dsh-skill-mcp-market
 export DSH_MARKET_PRIVATE=true
 
 node scripts/publish-github.mjs

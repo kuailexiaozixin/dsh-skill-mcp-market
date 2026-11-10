@@ -1,6 +1,6 @@
 // SkillHub community source adapter (public, unauthenticated JSON API).
 const BASE = "https://api.skillhub.cn/api/skills";
-const UA = { "User-Agent": "dsh-market/0.1 (+skill market)", accept: "application/json" };
+const UA = { "User-Agent": "dsh-skill-mcp-market/0.1 (+skill market)", accept: "application/json" };
 
 async function getJson(url, timeoutMs = 20000) {
   const controller = new AbortController();

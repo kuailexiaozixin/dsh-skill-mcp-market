@@ -5,9 +5,9 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { enrichPageDescriptions, enrichSkillsShFast } from "./enrich.js";
-import { searchClawHub, searchLobeHubSkills, searchTrustTools } from "./extra-sources.js";
+import { searchClawHub, searchLobeHubSkills, searchSkillsMp, searchTrustTools } from "./extra-sources.js";
 
-const UA = { "User-Agent": "dsh-market/0.3 (+skill and mcp market)", accept: "application/json" };
+const UA = { "User-Agent": "dsh-skill-mcp-market/0.3 (+skill and mcp market)", accept: "application/json" };
 
 async function fetchText(url, timeoutMs = 20000) {
   const controller = new AbortController();
@@ -120,7 +120,7 @@ export function extractMcpServers(html) {
 
 async function lobehubSlugs(cache) {
   const cached = await cache.get("lobehub_slugs", 24 * 3600 * 1000);
-  if (cached) return cached;
+  if (cached && cached.length) return cached;
   const index = await fetchText("https://lobehub.com/sitemap.xml");
   const shards = [...index.matchAll(/<loc>([^<]+)<\/loc>/g)]
     .map((m) => m[1])
@@ -136,7 +136,9 @@ async function lobehubSlugs(cache) {
     }
     for (const match of xml.matchAll(/<loc>https:\/\/lobehub\.com\/mcp\/([^<]+)<\/loc>/g)) slugs.push(match[1]);
   }
-  await cache.put("lobehub_slugs", slugs);
+  // Never persist an empty catalogue: a 24-hour cache of "no servers" would outlive the
+  // upstream problem that caused it.
+  if (slugs.length > 0) await cache.put("lobehub_slugs", slugs);
   return slugs;
 }
 
@@ -178,7 +180,17 @@ export async function searchLobeHubMcp({ query = "", pageSize = 24, cache }) {
 
 /** Fetch and parse one LobeHub entry's real MCP definition. */
 export async function lobehubMcpConfig(slug) {
-  const html = await fetchText(`https://lobehub.com/mcp/${slug}`, 30000);
+  let html = "";
+  try {
+    html = await fetchText(`https://lobehub.com/mcp/${slug}`, 30000);
+  } catch (error) {
+    if (/HTTP 402/.test(String((error && error.message) || error))) {
+      throw new Error(
+        "LobeHub 目录已改为付费接口（HTTP 402 payment_required），自动化访问不再可用；请改用 MCP 官方注册表名称安装。",
+      );
+    }
+    throw error;
+  }
   const config = extractMcpServers(html);
   if (!config) {
     throw new Error(
@@ -226,8 +238,10 @@ export async function searchBrowseSh({ query = "", pageSize = 24, cache }) {
 // ------------------------------------------------------------------ aggregation
 const fallbackCache = makeCache(join(process.env.TEMP || process.env.TMPDIR || ".", "dsh-market-cache"));
 
+export const ALL_SOURCES = ["skills.sh", "clawhub", "skillsmp", "trusttools", "browse.sh", "lobehub-agent", "skillhub"];
+
 export async function searchSkills({ query, source = "all", pageSize = 24, cache = fallbackCache }) {
-  const wanted = source === "all" ? ["skills.sh", "clawhub", "trusttools", "browse.sh", "lobehub-agent", "skillhub"] : [source];
+  const wanted = source === "all" ? ALL_SOURCES : [source];
   const items = [];
   const degraded = [];
   for (const name of wanted) {
@@ -237,6 +251,9 @@ export async function searchSkills({ query, source = "all", pageSize = 24, cache
         items.push(...result.items);
       } else if (name === "clawhub") {
         const result = await searchClawHub({ query, pageSize });
+        items.push(...result.items);
+      } else if (name === "skillsmp") {
+        const result = await searchSkillsMp({ query, pageSize, cache });
         items.push(...result.items);
       } else if (name === "trusttools") {
         const result = await searchTrustTools({ query, pageSize });
@@ -262,5 +279,28 @@ export async function searchSkills({ query, source = "all", pageSize = 24, cache
   } catch {
     // best-effort: a failed description never blocks the list
   }
-  return { items, degraded, total: items.length };
+  // An empty browsing page is almost never "no matches" — it is an upstream that timed out
+  // or refused us. Say so instead of showing a blank market, and name the sources that
+  // failed so the user can tell "nothing here" from "could not reach it".
+  const sourceErrors =
+    items.length > 0 || String(query || "").trim()
+      ? []
+      : degraded.length
+        ? degraded.map((entry) => `${entry.source} 不可达：${entry.error}`.slice(0, 200))
+        : ["所选市场暂时没有取到数据，可能是上游不可达或响应超时，请稍后重试"];
+  return { items, degraded, sourceErrors, total: items.length };
+}
+
+/**
+ * Warm the two catalogues that are expensive on a cold start (browse.sh ships ~700 KB,
+ * skillsmp is a paged upstream). Called in the background once the plugin is applied, so
+ * the first time the panel opens the cache is already populated instead of the user
+ * staring at an empty grid while a 25-second fetch completes.
+ */
+export async function warmMarketCache(cache = fallbackCache) {
+  const results = await Promise.allSettled([
+    searchBrowseSh({ query: "", pageSize: 24, cache }),
+    searchSkillsMp({ query: "", pageSize: 24, cache }),
+  ]);
+  return results.map((r) => (r.status === "fulfilled" ? r.value.items.length : 0));
 }
