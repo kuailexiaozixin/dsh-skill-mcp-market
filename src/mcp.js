@@ -234,6 +234,64 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     return { ok: true, serverName: name, enabled: Boolean(enabled) };
   }
 
+  async function detail(serverName) {
+    const name = normalizeServerName(serverName);
+    const defs = await readDefs();
+    const def = defs.get(name);
+    if (!def) throw new Error(`没有名为 ${name} 的 MCP 定义`);
+    const mask = (map) => {
+      const out = {};
+      for (const [key, value] of Object.entries(map || {})) {
+        out[key] = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(String(value)) ? "***（来自环境变量）" : String(value);
+      }
+      return out;
+    };
+    return {
+      serverName: name,
+      title: def.title || name,
+      description: def.description || "",
+      transport: def.transport || "stdio",
+      command: def.command || "",
+      args: def.args || [],
+      url: def.url || "",
+      env: mask(def.env),
+      headers: mask(def.headers),
+      cwd: def.cwd || "",
+      enabled: def.enabled !== false,
+      mounted: mounted.has(name),
+      tools: toolNamesFor(name),
+      source: def.source || "manual",
+      slug: def.slug || "",
+      homepage: def.homepage || "",
+      path: def.filePath,
+    };
+  }
+
+  async function update(serverName, patch) {
+    const name = normalizeServerName(serverName);
+    const defs = await readDefs();
+    const def = defs.get(name);
+    if (!def) throw new Error(`没有名为 ${name} 的 MCP 定义`);
+    const next = { ...def, ...patch, serverName: name };
+    delete next.filePath;
+    delete next.dir;
+    const saved = await save(next);
+    unmount(name);
+    await mount({ ...saved, filePath: saved.filePath, dir: saved.dir });
+    const probe = await probeTools(name, 8000);
+    return { ok: probe.ok, serverName: name, tools: probe.tools, error: probe.ok ? undefined : probe.error };
+  }
+
+  async function probeTools(name, timeoutMs) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const tools = toolNamesFor(name);
+      if (tools.length > 0) return { ok: true, tools };
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return { ok: false, tools: [], error: "已保存并重连，但服务器还没有发布工具" };
+  }
+
   async function probe(serverName, timeoutMs = 8000) {
     const name = normalizeServerName(serverName);
     const started = Date.now();
@@ -290,5 +348,5 @@ export function createMcpManager({ ctx, dirs, shippedRoot, log }) {
     for (const name of [...mounted.keys()]) unmount(name);
   }
 
-  return { init, dispose, list, install, uninstall, setEnabled, probe, reconcile, mount, unmount, toolNamesFor, readDefs };
+  return { init, dispose, list, install, uninstall, setEnabled, probe, detail, update, reconcile, mount, unmount, toolNamesFor, readDefs };
 }

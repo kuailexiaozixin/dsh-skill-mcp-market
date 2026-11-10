@@ -15,7 +15,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, settingsPath } from "./src/home.js";
 import { importShipped, pluginFrom, resolveShipped, SHIPPED } from "./src/shipped.js";
-import { installSkill, listInstalledSkills, uninstallSkill } from "./src/skills.js";
+import { rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { installSkill, listInstalledSkills, uninstallSkill, updateSkill } from "./src/skills.js";
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
 import { lobehubMcpConfig, makeCache, searchLobeHubMcp, searchSkills } from "./src/sources.js";
@@ -69,8 +71,8 @@ function makeLogger(ctx) {
 }
 
 /** LobeHub is the only MCP source: every list and every install comes from the live site. */
-async function loadMcpCatalog(query = "") {
-  const result = await searchLobeHubMcp({ query, pageSize: 60, cache: marketCache });
+async function loadMcpCatalog(cache, query = "") {
+  const result = await searchLobeHubMcp({ query, pageSize: 60, cache });
   return result.items;
 }
 
@@ -389,7 +391,7 @@ export async function apply(ctx, config = {}) {
     },
     handler: async (args) => {
       const query = String(args.query || "").trim().toLowerCase();
-      const catalog = await loadMcpCatalog();
+      const catalog = await loadMcpCatalog(marketCache);
       const items = catalog
         .filter((item) =>
           !query ? true : `${item.slug} ${item.name} ${item.description} ${item.category}`.toLowerCase().includes(query),
@@ -622,6 +624,45 @@ export async function apply(ctx, config = {}) {
         return { dirs: settings.skillDirs, items: await listInstalledSkills(settings.skillDirs) };
       case "skills.uninstall":
         return uninstallSkill({ slug: body.slug, dirs: settings.skillDirs, trashDir });
+      case "skills.import": {
+        const target = expandPath(body.path || "");
+        if (!target) throw new Error("请提供本地目录或 .zip 路径");
+        const info = await stat(target);
+        const kind = info.isDirectory() ? "local" : /\.zip$/i.test(target) ? "zip" : "";
+        if (!kind) throw new Error("只支持目录或 .zip 文件");
+        return installSkill({
+          source: kind,
+          reference: target,
+          name: body.name || "",
+          force: Boolean(body.force),
+          skillDirs: settings.skillDirs,
+        });
+      }
+      case "skills.preview": {
+        const tmpRoot = join(tmpdir(), `dsh-market-preview-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+        try {
+          const installed = await installSkill({
+            source: body.source || "github",
+            reference: body.reference,
+            skillDir: body.skillDir || "",
+            name: body.name || "",
+            dir: tmpRoot,
+            force: true,
+            skillDirs: [tmpRoot],
+          });
+          const detail = await readSkillBody([tmpRoot], installed.slug);
+          return {
+            slug: installed.slug,
+            name: installed.name,
+            description: installed.description,
+            files: installed.files,
+            content: (detail && detail.content ? detail.content : "").slice(0, 20000),
+            previewOnly: true,
+          };
+        } finally {
+          await rm(tmpRoot, { recursive: true, force: true });
+        }
+      }
       case "skills.toggle":
         return setSkillEnabled(body.slug, body.enabled);
       case "skills.detail": {
@@ -635,9 +676,28 @@ export async function apply(ctx, config = {}) {
           disabled: (settings.disabledSkills || []).includes(String(body.slug).toLowerCase()),
         };
       }
+      case "skills.update": {
+        const updated = await updateSkill({
+          dirs: settings.skillDirs,
+          slug: body.slug,
+          name: body.name,
+          description: body.description,
+          body: body.body,
+        });
+        try {
+          invalidateSkills?.();
+        } catch {
+          /* ignore */
+        }
+        return updated;
+      }
+      case "mcp.detail":
+        return mcp.detail(body.serverName);
+      case "mcp.update":
+        return mcp.update(body.serverName, body.patch || {});
       case "mcp.search": {
         const query = String(body.query || "").trim().toLowerCase();
-        const catalog = await loadMcpCatalog();
+        const catalog = await loadMcpCatalog(marketCache);
         return {
           items: catalog
             .filter((item) => (!query ? true : `${item.slug} ${item.name} ${item.description}`.toLowerCase().includes(query)))

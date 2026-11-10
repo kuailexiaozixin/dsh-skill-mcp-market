@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { kebab, parseFrontmatter, skillMetaFromText } from "./frontmatter.js";
 import { downloadSkillDir, listTree, parseRepoRef, readRepoFile, resolveRef, skillDirsFrom } from "./github.js";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
+import { resolveSkillsShInstall } from "./sources.js";
+import { describeFindings, scanSkillBundle } from "./verify.js";
+import { locateSkillRoot, readZip, stripCommonPrefix } from "./zip.js";
+import { clawhubResolve, lobehubAgentSkill } from "./extra-sources.js";
 import { ensureDir, expandPath, writeJson } from "./home.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -102,6 +106,10 @@ export async function installSkill({ source = "github", reference = "", skillDir
     if (!meta.name || !meta.description) {
       throw new Error("SKILL.md must declare both `name` and `description` in its frontmatter");
     }
+    const scan = scanSkillBundle({ files, skillText });
+    if (!scan.allowed && !force) {
+      throw new Error(`安全检查未通过（${scan.stats.high} 项高危）：${describeFindings(scan.findings.filter((f) => f.severity === "high"))}。确认可信后可加 force:true 强制安装。`);
+    }
     await ensureDir(targetDir);
     for (const [relative, content] of Object.entries(files)) {
       const target = join(targetDir, relative);
@@ -167,8 +175,10 @@ export async function installSkill({ source = "github", reference = "", skillDir
       const candidates = skillDirsFrom(files);
       if (candidates.length === 0) throw new Error(`no SKILL.md found in ${repo}@${resolvedRef}`);
       const wanted = kebab(name || "");
+      const basenameOf = (path) => (path || "").split("/").pop().toLowerCase();
       chosen =
-        (wanted && candidates.find((path) => path.toLowerCase().endsWith(wanted))) ||
+        (wanted && candidates.find((path) => basenameOf(path) === wanted)) ||
+        (wanted && candidates.find((path) => path.toLowerCase().endsWith(`/${wanted}`))) ||
         (candidates.length === 1 ? candidates[0] : "");
       if (chosen === "" && candidates.length > 1) {
         throw new Error(
@@ -202,20 +212,104 @@ export async function installSkill({ source = "github", reference = "", skillDir
     }
   }
 
+  if (source === "browse.sh") {
+    return installSkill({
+      source: "github",
+      reference: reference || "browserbase/browse.sh",
+      skillDir: skillDir || "",
+      name: name || "",
+      dir: targetRoot,
+      force,
+      skillDirs,
+    });
+  }
+
+  if (source === "zip") {
+    const archivePath = expandPath(reference);
+    const buffer = await readFile(archivePath);
+    const { files: raw, skipped } = readZip(buffer);
+    const flat = stripCommonPrefix(raw);
+    const root = locateSkillRoot(flat);
+    if (root === null) throw new Error("ZIP 里没有找到 SKILL.md");
+    const prefix = root ? `${root}/` : "";
+    const files = {};
+    for (const [entry, content] of Object.entries(flat)) {
+      if (prefix && !entry.startsWith(prefix)) continue;
+      files[entry.slice(prefix.length)] = content;
+    }
+    const skillText = files["SKILL.md"] || "";
+    const written = await writeSkill({
+      slug: name || skillMetaFromText(skillText, "").name || root.split("/").pop() || basename(archivePath, ".zip"),
+      files,
+      skillText,
+      origin: { source: "zip", path: archivePath },
+    });
+    return skipped.length ? { ...written, skipped } : written;
+  }
+
+  if (source === "skills.sh" || source === "skillssh") {
+    const { repo, skill } = await resolveSkillsShInstall(reference);
+    return installSkill({
+      source: "github",
+      reference: repo,
+      name: name || skill,
+      dir: targetRoot,
+      force,
+      skillDirs,
+    });
+  }
+
+  if (source === "trusttools") {
+    const repo = String(reference || "");
+    if (!repo) throw new Error("trusttools 条目缺少 repo_url");
+    const target = ref ? `${repo}@${ref}` : repo;
+    return installSkill({ source: "github", reference: target, skillDir: skillDir || "", name: name || "", dir: targetRoot, force, skillDirs });
+  }
+
+  if (source === "clawhub") {
+    const target = await clawhubResolve(reference);
+    return installSkill({ source: "github", reference: target.repo, skillDir: target.skillDir, name: name || "", dir: targetRoot, force, skillDirs });
+  }
+
+  if (source === "lobehub-agent") {
+    const bundle = await lobehubAgentSkill(reference);
+    const scan = scanSkillBundle({ files: bundle.files, skillText: bundle.files["SKILL.md"] });
+    if (!scan.allowed && !force) {
+      throw new Error(`安全检查未通过：${describeFindings(scan.findings.filter((f) => f.severity === "high"))}`);
+    }
+    return writeSkill({
+      slug: name || bundle.name || reference,
+      files: bundle.files,
+      skillText: bundle.files["SKILL.md"],
+      origin: { source: "lobehub-agent", identifier: reference },
+    });
+  }
+
   throw new Error(`unknown skill source "${source}"`);
 }
 
 /** Remove an installed skill by moving it into the market trash. */
-export async function uninstallSkill({ slug, dirs, trashDir }) {
-  const key = kebab(slug);
+export async function uninstallSkill({ slug, dirs, trashDir }) {  const key = kebab(slug);
   const removed = [];
   for (const dir of dirs) {
     const candidates = [join(dir, key), join(dir, `${key}.md`)];
     for (const candidate of candidates) {
       if (!existsSync(candidate)) continue;
-      await ensureDir(trashDir);
+      // Trash inside the skill's own directory: a cross-drive rename fails with EXDEV.
+      const localTrash = join(dir, ".trash");
+      await ensureDir(localTrash);
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      await rename(candidate, join(trashDir, `${key}-${stamp}${candidate.endsWith(".md") ? ".md" : ""}`));
+      const dest = join(localTrash, `${key}-${stamp}${candidate.endsWith(".md") ? ".md" : ""}`);
+      try {
+        await rename(candidate, dest);
+      } catch (error) {
+        if (error && error.code === "EXDEV") {
+          await cp(candidate, dest, { recursive: true });
+          await rm(candidate, { recursive: true, force: true });
+        } else {
+          throw error;
+        }
+      }
       removed.push(candidate);
     }
   }
@@ -263,6 +357,36 @@ export async function searchFromSources({ query = "", source = "all", page = 1, 
     }
   }
   return { items: results, degraded, total: results.length, page, pageSize };
+}
+
+/** Rewrite an installed skill's `name`, `description` and body in place, preserving every
+ *  other frontmatter key exactly as written. */
+export async function updateSkill({ dirs, slug, name, description, body }) {
+  let file = "";
+  for (const dir of dirs || []) {
+    for (const candidate of [join(dir, slug, "SKILL.md"), join(dir, `${slug}.md`)]) {
+      if (existsSync(candidate)) file = candidate;
+    }
+  }
+  if (!file) throw new Error(`未找到技能 ${slug}`);
+  const raw = await readFile(file, "utf8");
+  const fmEnd = raw.indexOf("\n---", 3);
+  const block = fmEnd > 0 ? raw.slice(3, fmEnd) : "";
+  const oldBody = fmEnd > 0 ? raw.slice(fmEnd + 4).replace(/^\r?\n/, "") : raw;
+  const lines = block.split(/\r?\n/).filter((line) => line.trim() !== "");
+  const setKey = (key, value) => {
+    if (value === undefined || value === null || String(value).trim() === "") return;
+    const line = `${key}: ${JSON.stringify(String(value).trim())}`;
+    const index = lines.findIndex((item) => new RegExp(`^${key}\\s*:`).test(item));
+    if (index >= 0) lines[index] = line;
+    else lines.push(line);
+  };
+  setKey("name", name);
+  setKey("description", description);
+  const next = `---\n${lines.join("\n")}\n---\n${body !== undefined ? body : oldBody}`;
+  await writeFile(file, next, "utf8");
+  const meta = skillMetaFromText(next, slug);
+  return { ok: true, slug, path: file, name: meta.name, description: meta.description };
 }
 
 export { readRepoFile };

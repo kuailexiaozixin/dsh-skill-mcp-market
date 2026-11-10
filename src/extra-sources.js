@@ -1,0 +1,158 @@
+// Three more live sources, each following the reference implementation's own endpoint:
+//   clawhub   — clawhub.ai/api/v1  (search + page-level GitHub resolution)
+//   trusttools— ai.trusttools.cn/api/skills/search (POST, item carries repo_url/repo_path)
+//   LobeHub   — chat-agents.lobehub.com/index.json (agent index, installable as a SKILL)
+// modelscope (api/v1/dolphin/skills → 404) and skillsmp (Cloudflare 403) are intentionally
+// absent: their documented endpoints no longer answer.
+const UA = { "User-Agent": "dsh-market/0.4", accept: "application/json" };
+
+async function getJson(url, timeoutMs = 15000) {
+  const response = await fetch(url, { headers: UA, signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+  return response.json();
+}
+
+async function postJson(url, body, timeoutMs = 15000) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { ...UA, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+  return response.json();
+}
+
+// ---------------------------------------------------------------- clawhub
+export async function searchClawHub({ query = "", pageSize = 24 }) {
+  const data = query.trim()
+    ? await getJson(`https://clawhub.ai/api/v1/search?q=${encodeURIComponent(query)}`)
+    : await getJson("https://clawhub.ai/api/v1/skills");
+  const rows = Array.isArray(data.results) ? data.results : Array.isArray(data.items) ? data.items : [];
+  const items = rows.slice(0, pageSize).map((raw) => {
+    const install = raw.install || {};
+    // Listing rows carry ownerHandle/slug instead of install.reference.
+    const reference =
+      String(install.reference || "").trim() ||
+      (raw.ownerHandle && raw.slug ? `${raw.ownerHandle}/${raw.slug}` : "");
+    const [owner, slug] = reference.includes("/") ? reference.split("/") : [];
+    return {
+      id: `clawhub:${raw.id || reference || raw.slug}`,
+      slug: slug || raw.slug || String(raw.displayName || "").toLowerCase(),
+      name: raw.displayName || raw.name || raw.slug || reference,
+      description: raw.summary || raw.description || "",
+      source: "clawhub",
+      sourceLabel: "clawhub",
+      owner: owner || raw.ownerHandle || "",
+      homepage: `https://clawhub.ai${raw.canonicalUrl || `/${reference}`}`,
+      upstreamUrl: "",
+      installRef: reference,
+      downloads: Number(raw.downloads || raw.metrics?.rolling60DayInstalls || 0) || 0,
+      category: raw.category || "",
+      installable: Boolean(reference),
+    };
+  });
+  return { source: "clawhub", items, total: rows.length };
+}
+
+// ---------------------------------------------------------------- trusttools
+export async function searchTrustTools({ query = "", pageSize = 24 }) {
+  const data = await postJson("https://ai.trusttools.cn/api/skills/search", {
+    q: query,
+    page: 1,
+    pageSize,
+  });
+  const rows = Array.isArray(data.data) ? data.data : [];
+  const items = rows.map((raw) => {
+    const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
+    const path = String(raw.repo_path || "").replace(/\/SKILL\.md$/i, "");
+    return {
+      id: `trusttools:${raw.id}`,
+      slug: raw.slug || raw.name,
+      name: raw.name || raw.slug,
+      description: raw.description_zh || raw.description || raw.short_description || "",
+      source: "trusttools",
+      sourceLabel: "TrustTools",
+      owner: repo,
+      homepage: repo ? `https://github.com/${repo}` : "",
+      upstreamUrl: repo,
+      ref: raw.branch || "main",
+      skillDir: path,
+      stars: Number(raw.stars || 0),
+      installs: Number(raw.install_count || raw.download_count || 0),
+      security: raw.security_level || "",
+      tags: Array.isArray(raw.tags) ? raw.tags : [],
+      category: (Array.isArray(raw.tags) && raw.tags[0]) || "",
+      installable: Boolean(repo && path),
+    };
+  });
+  return { source: "trusttools", items, total: rows.length };
+}
+
+// ---------------------------------------------------------------- LobeHub agents (skills)
+export async function searchLobeHubSkills({ query = "", pageSize = 24, cache }) {
+  let agents = await cache.get("lobehub_agents", 6 * 3600 * 1000);
+  if (!agents) {
+    const data = await getJson("https://chat-agents.lobehub.com/index.json", 25000);
+    agents = Array.isArray(data.agents) ? data.agents : [];
+    await cache.put("lobehub_agents", agents);
+  }
+  const q = query.trim().toLowerCase();
+  const items = [];
+  for (const raw of agents) {
+    if (items.length >= pageSize) break;
+    const meta = raw.meta || {};
+    const hay = `${raw.identifier} ${meta.title || ""} ${meta.description || ""} ${(meta.tags || []).join(" ")}`.toLowerCase();
+    if (q && !hay.includes(q)) continue;
+    items.push({
+      id: `lobehub-agent:${raw.identifier}`,
+      slug: raw.identifier,
+      name: meta.title || raw.identifier,
+      description: meta.description || "",
+      source: "lobehub-agent",
+      sourceLabel: "LobeHub 智能体",
+      owner: raw.author || "",
+      homepage: `https://lobehub.com/agent/${raw.identifier}`,
+      upstreamUrl: "",
+      category: (Array.isArray(meta.tags) && String(meta.tags[0] || "")) || "",
+      tags: Array.isArray(meta.tags) ? meta.tags : [],
+      installable: true,
+      note: "安装时会把该智能体的设定写成 SKILL.md",
+    });
+  }
+  return { source: "lobehub-agent", items, total: agents.length };
+}
+
+/** Turn a LobeHub agent document into a SKILL.md bundle. */
+export async function lobehubAgentSkill(identifier) {
+  const doc = await getJson(`https://chat-agents.lobehub.com/${encodeURIComponent(identifier)}.json`, 20000);
+  const meta = doc.meta || {};
+  const name = String(meta.title || doc.identifier || identifier).trim();
+  const description = String(doc.summary || meta.description || "").trim();
+  if (!description) throw new Error("该智能体没有提供描述，无法生成技能");
+  const body = [
+    `# ${name}`,
+    "",
+    `> 来源：LobeHub 智能体 \`${identifier}\``,
+    "",
+    String(doc.config?.systemRole || doc.openingMessage || "").trim(),
+  ].join("\n");
+  const frontmatter = [
+    "---",
+    `name: ${JSON.stringify(identifier)}`,
+    `description: ${JSON.stringify(description)}`,
+    "---",
+    "",
+  ].join("\n");
+  return { name, description, files: { "SKILL.md": frontmatter + body } };
+}
+
+/** Resolve a clawhub reference (`owner/slug`) to its GitHub-backed skill directory. */
+export async function clawhubResolve(reference) {
+  const [owner, slug] = String(reference || "").split("/");
+  if (!owner || !slug) throw new Error("clawhub 引用格式应为 owner/slug");
+  const page = await (await fetch(`https://clawhub.ai/${owner}/skills/${slug}`, { headers: UA, signal: AbortSignal.timeout(20000) })).text();
+  const match = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)(?:\/tree\/[\w.-]+\/([\w./-]+))?/.exec(page);
+  if (!match) throw new Error("clawhub 页面里没有找到 GitHub 源仓库");
+  return { repo: match[1], skillDir: match[2] || "" };
+}
