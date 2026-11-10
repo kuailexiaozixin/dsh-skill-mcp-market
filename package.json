@@ -1,9 +1,23 @@
 {
   "name": "dsh-skill-mcp-market",
   "version": "0.3.0",
-  "private": true,
   "type": "module",
   "description": "SKILL skill market and MCP connector market for DeepSeek Harness: browse live catalogues, install SKILL.md skills and MCP servers, and use them without restarting DSH.",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-bundle",
+    "dsh-plugin",
+    "skill",
+    "skills",
+    "mcp",
+    "mcp-server",
+    "marketplace",
+    "skillsmp",
+    "browse.sh",
+    "clawhub"
+  ],
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -30,5 +44,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kuailexiaozixin/dsh-skill-mcp-market.git"
+  },
+  "homepage": "https://github.com/kuailexiaozixin/dsh-skill-mcp-market#readme",
+  "bugs": {
+    "url": "https://github.com/kuailexiaozixin/dsh-skill-mcp-market/issues"
   }
 }

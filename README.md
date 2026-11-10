@@ -6,6 +6,24 @@ DSH 的**技能市场**与 **MCP 连接器市场**：装完即刻生效，安装
 - 安装位置：`~/.dsh/market/settings.json`（可用 `market_set_paths` 改）
 - 默认技能目录：`~/.dsh/market/skills`；默认 MCP 目录：`~/.dsh/market/mcp`
 
+## 安装
+
+已发布到 npm：**`dsh-skill-mcp-market`**（MIT）。
+
+```bash
+# 1) 装进 profile
+cd ~/.dsh/profiles/desktop          # Windows: C:\Users\<你>\.dsh\profiles\desktop
+npm i dsh-skill-mcp-market
+
+# 2) 在 profile 的 package.json 里把包名加进 dsh.profile.bundles
+#    "bundles": [ ..., "dsh-skill-mcp-market" ]
+```
+
+包自带 `dsh.bundle.patch`，`bundles` 里加上包名即自动插入插件行，无需手写 `cordis.patch.yml`。
+本地开发也可以照旧用 `link:` 指向仓库目录，改动立即生效。
+
+面板入口在左侧菜单「SKILL技能&MCP连接器」。
+
 ## 为什么能"不重启就生效"
 
 DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层。本插件不重造引擎，而是把两个官方插件按需挂载：
