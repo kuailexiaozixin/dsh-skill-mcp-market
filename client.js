@@ -142,6 +142,7 @@ window.__ModuleLoader__.load({
       const [detail, setDetail] = useState(null);
       const [draft, setDraft] = useState({});
       const [source, setSource] = useState('clawhub');
+      const [mcpSource, setMcpSource] = useState('registry');
       const [size, setSize] = useState(24);
       const [sort, setSort] = useState('default');
       const [importPath, setImportPath] = useState('');
@@ -201,7 +202,10 @@ window.__ModuleLoader__.load({
         setBusy('mcp.search');
         setError('');
         try {
-          const d = await call('mcp.search', { query: text });
+          const d = await call('mcp.search', {
+            query: text,
+            source: (options && options.source) || mcpSource,
+          });
           setMcps(d.items || []);
           // The host reports catalogue degradation separately from "no match", so both the
           // reason and the still-usable path (install by registry name) reach the user.
@@ -468,7 +472,10 @@ window.__ModuleLoader__.load({
           h('div', { style: S.desc }, item.description || ''),
           h('div', { style: S.meta },
             h('span', null, item.transport || 'stdio'),
-            item.source ? h('span', null, `· ${item.source}`) : null,
+            h('span', null, `· ${item.sourceLabel || (item.source === 'lobehub' ? 'LobeHub' : 'MCP 官方注册表')}`),
+            item.owner ? h('span', null, `· ${item.owner}`) : null,
+            item.category ? h('span', null, `· ${item.category}`) : null,
+            item.installs ? h('span', null, `· ${Number(item.installs).toLocaleString()} 次安装`) : null,
             (item.envRequired || []).length ? h('span', null, `· 需要 ${item.envRequired.join(', ')}`) : null),
           // "name" is the registry identifier users may need to copy into a manual install.
           h('div', { style: S.meta }, h('span', null, item.slug)),
@@ -563,7 +570,15 @@ window.__ModuleLoader__.load({
                             searchSkills(query, { source: key, size });
                           },
                         }, key === 'all' ? '全部来源' : key))
-                    : h('span', { style: S.status }, '来源：MCP 官方注册表（实时）'),
+                    : ['registry', 'lobehub'].map((key) =>
+                        h('button', {
+                          key,
+                          style: S.chip(mcpSource === key),
+                          onClick: () => {
+                            setMcpSource(key);
+                            searchMcps(query, { source: key });
+                          },
+                        }, key === 'registry' ? 'MCP 官方注册表' : 'LobeHub')),
                   h('div', { style: { flex: 1 } }),
                   h('select', {
                     style: { ...S.input, flex: '0 0 120px', height: 30 },

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+### 新增：两个 MCP 市场（不合并，各占一个来源）
+- 面板 MCP 页签新增来源切换：**「MCP 官方注册表」/「LobeHub」**，与技能页签的 chips 一致，一次只看一个市场。
+- LobeHub 市场走它自己的官方接口 `@lobehub/market-cli`（首次使用自动注册市场客户端，凭证由 CLI 写到
+  `~/.lobehub-market/credentials.json`）；搜索支持关键词、分类、`--sort`，卡片显示作者、分类、安装次数。
+- LobeHub 条目的安装走公开 manifest：`/api/v1/plugins/<identifier>/manifest` 给出真实 `command`/`args`
+  或远程 `url` 以及需要的环境变量，装完照旧探活。
+- `mcp_market_search` 新增 `source: "registry" | "lobehub"` 参数。
+
+### 修正
+- 之前「LobeHub 目录已改付费接口（HTTP 402）/不可用」的结论是错的：那是**匿名**请求的 401，注册市场客户端后即可搜索；
+  相关错误文案与 README 已更正。
+- LobeHub 搜索分页上限是 40（更大的 `--page-size` 会被拒），且 `--sort` 只能和关键词一起用，代码里都已处理。
+
 ## 0.3.2
 
 ### 修复

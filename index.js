@@ -21,7 +21,8 @@ import { installSkill, listInstalledSkills, uninstallSkill, updateSkill } from "
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
 import { fallbackCards, registryDefinitionByName, searchMcpRegistry } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
-import { lobehubMcpConfig, makeCache, searchLobeHubMcp, searchSkills, warmMarketCache } from "./src/sources.js";
+import { makeCache, searchSkills, warmMarketCache } from "./src/sources.js";
+import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -88,7 +89,42 @@ function shortError(error) {
  * only one of them is worth acting on. Installation never depends on this function — a
  * `slug` resolves on its own — so a degraded list never blocks a real install.
  */
-async function loadMcpCatalog(cache, query = "") {
+/**
+ * The LobeHub marketplace, as its own source: it is a separate catalogue with its own
+ * identifiers, categories and install manifests, so the panel switches between the two
+ * markets instead of blending them.
+ */
+async function loadLobeHubCatalog(cache, query = "") {
+  const key = `lobehub:list:${String(query || "").trim().toLowerCase() || "all"}:60`;
+  try {
+    const result = await searchLobeHubMarket({ query, pageSize: 40, sort: query ? "" : "installCount", cache });
+    if (result.items.length > 0) {
+      await cache.put(key, result.items);
+      return { items: result.items, hint: "", live: true, categories: result.categories, source: "lobehub" };
+    }
+    return {
+      items: [],
+      hint: String(query || "").trim()
+        ? `LobeHub 里没有匹配「${String(query).trim()}」的连接器，换个关键词（单个词更好）试试。`
+        : "LobeHub 目录暂时没有返回条目，稍后再试。",
+      live: true,
+      categories: result.categories,
+      source: "lobehub",
+    };
+  } catch (error) {
+    const stale = await cache.get(key, 7 * 24 * 3600 * 1000);
+    if (Array.isArray(stale) && stale.length > 0) {
+      return { items: stale, hint: `LobeHub 暂时不可达（${shortError(error)}），下面是上次取到的列表。`, live: false, categories: [], source: "lobehub" };
+    }
+    const registerHint = lobehubRegistered()
+      ? ""
+      : "（还没有注册市场客户端，可运行 npx -y @lobehub/market-cli register --base-url https://market.lobehub.com --name \"DSH Market\" --source dsh）";
+    return { items: [], hint: `LobeHub 暂时不可达：${shortError(error)}${registerHint}`, live: false, categories: [], source: "lobehub" };
+  }
+}
+
+async function loadMcpCatalog(cache, query = "", source = "registry") {
+  if (source === "lobehub") return loadLobeHubCatalog(cache, query);
   const key = `registry:v2:${String(query || "").trim().toLowerCase() || "all"}:60`;
   const problems = [];
   let answered = false;
@@ -99,20 +135,6 @@ async function loadMcpCatalog(cache, query = "") {
     if (result.items.length > 0) return { items: result.items, hint: "", live: true };
   } catch (error) {
     problems.push(`官方注册表：${shortError(error)}`);
-  }
-
-  try {
-    const result = await searchLobeHubMcp({ query, pageSize: 60, cache });
-    answered = true;
-    if (result.items.length > 0) {
-      return {
-        items: result.items,
-        hint: problems.length > 0 ? `官方注册表暂时不可用（${problems[0]}），下面来自 LobeHub 目录。` : "",
-        live: true,
-      };
-    }
-  } catch (error) {
-    problems.push(`LobeHub：${shortError(error)}`);
   }
 
   // Both catalogues answered and neither had a match: that is an empty search result, not
@@ -151,21 +173,13 @@ function applyEnvValues(envValues) {
 
 /** Resolve one LobeHub slug into a runnable MCP definition by reading its page. */
 async function resolveLobeHubDefinition(slug, serverName) {
-  const config = await lobehubMcpConfig(slug);
-  const name = normalizeServerName(serverName || config.name || slug);
+  // A LobeHub identifier resolves through its public marketplace manifest, which declares the
+  // real command/args (or remote URL) plus the environment variables the server expects.
+  const definition = await lobehubManifestDefinition(slug);
   return {
-    serverName: name,
-    title: slug,
-    description: "",
-    transport: config.url ? "streamable-http" : "stdio",
-    command: config.command || "",
-    args: config.args || [],
-    env: config.env || {},
-    url: config.url || "",
-    headers: config.headers || {},
-    source: "lobehub",
+    ...definition,
+    serverName: normalizeServerName(serverName || definition.title || slug),
     slug,
-    homepage: `https://lobehub.com/mcp/${slug}`,
   };
 }
 
@@ -188,9 +202,9 @@ async function resolveMcpDefinition(slug, serverName) {
   } catch (error) {
     const detail = registryError ? `注册表查询失败：${shortError(registryError)}` : "注册表里没有这个名称";
     throw new Error(
-      `无法解析 MCP 连接器 "${slug}"（${detail}）。LobeHub 目录已改为付费接口（HTTP 402）。` +
-        `请改用 MCP 官方注册表名称，例如 mcp_market_install({slug:"io.github.Async23/chrome-devtools-mcp"})，` +
-        `或直接给 command/args（stdio）或 url（streamable-http）手动安装。原始错误：${shortError(error)}`,
+      `无法解析 MCP 连接器 "${slug}"（${detail}；LobeHub manifest 也失败：${shortError(error)}）。` +
+        `可改用 MCP 官方注册表名称（例如 io.github.Async23/chrome-devtools-mcp）或 LobeHub 标识符（例如 microsoft-playwright-mcp），` +
+        `也可以直接给 command/args（stdio）或 url（streamable-http）手动安装。`,
     );
   }
 }
@@ -500,12 +514,19 @@ export async function apply(ctx, config = {}) {
         query: { type: "string" },
         category: { type: "string" },
         includeInstalled: { type: "boolean", description: "Include installed connectors. Defaults to true." },
+        source: {
+          type: "string",
+          enum: ["registry", "lobehub"],
+          description:
+            "Which MCP market to search: `registry` (official Model Context Protocol registry, default) or `lobehub` (LobeHub marketplace, richer cards with author/install counts).",
+        },
       },
       additionalProperties: false,
     },
     handler: async (args) => {
       const query = String(args.query || "").trim();
-      const catalog = await loadMcpCatalog(marketCache, query);
+      const wanted = String(args.source || "registry") === "lobehub" ? "lobehub" : "registry";
+      const catalog = await loadMcpCatalog(marketCache, query, wanted);
       const rows = catalog.live
         ? catalog.items
         : catalog.items.filter((item) =>
@@ -825,7 +846,8 @@ export async function apply(ctx, config = {}) {
         return mcp.update(body.serverName, body.patch || {});
       case "mcp.search": {
         const query = String(body.query || "").trim();
-        const catalog = await loadMcpCatalog(marketCache, query);
+        const wanted = String(body.source || "registry") === "lobehub" ? "lobehub" : "registry";
+        const catalog = await loadMcpCatalog(marketCache, query, wanted);
         // A live registry search is already filtered server-side; fallback and cached lists
         // are not, so only those get a local filter.
         const rows = catalog.live
@@ -849,6 +871,8 @@ export async function apply(ctx, config = {}) {
             source: item.source || "registry",
           })),
           hint: catalog.hint,
+          categories: catalog.categories || [],
+          source: wanted,
         };
       }
       case "mcp.install": {
