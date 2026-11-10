@@ -17,14 +17,23 @@ DSH 的**技能市场**与 **MCP 连接器市场**：浏览实时技能源、装
 - profile 目录：`~/.dsh/profiles/<profile>`，桌面版一般是 `~/.dsh/profiles/desktop`；
   Windows 下是 `C:\Users\<你>\.dsh\profiles\desktop`。
 
-### 方式一：npm 安装（推荐）
+### 方式一：`dsh` CLI 安装（推荐）
+
+DSH 桌面版自带 CLI，profile 的依赖由它**内置的 pnpm** 管理（profile 目录里有 `pnpm-lock.yaml`、`pnpm-workspace.yaml`，`nodeLinker: hoisted`）：
 
 ```bash
-cd ~/.dsh/profiles/desktop      # Windows: cd C:\Users\<你>\.dsh\profiles\desktop
-npm i dsh-skill-mcp-market
+dsh plugin --profile desktop add dsh-skill-mcp-market
 ```
 
-再把这个包名加进**该 profile** 的 `package.json` 的 `dsh.profile.bundles`：
+它等价于在 `~/.dsh/profiles/desktop` 里跑 `pnpm add`，多做了三件事：用安装目录里那份 pnpm（不依赖你本机的 pnpm）、对 profile 的 `package.json` 加文件锁（避免与正在跑的 DSH 抢写）、检查插件与当前 DSH 版本是否兼容。
+
+`dsh` 不在 PATH 时用绝对路径：
+
+```bat
+"D:\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add dsh-skill-mcp-market
+```
+
+装完依赖还差一步——**让 DSH 加载它**：把包名加进该 profile `package.json` 的 `dsh.profile.bundles`：
 
 ```json
 {
@@ -47,7 +56,7 @@ npm i dsh-skill-mcp-market
 
 改完 `bundles` 需要**重启一次 DSH** 让插件被加载；此后装技能、装 MCP 都不再需要重启。
 
-不想改 `package.json` 的话，也可以在 profile 的 `cordis.patch.yml` 末尾手写：
+不想动 `bundles` 的话，也可以在 profile 的 `cordis.patch.yml` 末尾手写一行：
 
 ```yaml
 - insert:
@@ -59,24 +68,33 @@ npm i dsh-skill-mcp-market
         shippedRoot: ""
 ```
 
-### 方式二：固定版本 / 装进多个 profile
+清掉再装：`dsh plugin --profile desktop remove dsh-skill-mcp-market`（同时从 `bundles` 里删掉包名）。
 
-```bash
-npm i dsh-skill-mcp-market@0.3.0     # 固定版本
-npm view dsh-skill-mcp-market versions   # 看有哪些版本
-```
+### 方式二：应用内安装（plugin_manager / 插件面板）
 
-同一个包可以同时装进多个 profile，各自有独立的 `settings.json`、技能目录和连接器目录。
+- `plugin_manager`：`action: install_bundle`，`target` 填 `dsh-skill-mcp-market` 会「装依赖 + 加进 bundles」；`action: set_bundle` 只切换已安装包的启用状态。
+- 设置 → 插件 里也能看到并启用它。
+- 这条路径会执行包内代码，需要 Full access 或审批。
 
-### 方式三：本地开发（改代码即时生效）
+### 方式三：npm（不推荐）
+
+profile 的 `node_modules` 是 pnpm 管的：`npm i` 会额外写 `package-lock.json`、打乱 `node_modules` 布局，下一次 `pnpm install` 可能把它清掉。只有在没有 `dsh` CLI 的机器上才这样装：
 
 ```bash
 cd ~/.dsh/profiles/desktop
-npm i link:D:/DeepSeek\ Harness\ WorkSpace/dsh-market
-# 等价于手写依赖："dsh-skill-mcp-market": "link:D:/DeepSeek Harness WorkSpace/dsh-market"
+npm i dsh-skill-mcp-market      # 之后仍需把包名加入 dsh.profile.bundles
 ```
 
-`bundles` 里仍写包名 `dsh-skill-mcp-market`。改完源码后，用 `plugin_manager set_plugin` 把 `include:dsh-skill-mcp-market` 关一次再开一次即可重挂（见「开发」）。
+### 方式四：固定版本 / 多 profile / 本地开发
+
+```bash
+dsh plugin --profile desktop add dsh-skill-mcp-market@0.3.0            # 固定版本
+dsh plugin --profile desktop why dsh-skill-mcp-market                  # 看装的哪个版本、谁引入的
+dsh plugin --profile desktop add link:D:/DeepSeek\ Harness\ WorkSpace/dsh-market   # 本地开发
+```
+
+`link:` 情况下 `bundles` 里仍写包名；改完源码用 `plugin_manager set_plugin` 把 `include:dsh-skill-mcp-market` 关一次再开一次即可重挂（见「开发」）。同一个包可以装进多个 profile，各自独立配置。
+
 
 ### 安装后确认
 
@@ -104,9 +122,8 @@ market_set_paths({ skillDirs: ["C:/Users/你/.dsh/skills"], mcpDirs: ["C:/Users/
 ### 升级与卸载
 
 ```bash
-cd ~/.dsh/profiles/desktop
-npm i dsh-skill-mcp-market@latest    # 升级，重启 DSH 生效
-npm remove dsh-skill-mcp-market      # 卸载，并把包名从 dsh.profile.bundles 里删掉
+dsh plugin --profile desktop add dsh-skill-mcp-market@latest   # 升级，重启 DSH 生效
+dsh plugin --profile desktop remove dsh-skill-mcp-market       # 卸载；再把这个包名从 dsh.profile.bundles 里删掉
 ```
 
 卸载插件不会删掉已装好的技能与 MCP 定义（它们在 `~/.dsh/market/` 下，是独立数据）；要清理请用 `skill_market_uninstall` / `mcp_market_uninstall`。
