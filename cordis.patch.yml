@@ -1,0 +1,7 @@
+- insert:
+    - id: dsh-market
+      name: '@local/dsh-market'
+      config:
+        skillDirs: []
+        mcpDirs: []
+        shippedRoot: ''
