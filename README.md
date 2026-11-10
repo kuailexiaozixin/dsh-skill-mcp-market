@@ -1,28 +1,115 @@
 # dsh-skill-mcp-market
 
-DSH 的**技能市场**与 **MCP 连接器市场**：装完即刻生效，安装路径由用户决定，无需重启 DSH。
+DSH 的**技能市场**与 **MCP 连接器市场**：浏览实时技能源、装 SKILL.md 技能、装 MCP 连接器，装完立刻能用，安装路径由你自己定，全程不用重启 DSH。
 
 - 提供的工具：12 个 `market_* / skill_market_* / mcp_market_*`（见下表）
-- 安装位置：`~/.dsh/market/settings.json`（可用 `market_set_paths` 改）
+- 设置文件：`~/.dsh/market/settings.json`（可用 `market_set_paths` 改）
 - 默认技能目录：`~/.dsh/market/skills`；默认 MCP 目录：`~/.dsh/market/mcp`
+- 左侧面板：**「SKILL技能&MCP连接器」**
 
 ## 安装
 
-已发布到 npm：**`dsh-skill-mcp-market`**（MIT）。
+已发布到 npm：**`dsh-skill-mcp-market`**（MIT，公共包，无需登录）。
+
+### 前置条件
+
+- 桌面版 DSH：本插件复用的是 `app.asar` 里官方技能/MCP 插件，纯 Node 环境跑不了。
+- profile 目录：`~/.dsh/profiles/<profile>`，桌面版一般是 `~/.dsh/profiles/desktop`；
+  Windows 下是 `C:\Users\<你>\.dsh\profiles\desktop`。
+
+### 方式一：npm 安装（推荐）
 
 ```bash
-# 1) 装进 profile
-cd ~/.dsh/profiles/desktop          # Windows: C:\Users\<你>\.dsh\profiles\desktop
+cd ~/.dsh/profiles/desktop      # Windows: cd C:\Users\<你>\.dsh\profiles\desktop
 npm i dsh-skill-mcp-market
-
-# 2) 在 profile 的 package.json 里把包名加进 dsh.profile.bundles
-#    "bundles": [ ..., "dsh-skill-mcp-market" ]
 ```
 
-包自带 `dsh.bundle.patch`，`bundles` 里加上包名即自动插入插件行，无需手写 `cordis.patch.yml`。
-本地开发也可以照旧用 `link:` 指向仓库目录，改动立即生效。
+再把这个包名加进**该 profile** 的 `package.json` 的 `dsh.profile.bundles`：
 
-面板入口在左侧菜单「SKILL技能&MCP连接器」。
+```json
+{
+  "dependencies": {
+    "dsh-skill-mcp-market": "^0.3.0"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "dsh-skill-mcp-market"
+      ]
+    }
+  }
+}
+```
+
+包自带 `dsh.bundle.patch`（指向 `cordis.patch.yml`），进了 `bundles` 就会自动插入插件行，**不用手写 `cordis.patch.yml`**。
+
+改完 `bundles` 需要**重启一次 DSH** 让插件被加载；此后装技能、装 MCP 都不再需要重启。
+
+不想改 `package.json` 的话，也可以在 profile 的 `cordis.patch.yml` 末尾手写：
+
+```yaml
+- insert:
+    - id: dsh-skill-mcp-market
+      name: dsh-skill-mcp-market
+      config:
+        skillDirs: []
+        mcpDirs: []
+        shippedRoot: ""
+```
+
+### 方式二：固定版本 / 装进多个 profile
+
+```bash
+npm i dsh-skill-mcp-market@0.3.0     # 固定版本
+npm view dsh-skill-mcp-market versions   # 看有哪些版本
+```
+
+同一个包可以同时装进多个 profile，各自有独立的 `settings.json`、技能目录和连接器目录。
+
+### 方式三：本地开发（改代码即时生效）
+
+```bash
+cd ~/.dsh/profiles/desktop
+npm i link:D:/DeepSeek\ Harness\ WorkSpace/dsh-market
+# 等价于手写依赖："dsh-skill-mcp-market": "link:D:/DeepSeek Harness WorkSpace/dsh-market"
+```
+
+`bundles` 里仍写包名 `dsh-skill-mcp-market`。改完源码后，用 `plugin_manager set_plugin` 把 `include:dsh-skill-mcp-market` 关一次再开一次即可重挂（见「开发」）。
+
+### 安装后确认
+
+1. 左侧菜单出现 **「SKILL技能&MCP连接器」**；
+2. 「技能市场」「MCP 连接器」两个页签都能出卡片，顶部来源筛选可用：`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub`；
+3. 让模型调 `market_get_settings`，应返回两个目录、provider 挂载状态、官方包解析结果、可用来源；
+4. 12 个 `market_*` / `skill_market_*` / `mcp_market_*` 工具都在。
+
+### 首次使用：决定装到哪里
+
+默认装在 `~/.dsh/market/` 下。想换位置（例如并入 DSH 自带技能目录，让别的 profile 也能看到）：
+
+```
+market_set_paths({ skillDirs: ["C:/Users/你/.dsh/skills"], mcpDirs: ["C:/Users/你/.dsh/market/mcp"] })
+```
+
+支持 `~`、`$DSH_HOME`、`%ENV%` 和相对 profile 的路径；改完 provider 与 MCP 立即重挂。
+
+需要密钥的 MCP 用 `${ENV_VAR}` 占位，值放环境变量：
+
+```json
+{ "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" } }
+```
+
+### 升级与卸载
+
+```bash
+cd ~/.dsh/profiles/desktop
+npm i dsh-skill-mcp-market@latest    # 升级，重启 DSH 生效
+npm remove dsh-skill-mcp-market      # 卸载，并把包名从 dsh.profile.bundles 里删掉
+```
+
+卸载插件不会删掉已装好的技能与 MCP 定义（它们在 `~/.dsh/market/` 下，是独立数据）；要清理请用 `skill_market_uninstall` / `mcp_market_uninstall`。
 
 ## 为什么能"不重启就生效"
 
@@ -52,25 +139,38 @@ DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层�
 | `mcp_market_probe` | 等 MCP 发布工具并回报 |
 | `mcp_market_uninstall` | 卸载（定义移入 `.trash/`） |
 
+## 数据源
+
+| 源 | 说明 |
+|---|---|
+| **MCP 官方注册表** | `registry.modelcontextprotocol.io`，免费、实时的 MCP 目录，自带真实启动方式（npm / streamable-http） |
+| `skills.sh` | 技能索引，支持页面 URL 与裸 `owner/repo` |
+| `skillsmp` | 带反爬（Cloudflare），走 python→curl→fetch 三级取数 |
+| `browse.sh` | 启动预热 + 内存缓存，冷启动超时不缓存空结果 |
+| `clawhub` / `trusttools` / `lobehub-agent` / `skillhub` | 其余实时技能源 |
+| `github` | 直接给仓库或 `@ref`；jsDelivr 列树失败时回退 GitHub contents API 与 codeload tarball |
+
 ## 目录结构
 
 ```
 dsh-skill-mcp-market/
 ├─ package.json          # dsh.bundle.patch 指向 cordis.patch.yml
-├─ cordis.patch.yml      # 插入一行 dsh-market 插件
+├─ cordis.patch.yml      # 插入一行 dsh-skill-mcp-market 插件
 ├─ index.js              # 插件入口：挂载 provider + 注册 12 个工具
+├─ client.js             # Web 面板「SKILL技能&MCP连接器」
 ├─ src/
 │  ├─ home.js            # 路径解析与 settings.json 读写
 │  ├─ shipped.js         # 从 app.asar 解析并 import 官方插件包
+│  ├─ http.js            # python→curl→fetch 三级取数（绕 TLS 指纹 / 系统代理）
 │  ├─ frontmatter.js     # SKILL.md frontmatter 解析（无依赖）
-│  ├─ github.js          # jsDelivr 列树 + raw/CDN 取文件（绕开被墙的 GitHub API）
+│  ├─ github.js          # jsDelivr 列树 + raw/CDN 取文件，失败回退 contents API / tarball
+│  ├─ extra-sources.js   # skillsmp 等额外源
+│  ├─ mcp-registry.js    # MCP 官方注册表适配 + 内置兜底条目
 │  ├─ skillhub.js        # SkillHub 公共 API 适配
 │  ├─ skills.js          # 搜索聚合 / 安装 / 列出 / 卸载
+│  ├─ sources.js         # 各源适配与缓存
 │  ├─ mcp.js             # MCP 定义扫描、动态挂载、启停、探活
 │  └─ ...
-├─ catalog/
-│  ├─ skills.json        # 17 条精选技能（从 anthropics/skills 生成）
-│  └─ mcp.json           # 8 条标准 MCP 定义
 ├─ locale/{en,zh}.json   # 插件管理器里的标题与描述
 └─ icon.svg
 ```
@@ -79,11 +179,16 @@ dsh-skill-mcp-market/
 
 - DSH 的 `dsh-mcp-client` 只有 `stdio` 与 `streamable-http`，**没有 SSE**；上游只给 SSE 地址的 MCP 装不上。
 - 技能发现是**一层深**：只认 `<root>/<name>/SKILL.md` 和 `<root>/<name>.md`。
-- 精选 MCP 定义是标准写法，能否真跑由安装时的探活结果决定，不预先保证。
+- MCP 定义是标准写法，能否真跑由安装时的探活结果决定，不预先保证；注册表里标记为必填的环境变量会在安装时提示。
 - 市场不伪造下载量/热度：上游没给就显示 0。
+- LobeHub 页面会间歇返回 `402 payment_required`，所以它只作为次要源；MCP 目录不可达时按「上次缓存 → 内置条目」降级，并在面板上提示可直接按名称安装。
 
 ## 开发
 
-改完代码后，`plugin_manager` 无法原地替换模块。用 `plugin_manager set_plugin` 把 `include:dsh-skill-mcp-market` 关一次再开一次，新代码即生效（本机已验证）。
+改完代码后，`plugin_manager` 无法原地替换模块。用 `plugin_manager set_plugin` 把 `include:dsh-skill-mcp-market` 关一次再开一次，新代码即生效（已在本机验证）。
 
-冒烟脚本在 `../tools/`：`smoke-market.mjs`（技能安装/卸载、MCP 配置映射）、`smoke-demo-mcp.mjs`（MCP 协议自检）。
+冒烟脚本在 `../tools/`：`smoke-market.mjs`（技能安装/卸载、MCP 配置映射）、`smoke-market-fixes.mjs`（注册表搜索、裸 `owner/repo`、skillsmp）、`smoke-sources.mjs`（各源 provider 行为）、`smoke-demo-mcp.mjs`（MCP 协议自检）。
+
+## 许可
+
+MIT
