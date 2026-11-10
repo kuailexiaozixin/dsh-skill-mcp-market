@@ -90,7 +90,7 @@ npm i dsh-skill-mcp-market      # 之后仍需把包名加入 dsh.profile.bundle
 ```bash
 dsh plugin --profile desktop add dsh-skill-mcp-market@0.3.0            # 固定版本
 dsh plugin --profile desktop why dsh-skill-mcp-market                  # 看装的哪个版本、谁引入的
-dsh plugin --profile desktop add link:D:/DeepSeek\ Harness\ WorkSpace/dsh-market   # 本地开发
+dsh plugin --profile desktop add link:/path/to/dsh-market                       # 本地开发（换成你的仓库路径）
 ```
 
 `link:` 情况下 `bundles` 里仍写包名；改完源码用 `plugin_manager set_plugin` 把 `include:dsh-skill-mcp-market` 关一次再开一次即可重挂（见「开发」）。同一个包可以装进多个 profile，各自独立配置。

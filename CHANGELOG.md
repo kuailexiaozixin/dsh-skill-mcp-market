@@ -16,7 +16,7 @@
 - **GitHub 取数增强**：`github.com`/`raw.githubusercontent.com` 在部分网络只能走系统代理，
   Node `fetch` 不读系统代理，故下载改为 fetch → python → curl 递进；jsDelivr 的文件列表
   看不到 `.agents/` 这类目录，补充 GitHub contents API 与仓库归档（tarball）兜底。
-- **新增技能启停配置项** `disabledSkills`：等价于 Hermes 的 `config.yaml skills.disabled`，
+- **新增技能启停配置项** `disabledSkills`：等价于常见的 `config skills.disabled: [...]` 写法，
   由自建 skill provider 读取并过滤，改完立即失效目录缓存。
 - **新增 `${ENV_VAR}` + 系统环境变量**：面板填写的 Key 写入 Windows 用户环境变量，
   配置里只保留占位符。
