@@ -54,11 +54,58 @@ export function makeCache(dir) {
 }
 
 // ------------------------------------------------------------------ skills.sh
+/**
+ * skills.sh has no listing API, but its home page links the skills it is featuring right
+ * now. Scrape those links so an empty search box still shows a real catalogue instead of
+ * a blank market.
+ */
+export async function browseSkillsSh({ pageSize = 24, cache } = {}) {
+  let rows = cache ? await cache.get("skills_sh_home", 30 * 60 * 1000) : null;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    const html = await fetchText("https://www.skills.sh/", 25000);
+    const seen = new Set();
+    rows = [];
+    for (const match of html.matchAll(/\/([A-Za-z0-9_.-]+)\/skills\/([A-Za-z0-9_.-]+)/g)) {
+      const key = `${match[1]}/${match[2]}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ owner: `${match[1]}/skills`, slug: match[2] });
+    }
+    if (rows.length > 0 && cache) await cache.put("skills_sh_home", rows);
+  }
+  const items = rows.slice(0, pageSize).map(({ owner, slug }) => ({
+    id: `skills.sh:${owner}/${slug}`,
+    slug,
+    name: slug,
+    description: "",
+    source: "skills.sh",
+    sourceLabel: "skills.sh",
+    owner,
+    homepage: `https://www.skills.sh/${owner}/${slug}`,
+    upstreamUrl: owner,
+    skillDir: "",
+    installs: 0,
+    installable: true,
+  }));
+  return { source: "skills.sh", items, total: rows.length };
+}
+
 /** skills.sh exposes a real JSON search API (Algolia-backed). */
 export async function searchSkillsSh({ query = "", pageSize = 24, cache }) {
-  // The upstream API rejects queries shorter than 2 characters; browsing with an empty
-  // box is a legitimate state, so return an empty page with a hint instead of failing.
+  // The upstream search API rejects queries shorter than 2 characters. Browsing with an
+  // empty box is a legitimate state, so fall back to the home-page highlights and say so.
   if (query.trim().length < 2) {
+    try {
+      const browse = await browseSkillsSh({ pageSize, cache });
+      if (browse.items.length > 0) {
+        return {
+          ...browse,
+          hint: "未输入关键词：以下是 skills.sh 首页当前推荐的技能，输入至少 2 个字符可精确搜索",
+        };
+      }
+    } catch {
+      // fall through to the plain hint below
+    }
     return { source: "skills.sh", items: [], total: 0, hint: "skills.sh 需要至少 2 个字符的关键词" };
   }
   const url = `https://www.skills.sh/api/search?q=${encodeURIComponent(query)}&limit=${pageSize}`;
@@ -244,10 +291,12 @@ export async function searchSkills({ query, source = "all", pageSize = 24, cache
   const wanted = source === "all" ? ALL_SOURCES : [source];
   const items = [];
   const degraded = [];
+  const hints = [];
   for (const name of wanted) {
     try {
       if (name === "skills.sh") {
         const result = await searchSkillsSh({ query, pageSize, cache });
+        if (result.hint) hints.push(`skills.sh：${result.hint}`);
         items.push(...result.items);
       } else if (name === "clawhub") {
         const result = await searchClawHub({ query, pageSize });
@@ -287,8 +336,10 @@ export async function searchSkills({ query, source = "all", pageSize = 24, cache
       ? []
       : degraded.length
         ? degraded.map((entry) => `${entry.source} 不可达：${entry.error}`.slice(0, 200))
-        : ["所选市场暂时没有取到数据，可能是上游不可达或响应超时，请稍后重试"];
-  return { items, degraded, sourceErrors, total: items.length };
+        : hints.length
+          ? hints
+          : ["所选市场暂时没有取到数据，可能是上游不可达或响应超时，请稍后重试"];
+  return { items, degraded, hints, sourceErrors, total: items.length };
 }
 
 /**

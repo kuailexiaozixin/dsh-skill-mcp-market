@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2
+
+### 修复
+- **skills.sh 空搜索不再空白**：该上游没有列表接口，改为抓取首页推荐的技能卡片（缓存 30 分钟），
+  面板同时提示「未输入关键词，显示首页推荐；输入 ≥2 个字符可精确搜索」。
+- **trusttools 恢复可用**：`ai.trusttools.cn` 会丢弃本进程的 TLS 握手（与 skillsmp 同类），
+  POST 改走 python → curl → fetch 三级通道（`postJsonEscalating`）。
+- 面板空状态优先显示各来源自己的 `hint`，不再一律显示「上游不可达」。
+
 ## 0.3.1
 
 ### 文档与元数据

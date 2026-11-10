@@ -173,10 +173,11 @@ DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层�
 | 源 | 说明 |
 |---|---|
 | **MCP 官方注册表** | `registry.modelcontextprotocol.io`，免费、实时的 MCP 目录，自带真实启动方式（npm / streamable-http） |
-| `skills.sh` | 技能索引，支持页面 URL 与裸 `owner/repo` |
+| `skills.sh` | 技能索引，支持页面 URL 与裸 `owner/repo`；搜索接口要求 ≥2 字符，空搜索回退到首页推荐 |
 | `skillsmp` | 带反爬（Cloudflare），走 python→curl→fetch 三级取数 |
 | `browse.sh` | 启动预热 + 内存缓存，冷启动超时不缓存空结果 |
-| `clawhub` / `trusttools` / `lobehub-agent` / `skillhub` | 其余实时技能源 |
+| `trusttools` | `ai.trusttools.cn/api/skills/search`（POST）；该站会丢弃本进程的 TLS 握手，走 python → curl → fetch 三级通道 |
+| `clawhub` / `lobehub-agent` / `skillhub` | 其余实时技能源 |
 | `github` | 直接给仓库或 `@ref`；jsDelivr 列树失败时回退 GitHub contents API 与 codeload tarball |
 
 ## 目录结构

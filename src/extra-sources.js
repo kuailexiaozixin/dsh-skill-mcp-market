@@ -5,7 +5,7 @@
 //   skillsmp  — skillsmp.com/api/skills (paged search; Cloudflare-fronted, needs the curl
 //               transport because this process's own TLS fingerprint is refused)
 // modelscope (api/v1/dolphin/skills → 404) is intentionally absent: the endpoint is gone.
-import { getJsonEscalating } from "./http.js";
+import { getJsonEscalating, postJsonEscalating } from "./http.js";
 
 const UA = { "User-Agent": "dsh-skill-mcp-market/0.4", accept: "application/json" };
 
@@ -60,11 +60,13 @@ export async function searchClawHub({ query = "", pageSize = 24 }) {
 
 // ---------------------------------------------------------------- trusttools
 export async function searchTrustTools({ query = "", pageSize = 24 }) {
-  const data = await postJson("https://ai.trusttools.cn/api/skills/search", {
-    q: query,
-    page: 1,
-    pageSize,
-  });
+  // ai.trusttools.cn drops this process's TLS handshake (same class of failure as
+  // skillsmp), so the POST goes through python → curl → fetch instead of plain fetch.
+  const data = await postJsonEscalating(
+    "https://ai.trusttools.cn/api/skills/search",
+    { q: query, page: 1, pageSize },
+    { timeoutMs: 25000 },
+  );
   const rows = Array.isArray(data.data) ? data.data : [];
   const items = rows.map((raw) => {
     const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");

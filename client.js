@@ -172,14 +172,19 @@ window.__ModuleLoader__.load({
             pageSize: (options && options.size) || 24,
           });
           setSkills(d.items || []);
+          const hints = (d.hints || []).filter(Boolean);
           if (!(d.items || []).length) {
-            // An empty market is either "no match" or "upstream refused us"; say which.
+            // An empty market is either "no match", "needs a keyword" or "upstream refused us".
             const reasons = (d.sourceErrors || []).length
               ? d.sourceErrors
-              : (d.degraded || []).length
-                ? [`部分来源不可用：${d.degraded.map((x) => x.source).join(', ')}`]
-                : ['没有找到匹配的技能。'];
+              : hints.length
+                ? hints
+                : (d.degraded || []).length
+                  ? [`部分来源不可用：${d.degraded.map((x) => x.source).join(', ')}`]
+                  : ['没有找到匹配的技能。'];
             setNotice(reasons.join('；'));
+          } else if (hints.length) {
+            setNotice(hints.join('；'));
           } else if ((d.degraded || []).length) {
             setNotice(`部分来源不可用：${d.degraded.map((x) => x.source).join(', ')}`);
           } else {

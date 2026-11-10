@@ -107,6 +107,14 @@ const PY_FETCH = [
   "    sys.stdout.write(response.read().decode('utf-8', 'replace'))",
 ].join("\n");
 
+const PY_POST = [
+  "import sys, json, urllib.request",
+  "url, body, headers, timeout = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), float(sys.argv[4])",
+  "request = urllib.request.Request(url, data=body.encode('utf-8'), headers=headers, method='POST')",
+  "with urllib.request.urlopen(request, timeout=timeout) as response:",
+  "    sys.stdout.write(response.read().decode('utf-8', 'replace'))",
+].join("\n");
+
 async function isPython(binary) {
   // A relocatable CPython can be present but unusable (its stdlib may be pinned to the
   // build machine, e.g. "AssertionError: SRE module mismatch"), so the probe imports what
@@ -218,6 +226,87 @@ export async function getJsonEscalating(url, { headers = {}, timeoutMs = 20000 }
     () => pythonJson(url, { headers, timeoutMs }),
     () => curlJson(url, { headers, timeoutMs }),
     () => getJson(url, { headers, timeoutMs }),
+  ];
+  const errors = [];
+  for (const attempt of attempts) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      return await attempt();
+    } catch (error) {
+      errors.push(String((error && error.message) || error).slice(0, 120));
+    }
+  }
+  throw new Error(errors[0] || "所有传输方式都失败");
+}
+
+/** POST a JSON body through curl (some hosts only answer a non-Node TLS client). */
+export async function curlPostText(url, body, { headers = {}, timeoutMs = 15000 } = {}) {
+  const merged = { ...BROWSER_HEADERS, "content-type": "application/json", ...headers };
+  const payload = JSON.stringify(body ?? {});
+  const args = [
+    "-s", "-S", "--compressed",
+    "--max-time", String(Math.max(1, Math.ceil(timeoutMs / 1000))),
+    "-X", "POST",
+    "--data-binary", "@-",
+  ];
+  for (const [name, value] of Object.entries(merged)) args.push("-H", `${name}: ${value}`);
+  args.push(url);
+  return new Promise((resolve, reject) => {
+    const child = execFile("curl.exe", args, { maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs + 5000, windowsHide: true },
+      (error, stdout) => (error ? reject(error) : resolve(String(stdout || ""))));
+    if (child.stdin) {
+      child.stdin.end(payload);
+    }
+  });
+}
+
+/** POST a JSON body through the Python transport. */
+export async function pythonPostText(url, body, { headers = {}, timeoutMs = 20000 } = {}) {
+  const python = await findPython();
+  if (!python) throw new Error("没有可用的 Python 解释器，无法通过该传输取数");
+  return new Promise((resolve, reject) => {
+    execFile(
+      python,
+      ["-c", PY_POST, url, JSON.stringify(body ?? {}), JSON.stringify({ ...BROWSER_HEADERS, "content-type": "application/json", ...headers }), String(timeoutMs / 1000)],
+      {
+        timeout: timeoutMs + 5000,
+        windowsHide: true,
+        maxBuffer: 16 * 1024 * 1024,
+        env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+      },
+      (error, stdout, stderr) => {
+        if (error) reject(new Error(`python POST 失败：${String(stderr || error.message).slice(0, 200)}`));
+        else resolve(String(stdout));
+      },
+    );
+  });
+}
+
+/**
+ * POST escalation for hosts whose edge drops this process's TLS handshake: python → curl →
+ * Node fetch, first JSON response wins.
+ */
+export async function postJsonEscalating(url, body, { headers = {}, timeoutMs = 20000 } = {}) {
+  const parse = (text) => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`上游返回的不是 JSON：${String(text).slice(0, 80).replace(/\s+/g, " ")}`);
+    }
+  };
+  const attempts = [
+    async () => parse(await pythonPostText(url, body, { headers, timeoutMs })),
+    async () => parse(await curlPostText(url, body, { headers, timeoutMs })),
+    async () => {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { ...BROWSER_HEADERS, "content-type": "application/json", ...headers },
+        body: JSON.stringify(body ?? {}),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+      return response.json();
+    },
   ];
   const errors = [];
   for (const attempt of attempts) {
