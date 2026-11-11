@@ -729,45 +729,67 @@ window.__ModuleLoader__.load({
                     h('button', { style: S.btn(), onClick: () => setEnvPrompt(null) }, '取消')))
               : null,
             detail
-              ? h('div', { style: S.card },
-                  h('div', { style: S.title }, `${detail.kind === 'skill' ? '技能' : 'MCP'}：${detail.slug}`),
-                  detail.kind === 'skill'
-                    ? h('div', null,
-                        h('div', { style: S.row },
-                          h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '描述'),
-                          h('input', {
-                            style: S.input,
-                            placeholder: '留空则不修改',
-                            value: draft.description || '',
-                            onChange: (e) => setDraft({ ...draft, description: e.target.value }),
-                          })),
-                        h('textarea', {
-                          style: { ...S.input, height: 200, fontFamily: 'ui-monospace, monospace', fontSize: 12 },
-                          value: draft.body || '',
-                          onChange: (e) => setDraft({ ...draft, body: e.target.value }),
-                        }))
-                    : h('div', null,
-                        h('div', { style: S.row },
-                          h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '命令'),
-                          h('input', { style: S.input, value: draft.command || '', onChange: (e) => setDraft({ ...draft, command: e.target.value }) })),
-                        h('div', { style: S.row },
-                          h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, 'URL'),
-                          h('input', { style: S.input, value: draft.url || '', onChange: (e) => setDraft({ ...draft, url: e.target.value }) })),
-                        h('div', { style: S.row },
-                          h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '参数'),
-                          h('textarea', {
-                            style: { ...S.input, height: 60, fontFamily: 'ui-monospace, monospace', fontSize: 12 },
-                            value: draft.args || '',
-                            onChange: (e) => setDraft({ ...draft, args: e.target.value }),
-                          })),
-                        h('pre', { style: { fontSize: 11, opacity: 0.8, whiteSpace: 'pre-wrap', margin: 0 } },
-                          JSON.stringify({ transport: detail.data.transport, env: detail.data.env, headers: detail.data.headers }, null, 2))),
-                  h('div', { style: S.meta }, h('span', null, detail.data.path || '')),
-                  h('div', { style: S.row },
+              ? h('div', {
+                  style: {
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(15, 23, 42, 0.45)',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    justifyContent: 'center',
+                    padding: '40px 16px',
+                    overflowY: 'auto',
+                    zIndex: 1000,
+                  },
+                },
+                  h('div', {
+                    style: {
+                      width: '100%',
+                      maxWidth: 560,
+                      background: 'var(--dsh-card, #fff)',
+                      borderRadius: 12,
+                      padding: 20,
+                      boxShadow: '0 16px 48px rgba(15, 23, 42, 0.28)',
+                    },
+                  },
+                    h('div', { style: { ...S.title, fontSize: 14 } }, `${detail.kind === 'skill' ? '技能' : 'MCP'}：${detail.slug}`),
                     detail.kind === 'skill'
-                      ? h('button', { style: S.btn('primary'), disabled: busy === 'save:skill', onClick: saveSkillEdit }, '保存')
-                      : h('button', { style: S.btn('primary'), disabled: busy === 'save:mcp', onClick: saveMcpEdit }, '保存并重连'),
-                    h('button', { style: S.btn(), onClick: () => setDetail(null) }, '关闭')))
+                      ? h('div', { style: { marginTop: 12 } },
+                          h('div', { style: S.row },
+                            h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '描述'),
+                            h('input', {
+                              style: S.input,
+                              placeholder: '留空则不修改',
+                              value: draft.description || '',
+                              onChange: (e) => setDraft({ ...draft, description: e.target.value }),
+                            })),
+                          h('textarea', {
+                            style: { ...S.input, height: 200, fontFamily: 'ui-monospace, monospace', fontSize: 12, marginTop: 10 },
+                            value: draft.body || '',
+                            onChange: (e) => setDraft({ ...draft, body: e.target.value }),
+                          }))
+                      : h('div', { style: { marginTop: 12 } },
+                          h('div', { style: S.row },
+                            h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '命令'),
+                            h('input', { style: S.input, value: draft.command || '', onChange: (e) => setDraft({ ...draft, command: e.target.value }) })),
+                          h('div', { style: S.row },
+                            h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, 'URL'),
+                            h('input', { style: S.input, value: draft.url || '', onChange: (e) => setDraft({ ...draft, url: e.target.value }) })),
+                          h('div', { style: S.row },
+                            h('span', { style: { width: 64, fontSize: 12, opacity: 0.7 } }, '参数'),
+                            h('textarea', {
+                              style: { ...S.input, height: 60, fontFamily: 'ui-monospace, monospace', fontSize: 12 },
+                              value: draft.args || '',
+                              onChange: (e) => setDraft({ ...draft, args: e.target.value }),
+                            })),
+                          h('pre', { style: { fontSize: 11, opacity: 0.8, whiteSpace: 'pre-wrap', margin: '10px 0 0', background: 'rgba(15, 23, 42, 0.04)', padding: 8, borderRadius: 6 } },
+                            JSON.stringify({ transport: detail.data.transport, env: detail.data.env, headers: detail.data.headers }, null, 2))),
+                    h('div', { style: { ...S.meta, marginTop: 10 } }, h('span', null, detail.data.path || '')),
+                    h('div', { style: { ...S.row, marginTop: 14, justifyContent: 'flex-end', gap: 8 } },
+                      h('button', { style: S.btn(), onClick: () => setDetail(null) }, '关闭'),
+                      detail.kind === 'skill'
+                        ? h('button', { style: S.btn('primary'), disabled: busy === 'save:skill', onClick: saveSkillEdit }, '保存')
+                        : h('button', { style: S.btn('primary'), disabled: busy === 'save:mcp', onClick: saveMcpEdit }, '保存并重连'))))
               : null,
             preview
               ? h('div', { style: S.card },
