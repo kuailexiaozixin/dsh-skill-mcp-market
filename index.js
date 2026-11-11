@@ -99,7 +99,7 @@ async function loadLobeHubCatalog(cache, query = "", options = {}) {
   const page = Math.max(1, Number(options.page) || 1);
   const key = `lobehub:list:${String(query || "").trim().toLowerCase() || "all"}:${category}:${sort}:${page}`;
   try {
-    const result = await searchLobeHubMarket({ query, pageSize: 40, category, sort, page, cache });
+    const result = await searchLobeHubMarket({ query, pageSize: Math.max(1, Math.min(40, Number(options.size) || 40)), category, sort, page, cache });
     if (result.items.length > 0) {
       await cache.put(key, result.items);
       return {
@@ -169,7 +169,7 @@ async function loadMcpCatalog(cache, query = "", source = "registry", options = 
   let answered = false;
 
   try {
-    const result = await searchMcpRegistryPage({ query, page, pageSize: REGISTRY_PAGE_SIZE, category, cache });
+    const result = await searchMcpRegistryPage({ query, page, pageSize: Math.max(1, Math.min(48, Number(options.size) || REGISTRY_PAGE_SIZE)), category, cache });
     answered = true;
     if (result.items.length > 0) {
       return {
@@ -1002,6 +1002,7 @@ export async function apply(ctx, config = {}) {
           category: body.category,
           sort: body.sort,
           page: body.page,
+          size: body.size,
         });
         // A live registry search is already filtered server-side; fallback and cached lists
         // are not, so only those get a local filter.

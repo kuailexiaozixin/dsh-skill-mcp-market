@@ -1,6 +1,6 @@
 {
   "name": "dsh-skill-mcp-market",
-  "version": "0.5.14",
+  "version": "0.5.15",
   "type": "module",
   "description": "DSH 技能市场与 MCP 连接器市场：浏览实时技能源，一键安装 SKILL.md 技能与 MCP 连接器，装完即刻可用、无需重启。SKILL & MCP marketplace for DeepSeek Harness — browse live sources, install skills and MCP connectors, effective immediately.",
   "license": "MIT",

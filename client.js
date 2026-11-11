@@ -166,6 +166,76 @@ window.__ModuleLoader__.load({
       const [skillsTotal, setSkillsTotal] = useState(0);
       const [skillsHasMore, setSkillsHasMore] = useState(false);
 
+/**
+       * 分页导航：上一页/下一页 + 页码（中间省略号折叠）+ 每页条数选择器。
+       * 页码序列 1…5,7,8,20 → [1,2,3,4,5,'…',7,8,20]：当前页前后各留 2 个、首尾常显、
+       * 间隔大于 1 处折叠成一个「…」（点「…」向后跳 5 页，再点继续 +5，直到接近末页）。
+       * 总页数未知（注册表按 cursor 翻页）时退化为「上一页 / 第 n 页 / 下一页」。
+       */
+      const pageItems = (current, totalPages) => {
+        const n = Math.max(1, Math.trunc(totalPages) || 1);
+        current = Math.min(Math.max(1, Math.trunc(current) || 1), n);
+        if (n <= 9) {
+          const all = [];
+          for (let i = 1; i <= n; i += 1) all.push({ kind: 'num', at: i });
+          return all;
+        }
+        const keep = new Set([1, 2, n - 1, n, current - 1, current, current + 1]);
+        for (let i = Math.max(3, current - 2); i <= Math.min(n - 2, current + 2); i += 1) keep.add(i);
+        const nums = [...keep].filter((p) => p >= 1 && p <= n).sort((a, b) => a - b);
+        const out = [];
+        let prev = 0;
+        for (const p of nums) {
+          if (p - prev > 1) out.push({ kind: 'gap', at: p });
+          out.push({ kind: 'num', at: p });
+          prev = p;
+        }
+        return out;
+      };
+
+      const gotoPage = (p) => {
+        p = Math.max(1, Math.min(p, 1 << 30));
+        if (tab === 'skills') searchSkills(query, { source, size, page: p });
+        else searchMcps(query, { page: p });
+      };
+
+      const pager = (page, totalPages, hasMore, label) => {
+        const unknown = !totalPages; // 注册表按 cursor 走，没有可数的总页数
+        const n = unknown ? 0 : Math.max(1, Math.trunc(totalPages) || 1);
+        const shown = Math.min(page, n || page);
+        const items = pageItems(shown, n || 1);
+        return h('div', { style: { ...S.row, justifyContent: 'space-between', padding: '4px 2px' } },
+          h('div', { style: S.row },
+            h('button', {
+              style: S.btn(),
+              disabled: page <= 1 || busy !== '',
+              onClick: () => gotoPage(page - 1),
+            }, '‹ 上一页'),
+            items.map((it, i) => it.kind === 'gap'
+              ? h('button', {
+                  key: `g${i}`,
+                  style: { ...S.btn(), minWidth: 44, opacity: 0.7 },
+                  title: '向后跳 5 页',
+                  onClick: () => gotoPage(unknown ? page + 5 : Math.min(it.at + 5, n)),
+                }, '…')
+              : h('button', {
+                  key: it.at,
+                  style: S.btn(it.at === page ? 'primary' : undefined),
+                  disabled: busy !== '' || it.at === page,
+                  onClick: () => gotoPage(it.at),
+                }, String(it.at))),
+            h('button', {
+              style: S.btn(),
+              disabled: (unknown ? !hasMore : page >= n) || busy !== '',
+              onClick: () => gotoPage(page + 1),
+            }, '下一页 ›')),
+          h('div', { style: S.row },
+            h('span', { style: S.status },
+              unknown
+                ? `${label} · 第 ${page} 页（${hasMore ? '可继续加载' : '已是最后一页'}）`
+                : `${label} 第 ${page} / ${n} 页`)));
+      };
+
       const loadInstalled = useCallback(async () => {
         const [s, m] = await Promise.all([call('skills.list'), call('mcp.list')]);
         setInstalled(s.items || []);
@@ -912,39 +982,27 @@ window.__ModuleLoader__.load({
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,
-            // Paging belongs under the list: reaching the last row should be the last step,
-            // not a scroll back to the toolbar.
-            tab === 'skills' || tab === 'mcp'
-              ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: '16px 0 6px' } },
-                  h('button', {
-                    style: S.btn(),
-                    disabled: (tab === 'skills' && !skillsHasMore) ||
-                      (tab === 'mcp' && !mcpHasMore) ||
-                      busy === 'skills.search' || busy === 'mcp.search',
-                    title: tab === 'skills' && skillsTotal
-                      ? `已显示 ${skills.length} / 约 ${skillsTotal} 个技能`
-                      : (tab === 'mcp' && mcpTotal > mcps.length ? `已显示 ${mcps.length} / 共 ${mcpTotal} 个连接器` : ''),
-                    onClick: () => {
-                      if (tab === 'mcp') {
-                        if (!mcpHasMore) return;
-                        const next = mcpPage + 1;
-                        // 页码只在这里推进；服务端翻页成功后会用响应里的 page 覆盖
-                        searchMcps(query, { page: next, append: true });
-                        return;
-                      }
-                      if (!skillsHasMore) return;
-                      // 真正的翻页：请求下一页再追加，而不是把 pageSize 撑大重查
-                      searchSkills(query, { source, page: skillsPage + 1, append: true });
-                    },
-                  }, tab === 'mcp'
-                    ? (!mcpHasMore
-                        ? `已到最后一页（第 ${mcpPage} 页）`
-                        : (mcpTotalPages > mcpPage
-                            ? `加载更多（${mcpPage}/${mcpTotalPages}）`
-                            : `加载更多（第 ${mcpPage} 页）`))
-                    : (skillsHasMore
-                        ? `加载更多（${skillsPage}/${skillsTotalPages}）`
-                        : `已到最后一页（${skillsPage}/${skillsTotalPages}）`)))
+            // 分页导航：上一页/下一页 + 页码（省略号折叠）+ 每页条数选择器，两个 Tab 统一。
+            (tab === 'skills' || tab === 'mcp')
+              ? h('div', { style: S.row },
+                  h('div', { style: S.row },
+                    h('select', {
+                      style: { ...S.input, flex: '0 0 96px', height: 28 },
+                      value: String(size),
+                      onChange: (e) => {
+                        const nextSize = Number(e.target.value) || 24;
+                        setSize(nextSize);
+                        if (tab === 'skills') searchSkills(query, { source, size: nextSize, page: 1 });
+                        else searchMcps(query, { page: 1, size: nextSize });
+                      },
+                    }, [12, 24, 48].map((n) =>
+                      h('option', { key: n, value: String(n) }, `每页 ${n}`))),
+                  h('div', { style: S.row },
+                    pager(
+                      tab === 'skills' ? skillsPage : mcpPage,
+                      tab === 'skills' ? skillsTotalPages : mcpTotalPages,
+                      tab === 'skills' ? skillsHasMore : mcpHasMore,
+                      tab === 'skills' ? '共约' : (mcpSource === 'lobehub' ? '共约' : '')))))
               : null,
             tab === 'installed' ? h('div', null,
               h('div', { style: S.row },
