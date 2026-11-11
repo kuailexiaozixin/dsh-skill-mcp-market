@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+### 修复：插件无法卸载（“其他配置仍在使用的组合包的组件，请先停用它们”）
+- 根因不在插件本身，而是**同一个插件被挂载了两次**：包名在 `dsh.profile.bundles` 里，同时又有一份手写在
+  profile `cordis.patch.yml` 的 `insert`。插件管理器卸载时会先停用组合包，随后仍发现同 `id` + 同 `name` 的插件行在运行，
+  于是以 `bundle-in-use` 拒绝卸载。
+- 插件启动时新增**重复挂载检测**：命中时在日志里告警，并直接给出修法（删掉 profile 里手写的 `insert`，只保留 `bundles` 里的包名）。
+- README 补充说明：`bundles` 与手写 `insert` **只能二选一**；「卸载」小节新增这个报错的处理步骤。
+- `market_get_settings` 的 MCP 来源说明更新为两个市场（官方注册表 / LobeHub）。
+
 ## 0.5.0
 
 ### 新增：MCP 市场的分类 / 排序 / 分页

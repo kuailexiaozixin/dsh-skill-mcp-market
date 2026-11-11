@@ -78,16 +78,14 @@ function shortError(error) {
 }
 
 /**
- * The MCP catalogue, in four levels of degradation:
- *   1. the official registry (free, anonymous, carries the real launch recipe),
- *   2. LobeHub's live index (richer descriptions, but its edge intermittently answers
- *      402 "Automated access to LobeHub marketplace pages requires an API plan"),
- *   3. the last catalogue that actually worked (cached on disk),
- *   4. a tiny built-in list of verified names.
- * Levels 2-4 attach a `hint` that names the degradation, because an empty list is
- * unreadable on its own: "nothing matched" and "the catalogue is down" look identical, and
- * only one of them is worth acting on. Installation never depends on this function — a
- * `slug` resolves on its own — so a degraded list never blocks a real install.
+ * The MCP catalogue. The panel switches between two independent markets:
+ *   - "registry": the official Model Context Protocol registry, degrading to the last
+ *     catalogue that worked (cached on disk) and then to a tiny built-in list of names;
+ *   - "lobehub": LobeHub's marketplace through its own CLI, degrading to its cached list.
+ * Every degraded level attaches a `hint`, because an empty list is unreadable on its own:
+ * "nothing matched" and "the catalogue is down" look identical, and only one of them is
+ * worth acting on. Installation never depends on this function — a `slug` resolves on its
+ * own — so a degraded list never blocks a real install.
  */
 /**
  * The LobeHub marketplace, as its own source: it is a separate catalogue with its own
@@ -241,8 +239,36 @@ function manualMcpDefinition(body) {
   };
 }
 
+/** Row id of this plugin's own entry in the composed profile. */
+const MARKET_ROW_ID = "dsh-skill-mcp-market";
+
+/**
+ * A second mount of this plugin — typically a hand-written `insert` in the profile's
+ * cordis.patch.yml on top of the package being listed in `dsh.profile.bundles` — makes the
+ * plugin impossible to uninstall: the plugin manager disables the bundle, still finds a row
+ * with the same id and name mounted, and answers "bundle-in-use". Report it instead of
+ * letting the user discover it from a failed uninstall.
+ */
+function warnAboutDuplicateMount(ctx, log) {
+  try {
+    const loader = ctx.loader && typeof ctx.loader.entries === "function" ? ctx.loader : null;
+    if (!loader) return;
+    const rows = [...loader.entries()].filter((entry) => entry && entry.options && entry.options.id === MARKET_ROW_ID);
+    if (rows.length > 1) {
+      log(
+        "warn",
+        `[dsh-market] 检测到 ${rows.length} 条 id 为 ${MARKET_ROW_ID} 的插件行：一条来自本组合包，另一条大概率写在你 profile 的 cordis.patch.yml 里。` +
+          '这会让「卸载」报「其他配置仍在使用的组合包的组件，请先停用它们」。只保留 dsh.profile.bundles 里的包名，删掉 profile 里手写的 insert 即可恢复正常。',
+      );
+    }
+  } catch {
+    // Loader introspection is best-effort; a failure here must never block the plugin.
+  }
+}
+
 export async function apply(ctx, config = {}) {
   const log = makeLogger(ctx);
+  warnAboutDuplicateMount(ctx, log);
   let settings = await loadSettings();
 
   // Row config only provides initial defaults; persisted settings win afterwards.
@@ -388,7 +414,7 @@ export async function apply(ctx, config = {}) {
       },
       sources: {
         skills: ["skills.sh（实时目录 2 万条）", "skillhub（社区实时 API）", "github owner/repo", "url", "local"],
-        mcp: ["LobeHub（实时目录 + 详情页解析真实配置）", "manual config", "Claude/Cursor mcpServers JSON import"],
+        mcp: ["MCP 官方注册表（实时）", "LobeHub 市场（官方 market-cli，卡片带作者/分类/安装量）", "manual config", "Claude/Cursor mcpServers JSON import"],
       },
     }),
   });

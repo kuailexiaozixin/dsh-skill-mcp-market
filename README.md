@@ -68,7 +68,10 @@ dsh plugin --profile desktop add dsh-skill-mcp-market
 
 改完 `bundles` 需要**重启一次 DSH** 让插件被加载；此后装技能、装 MCP 都不再需要重启。
 
-不想动 `bundles` 的话，也可以在 profile 的 `cordis.patch.yml` 末尾手写一行：
+> ⚠️ **两种启用方式只能选一种，不要同时用。** `dsh.profile.bundles` 里已经有包名时，**不要**再往 `cordis.patch.yml` 手写 `insert`：
+> 那样同一个插件行会被挂载两次，插件管理器会在卸载时判定「其他配置仍在使用这个组合包的组件」而拒绝卸载（它先停用组合包，却仍发现同 id 的行在运行）。
+>
+> 只有**不想把包名放进 `bundles`**（例如只想临时试一下）时，才用下面的手写写法：
 
 ```yaml
 - insert:
@@ -79,6 +82,8 @@ dsh plugin --profile desktop add dsh-skill-mcp-market
         mcpDirs: []
         shippedRoot: ""
 ```
+
+用了手写 insert 的话，卸载前先把它删掉（并确认 `dsh.profile.bundles` 里没有同名包），否则会看到上面的报错。
 
 清掉再装：`dsh plugin --profile desktop remove dsh-skill-mcp-market`（同时从 `bundles` 里删掉包名）。
 
@@ -139,6 +144,15 @@ dsh plugin --profile desktop remove dsh-skill-mcp-market       # 卸载；再把
 ```
 
 卸载插件不会删掉已装好的技能与 MCP 定义（它们在 `~/.dsh/market/` 下，是独立数据）；要清理请用 `skill_market_uninstall` / `mcp_market_uninstall`。
+
+**卸载报「其他配置仍在使用的组合包的组件，请先停用它们」** 表示插件被挂载了两次，按下面顺序修：
+
+1. 看 profile 的 `cordis.patch.yml` 里有没有手写的 `- insert: - id: dsh-skill-mcp-market`；有就删掉这一段；
+2. 确认 `dsh.profile.bundles` 里有包名 `dsh-skill-mcp-market`（这是唯一应该保留的启用方式）；
+3. 重启/等热重载后，插件详情页会只剩一条插件行，卸载即可正常完成。
+
+插件在启动时会检查这种重复挂载并在日志里告警，命中时日志形如
+`[dsh-market] 检测到 2 条 id 为 dsh-skill-mcp-market 的插件行 …`。
 
 ## 为什么能"不重启就生效"
 
