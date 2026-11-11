@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.13
+
+### 修掉 `skill_market_search` 工具直接报错（面板没暴露的真实缺陷）
+
+- **`fallbackCache is not defined`**：0.5.10 重写分页时删掉了 `src/sources.js` 里的进程级兜底缓存，
+  但 `searchSkills()` / `warmMarketCache()` 的默认参数还在引用它。面板走的是宿主传入的缓存，所以看不出来；
+  只有不带 `cache` 调用时才炸——也就是 agent 直接用 `skill_market_search` 工具的路径。
+- **skills.sh 浏览不再只看到 48 条**：`browseSkillsSh` 之前只会「读」缓存里的全量目录，从不自己「抓」；
+  没预热过缓存（工具路径、刚重启）时永远只显示首页推荐。现在最多等 6 秒抓 sitemap 目录（约 2 万条），
+  超时才回退首页推荐并给提示，同时把抓取留在后台继续，下次打开就是全量。
+- 新增 `test/test-nocache.mjs`：不带 cache 参数逐一验证 8 个源 page1/page2 都有数据且零重叠，
+  再验证 `all` 聚合与 `warmMarketCache()`——这类「默认参数引用了已删除变量」的缺陷以后会被测试挡住。
+
 ## 0.5.12
 
 ### 面板侧补齐注册表分页（0.5.11 只修了宿主侧）

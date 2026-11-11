@@ -145,12 +145,35 @@ async function skillsShHighlights(cache) {
   return rows;
 }
 
+// 全量目录冷启动约 6 秒（索引 + 两个 10000 行的 shard）。首屏最多等这么久，
+// 超时就先给首页推荐并让抓取在后台继续，否则打开技能市场会像卡死一样。
+const CATALOG_WAIT_MS = 6000;
+
+async function loadSkillsShCatalog(cache) {
+  const cached = cache ? await cache.get(SKILLS_SH_CATALOG_KEY, SKILLS_SH_CATALOG_TTL) : undefined;
+  if (Array.isArray(cached) && cached.length > 0) return cached;
+  const fetching = skillsShCatalog(cache);
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), CATALOG_WAIT_MS);
+  });
+  try {
+    const winner = await Promise.race([fetching.catch(() => null), timeout]);
+    if (Array.isArray(winner) && winner.length > 0) return winner;
+  } finally {
+    clearTimeout(timer);
+  }
+  // 让后台把目录抓完写进缓存，下次打开（或下一次翻页）就是全量了。
+  void fetching.catch(() => {});
+  return null;
+}
+
 export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cache } = {}) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
-  let catalog = cache ? await cache.get(SKILLS_SH_CATALOG_KEY, SKILLS_SH_CATALOG_TTL) : undefined;
+  let catalog = await loadSkillsShCatalog(cache);
   let hint;
-  if (!Array.isArray(catalog) || catalog.length === 0) {
+  if (!catalog) {
     catalog = await skillsShHighlights(cache);
     hint = "skills.sh 全量目录（约 2 万条）正在后台载入，首次约需 1 分钟；现在先显示首页推荐，稍后再点「加载更多」即可翻到更多";
   }
@@ -358,6 +381,9 @@ export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cach
   const items = pageSlice(matched, p, size);
   return { source: "browse.sh", items, total: matched.length, hasMore: p * size < matched.length };
 }
+
+// 没带 cache 时（例如 agent 直接调 skill_market_search 工具）退回进程级临时目录缓存。
+const fallbackCache = makeCache(join(process.env.TEMP || process.env.TMPDIR || ".", "dsh-market-cache"));
 
 export const ALL_SOURCES = [
   "skills.sh",
