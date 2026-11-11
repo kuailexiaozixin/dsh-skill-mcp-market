@@ -77,6 +77,22 @@ function fillMissingDescriptions(items) {
 }
 
 /** 本地分页切片：上游没有 page 参数的源都靠它实现真正的翻页。 */
+// 补描述是「锦上添花」：上游每个技能要一次网络往返，整屏补完可能十几秒。
+// 给一个总预算，超时就先把卡片发出去（描述留空/通用文案），绝不让面板等着转圈。
+const DESCRIPTION_BUDGET_MS = 9000;
+
+async function withDeadline(promise, ms) {
+  let timer;
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function pageSlice(rows, page, pageSize) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Number(pageSize) || 24);
@@ -147,7 +163,7 @@ async function skillsShHighlights(cache) {
 
 // 全量目录冷启动约 6 秒（索引 + 两个 10000 行的 shard）。首屏最多等这么久，
 // 超时就先给首页推荐并让抓取在后台继续，否则打开技能市场会像卡死一样。
-const CATALOG_WAIT_MS = 6000;
+const CATALOG_WAIT_MS = 12000;
 
 async function loadSkillsShCatalog(cache) {
   const cached = cache ? await cache.get(SKILLS_SH_CATALOG_KEY, SKILLS_SH_CATALOG_TTL) : undefined;
@@ -182,12 +198,26 @@ export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cach
     ? catalog.filter((row) => `${row.owner}/${row.slug}`.toLowerCase().includes(needle))
     : catalog;
   const items = pageSlice(matched, p, size).map(skillsShCard);
-  try {
-    // 首页/sitemap 都不带描述，按可见的这一屏补（上限 10 条，避免 24 条逐个读太慢）。
-    await enrichSkillsShFast(items, cache, 10);
-  } catch {
-    // descriptions are best-effort: a failed read never blocks the list
-  }
+  // 首页/sitemap 都不带描述：先读 SKILL.md 头，落空的再读 skills.sh 详情页的 meta。
+  // 整段有总时间预算，超时就先发卡片（描述退回通用文案），面板不会为此转圈。
+  await withDeadline(
+    (async () => {
+      try {
+        // 详情页 meta 一次请求就有准确简介（concurrency 8，24 条约 3 秒）。
+        await enrichPageDescriptions(items, cache, 8);
+      } catch {
+        // 详情页读不到就退回通用文案
+      }
+      try {
+        // 少数详情页也没有 meta 时，再读仓库里的 SKILL.md 头（顺带补出 skillDir）。
+        const missing = items.filter((item) => !item.description);
+        if (missing.length > 0) await enrichSkillsShFast(missing, cache, 8);
+      } catch {
+        // descriptions are best-effort: a failed read never blocks the list
+      }
+    })(),
+    DESCRIPTION_BUDGET_MS,
+  );
   fillMissingDescriptions(items);
   return { source: "skills.sh", items, total: matched.length, hasMore: p * size < matched.length, hint };
 }
@@ -223,12 +253,18 @@ export async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cach
       installable: true,
     };
   });
-  try {
-    // The search API has no description field; the skill page's own meta text does.
-    await enrichSkillsShFast(items, cache, 10);
-  } catch {
-    // descriptions are best-effort
-  }
+  await withDeadline(
+    (async () => {
+      try {
+        // The search API has no description field; the skill page's own meta text does.
+        await enrichSkillsShFast(items, cache, 10);
+        await enrichPageDescriptions(items.filter((item) => !item.description).slice(0, 10), cache, 6);
+      } catch {
+        // descriptions are best-effort
+      }
+    })(),
+    DESCRIPTION_BUDGET_MS,
+  );
   fillMissingDescriptions(items);
   const hasMore = rows.length >= depth;
   const total = hasMore ? Math.max(Number(data.count) || 0, depth + 1) : (p - 1) * size + rows.length;

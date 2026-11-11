@@ -39,10 +39,14 @@ export async function mapLimit(items, limit, worker) {
   return out;
 }
 
-const ENTITIES = { "&quot;": '"', "&amp;": "&", "&lt;": "<", "&gt;": ">", "&#39;": "'", "&nbsp;": " " };
+const ENTITIES = { "&quot;": '"', "&amp;": "&", "&lt;": "<", "&gt;": ">", "&#39;": "'", "&nbsp;": " ", "&#x27;": "'" };
 
 function decodeEntities(text) {
-  return String(text).replace(/&(quot|amp|lt|gt|#39|nbsp);/g, (match) => ENTITIES[match] ?? match);
+  return String(text)
+    .replace(/&(quot|amp|lt|gt|#39|#x27|nbsp);/g, (match) => ENTITIES[match] ?? match)
+    .replace(/&#(x?)([0-9a-fA-F]+);/g, (_match, hex, digits) =>
+      String.fromCodePoint(hex ? Number.parseInt(digits, 16) : Number.parseInt(digits, 10)),
+    );
 }
 
 /** File index of a GitHub repository (cached 24h), used to locate `<skill>/SKILL.md`. */
@@ -62,6 +66,21 @@ async function repoFileIndex(repo, ref, cache) {
   walk(data.files, "");
   await cache.put(key, files);
   return new Set(files);
+}
+
+/**
+ * Some SKILL.md frontmatters carry junk descriptions ("&gt;" and friends). Only accept text
+ * that a human would recognise as a sentence.
+ */
+function usableDescription(value) {
+  const text = String(value ?? "")
+    .replace(/^[\s>#*\-–—]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length < 12) return "";
+  if (!/[\p{L}\p{N}]/u.test(text)) return "";
+  if (/^[\p{P}\p{S}\s]+$/u.test(text)) return "";
+  return text;
 }
 
 function locateSkillFile(index, skill) {
@@ -110,7 +129,8 @@ export async function enrichSkillsSh(items, cache) {
         await cache.put(cacheKey, text);
       }
       const { data } = parseFrontmatter(text);
-      if (data.description) item.description = String(data.description).trim();
+      const description = usableDescription(data.description);
+      if (description) item.description = description;
       if (data.name) item.name = String(data.name).trim();
       item.skillDir = path === "SKILL.md" ? "" : path.slice(0, -"/SKILL.md".length);
       item.describedBy = "SKILL.md";
@@ -177,8 +197,9 @@ export async function enrichSkillsShFast(items, cache, limit = 10) {
           }
         }
         const { data } = parseFrontmatter(text);
-        if (data.description) {
-          item.description = String(data.description).trim();
+        const description = usableDescription(data.description);
+        if (description) {
+          item.description = description;
           if (data.name) item.name = String(data.name).trim();
           item.skillDir = path === "SKILL.md" ? "" : path.slice(0, -"/SKILL.md".length);
           const meta = data.metadata && typeof data.metadata === "object" ? data.metadata : {};
@@ -212,8 +233,12 @@ export async function enrichPageDescriptions(items, cache, concurrency = 6) {
         /<meta[^>]+property="og:description"[^>]+content="([^"]{10,400})"/i.exec(text) ||
         /<meta[^>]+name="description"[^>]+content="([^"]{10,400})"/i.exec(text);
       if (meta) {
-        const description = decodeEntities(meta[1]).replace(/\s+/g, " ").trim();
-        if (description) {
+        const description = decodeEntities(meta[1])
+          .replace(/^[\s>#*\-–—]+/, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        // 有些页面的 meta 只是正文开头的 markdown 符号（实测出现过 ">"），丢掉这种残渣。
+        if (description.length >= 12 && /[\p{L}\p{N}]/u.test(description)) {
           item.description = description;
           item.describedBy = "page-meta";
         }
