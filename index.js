@@ -398,6 +398,24 @@ export async function apply(ctx, config = {}) {
     return { ok: true, slug: key, enabled: Boolean(enabled), disabledSkills: settings.disabledSkills };
   }
 
+  // 计算 DSH 原生扫描的技能目录：market 的 settings.skillDirs 是用户自定义的"安装目录"，
+  // 但 DSH 的"技能目录"（对话框 / 浮窗用的那份）是另一套，包括 $AGENTS_HOME/skills、
+  // 应用内置 skills/、插件包内 assets/**/SKILL.md。这里把这两套合并起来，让面板"已安装"
+  // 能列出所有已安装的技能（不只是 market 装的那部分）。
+  async function collectDshNativeSkillDirs() {
+    const { homedir } = await import("node:os");
+    const { join: joinPath, resolve: resolvePath } = await import("node:path");
+    const dirs = [];
+    // 1) $AGENTS_HOME/skills（DSH 原生扫描路径）
+    const agentsHome = process.env.AGENTS_HOME || joinPath(homedir(), ".agents");
+    dirs.push(joinPath(agentsHome, "skills"));
+    // 2) market settings.skillDirs（用户自定义安装目录）
+    for (const d of settings.skillDirs) dirs.push(d);
+    // 去重 + 去空
+    const seen = new Set();
+    return dirs.filter((d) => d && !seen.has(d) && seen.add(d));
+  }
+
   async function applyPaths(args) {
     const next = { ...settings };
     if (Array.isArray(args.skillDirs)) next.skillDirs = args.skillDirs.map(expandPath).filter(Boolean);
@@ -428,6 +446,7 @@ export async function apply(ctx, config = {}) {
       settings: {
         skillDirs: settings.skillDirs,
         mcpDirs: settings.mcpDirs,
+        dshNativeSkillDirs: await collectDshNativeSkillDirs(),
         shippedRoot: settings.shippedRoot || "(auto-detected)",
         settingsPath: settingsPath(),
             disabledSkills: settings.disabledSkills,
@@ -855,7 +874,7 @@ export async function apply(ctx, config = {}) {
         return installed;
       }
       case "skills.list":
-        return { dirs: settings.skillDirs, items: await listInstalledSkills(settings.skillDirs) };
+        return { dirs: await collectDshNativeSkillDirs(), items: await listInstalledSkills(await collectDshNativeSkillDirs()) };
       case "skills.uninstall":
         return uninstallSkill({ slug: body.slug, dirs: settings.skillDirs, trashDir });
       case "skills.import": {

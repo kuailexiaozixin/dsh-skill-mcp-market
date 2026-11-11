@@ -154,6 +154,8 @@ window.__ModuleLoader__.load({
       const [importPath, setImportPath] = useState('');
       const [category, setCategory] = useState('all');
       const [preview, setPreview] = useState(null);
+      const [installedFilter, setInstalledFilter] = useState('');
+      const [nativeDirs, setNativeDirs] = useState([]);
 
       const loadInstalled = useCallback(async () => {
         const [s, m] = await Promise.all([call('skills.list'), call('mcp.list')]);
@@ -167,6 +169,7 @@ window.__ModuleLoader__.load({
         setSettings(d);
         setSkillDraft((d.settings.skillDirs || []).join('\n'));
         setMcpDraft((d.settings.mcpDirs || []).join('\n'));
+        setNativeDirs(d.settings.dshNativeSkillDirs || []);
       }, []);
 
       const searchSkills = useCallback(async (text, options) => {
@@ -556,7 +559,14 @@ window.__ModuleLoader__.load({
       };
       const categoryLabel = (code) => CATEGORY_LABELS[code] || code;
       const disabledSet = new Set(((settings && settings.settings && settings.settings.disabledSkills) || []).map((x) => String(x).toLowerCase()));
-      const installedSkills = installed.map((item) => {
+      const filterText = installedFilter.trim().toLowerCase();
+      const filteredInstalled = filterText
+        ? installed.filter((i) => (i.name || i.slug || '').toLowerCase().includes(filterText) || (i.description || '').toLowerCase().includes(filterText))
+        : installed;
+      const filteredMounted = filterText
+        ? mounted.filter((i) => (i.title || i.serverName || '').toLowerCase().includes(filterText) || (i.description || '').toLowerCase().includes(filterText))
+        : mounted;
+      const installedSkills = filteredInstalled.map((item) => {
         const off = disabledSet.has(String(item.slug).toLowerCase());
         return h('div', { key: `i-${item.dir}-${item.slug}`, style: S.card },
           h('div', { style: S.title }, `${item.name || item.slug}${off ? '（已停用）' : ''}`),
@@ -571,7 +581,7 @@ window.__ModuleLoader__.load({
             h('button', { style: S.btn(), disabled: busy === `remove:${item.slug}`, onClick: () => removeSkill(item.slug) }, '卸载')));
       });
 
-      const installedMcps = mounted.map((item) =>
+      const installedMcps = filteredMounted.map((item) =>
         h('div', { key: `m-${item.serverName}`, style: S.card },
           h('div', { style: S.title }, item.title || item.serverName),
           h('div', { style: S.meta },
@@ -849,8 +859,21 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, '导入')),
+              filterText
+                ? h('div', { style: S.row },
+                    h('input', {
+                      style: { ...S.input, flex: 1 },
+                      placeholder: '搜索已安装的技能 / MCP（名称、描述）',
+                      value: installedFilter,
+                      onChange: (e) => setInstalledFilter(e.target.value),
+                    }),
+                    h('button', { style: S.btn(), onClick: () => setInstalledFilter('') }, '清除'))
+                : null,
               h('div', { style: { ...S.title, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 } },
-                `已装技能（${installed.length}）`,
+                `已装技能（${filteredInstalled.length}）`,
+                nativeDirs.length > 0
+                  ? h('span', { style: { fontSize: 11, opacity: 0.6 } }, `含 DSH 内置 ${nativeDirs.length} 个目录`)
+                  : null,
                 h('button', {
                   style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
                   disabled: busy === 'openDir:skills',
@@ -870,7 +893,7 @@ window.__ModuleLoader__.load({
                 h('span', { style: { ...S.status, fontSize: 12 } }, `（可在资源管理器中直接查看 / 编辑技能文件）`)),
               installedSkills,
               h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8 } },
-                `已装 MCP（${mounted.length}）`,
+                `已装 MCP（${filteredMounted.length}）`,
                 h('button', {
                   style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
                   disabled: busy === 'openDir:mcp',

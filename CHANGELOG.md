@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.6
+
+### 已安装标签：搜索 + DSH 内置技能
+- 「已安装」标签顶部加一个**搜索框**，可按关键词过滤已安装的技能 / MCP（名称、描述）；清空后恢复完整列表。
+- 「已安装」标签现在同时列出 **DSH 内置技能**（`$AGENTS_HOME/skills/`）+ market 安装的技能（`settings.skillDirs`）；
+  MCP 仍只列出 market 安装的。区块标题旁会显示「含 DSH 内置 N 个目录」。
+- `skills.list` RPC 改用 `collectDshNativeSkillDirs()` 合并两套目录；`market_get_settings` 也返回
+  `dshNativeSkillDirs` 供客户端展示。
+- 插件代码无其他变化。
+
 ## 0.5.5
 
 ### 安装技能后立即出现在对话框 / 浮窗里
