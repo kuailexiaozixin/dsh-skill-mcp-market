@@ -6,7 +6,7 @@ DSH 的**技能市场**与 **MCP 连接器市场**：浏览实时技能源、装
 - 设置文件：`~/.dsh/market/settings.json`（可用 `market_set_paths` 改）
 - 默认技能目录：`~/.dsh/market/skills`；默认 MCP 目录：`~/.dsh/market/mcp`
 - 左侧面板：**「SKILL技能&MCP连接器」**
-- 「加载更多」按钮在**当前列表最后一行的正下方居中**；MCP（LobeHub 市场）显示 `加载更多（n/m）`，最后一行变成 `已到最后一页（n/m）`；SKILL 市场按钮文案保持 `加载更多`。不再需要滚回顶部点按钮。
+- 「加载更多」按钮在**当前列表最后一行的正下方居中**，SKILL 与 MCP 都显示 `加载更多（n/m）`，到底后变成 `已到最后一页（n/m）`。按钮是**真翻页**：每个源都有自己的分页（服务端 `page`，或一次性取全量目录后本地切片），8 个技能源合计约 90 万条可翻。
 - 「已安装」标签两个区块（已装技能 / 已装 MCP）标题旁各加一个「打开目录」按钮
 - 安装技能后**立即出现在对话框 `/` 浮窗里**（junction 注册到 `$AGENTS_HOME/skills/`）。
 - skills.sh 卡片描述很简单的原因：上游目录/搜索 API **不携带描述字段**（只返回 `id/source/skillId/name/installs`），
@@ -27,7 +27,7 @@ DSH 的**技能市场**与 **MCP 连接器市场**：浏览实时技能源、装
 
 ### 技能市场
 
-顶部按来源切换（`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub`），卡片上直接「预览 / 安装」：
+顶部按来源切换（`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub` / `modelscope`），卡片上直接「预览 / 安装」：
 
 ![技能市场：来源筛选与卡片](docs/screenshots/panel-skills.png)
 
@@ -161,7 +161,7 @@ node -e "console.log(require('C:/Users/<你>/.dsh/profiles/desktop/node_modules/
 ### 安装后确认
 
 1. 左侧菜单出现 **「SKILL技能&MCP连接器」**；
-2. 「技能市场」「MCP 连接器」两个页签都能出卡片，顶部来源筛选可用：`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub`；
+2. 「技能市场」「MCP 连接器」两个页签都能出卡片，顶部来源筛选可用：`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub` / `modelscope`；列表底部「加载更多」能翻到新条目；
 3. 让模型调 `market_get_settings`，应返回两个目录、provider 挂载状态、官方包解析结果、可用来源；
 4. 12 个 `market_*` / `skill_market_*` / `mcp_market_*` 工具都在。
 
@@ -216,7 +216,7 @@ DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层�
 |---|---|
 | `market_get_settings` | 看两个目录、provider 挂载状态、官方包解析结果、可用来源 |
 | `market_set_paths` | 改技能/MCP 目录（支持 `~`、`$DSH_HOME`、`%ENV%`），即时重挂 provider 与 MCP |
-| `skill_market_search` | 搜技能（全部实时源）：`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub`，`all` 聚合 |
+| `skill_market_search` | 搜技能（全部实时源）：`skills.sh` / `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub` / `modelscope`，`all` 聚合；支持 `page` 翻页 |
 | `skill_market_install` | 装技能：`github`（可带 `@ref`）/ `skills.sh`（页面 URL 或裸 `owner/repo`）/ `clawhub` / `skillsmp` / `trusttools` / `browse.sh` / `lobehub-agent` / `skillhub` / `url` / `local` / `zip` |
 | `skill_market_list` | 列已装技能（含 `SKILL.md` 路径） |
 | `skill_market_uninstall` | 卸载（移到 `market/trash/`） |
@@ -238,6 +238,12 @@ DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层�
 | `browse.sh` | 启动预热 + 内存缓存，冷启动超时不缓存空结果 |
 | `trusttools` | `ai.trusttools.cn/api/skills/search`（POST）；该站会丢弃本进程的 TLS 握手，走 python → curl → fetch 三级通道 |
 | `clawhub` / `lobehub-agent` / `skillhub` | 其余实时技能源 |
+| `modelscope` | `modelscope.cn/api/v1/dolphin/skills`（PUT，`PageNumber/PageSize`，约 8.8 万条） |
+
+**翻页**：每个源都实现了真正的 `page`——有服务端分页的直接传页（`skillsmp` / `trusttools` /
+`skillhub` / `modelscope`），没有的把整份目录抓一次缓存下来再本地切片（`skills.sh` 走
+`sitemap-skills-*.xml` 约 2 万条、`clawhub` 顺 `nextCursor` 累积、`browse.sh` 约 480 条、
+`lobehub-agent` 约 505 个）。所以第 2 页起拿到的一定是新条目。
 | `github` | 直接给仓库或 `@ref`；jsDelivr 列树失败时回退 GitHub contents API 与 codeload tarball |
 
 ## 目录结构

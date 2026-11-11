@@ -22,7 +22,7 @@ import { installSkill, listInstalledSkills, uninstallSkill, updateSkill } from "
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
 import { fallbackCards, registryDefinitionByName, searchMcpRegistry } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
-import { makeCache, searchSkills, warmMarketCache, LOAD_MORE_CAPABLE } from "./src/sources.js";
+import { makeCache, searchSkills, warmMarketCache } from "./src/sources.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
 
@@ -483,12 +483,26 @@ export async function apply(ctx, config = {}) {
   defineTool(ctx, {
     name: "skill_market_search",
     description:
-      "Search the SKILL skill market. Sources: `curated` (a verified catalog of real skills), `skillhub` (community marketplace), or `all`. Returns installable entries with the identifier each installer needs.",
+      "Search the SKILL market across its live sources (skills.sh / clawhub / skillsmp / trusttools / browse.sh / lobehub-agent / skillhub / modelscope) or `all`. Returns installable entries with the identifier each installer needs. Paging is real: pass page=2 to get the next, different batch.",
     parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "Free-text query. Empty lists popular entries." },
-        source: { type: "string", enum: ["all", "curated", "skillhub（社区实时 API）"], description: "Defaults to all." },
+        source: {
+          type: "string",
+          enum: [
+            "all",
+            "skills.sh",
+            "clawhub",
+            "skillsmp",
+            "trusttools",
+            "browse.sh",
+            "lobehub-agent",
+            "skillhub",
+            "modelscope",
+          ],
+          description: "Defaults to all.",
+        },
         category: { type: "string" },
         page: { type: "integer", minimum: 1 },
         pageSize: { type: "integer", minimum: 1, maximum: 50 },
@@ -857,8 +871,9 @@ export async function apply(ctx, config = {}) {
         });
         const installedNow = await listInstalledSkills(settings.skillDirs);
         const taken = new Set(installedNow.map((item) => item.slug));
-        // 只有 skillhub 的「加载更多」能取到新一批；其余源是单页/无分页，点了也不会变。
-        const canLoadMore = wantedSource === "all" || LOAD_MORE_CAPABLE.has(wantedSource);
+        // 每个源都实现了真正的翻页（服务端 page，或缓存全量目录后本地切片），
+        // 所以「加载更多」是否可用完全由这一页返回的 hasMore 决定。
+        const canLoadMore = Boolean(result.hasMore);
         return {
           ...result,
           canLoadMore,

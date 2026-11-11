@@ -1,13 +1,15 @@
 // Four more live sources, each following the reference implementation's own endpoint:
-//   clawhub   — clawhub.ai/api/v1  (search + page-level GitHub resolution)
+//   clawhub   — clawhub.ai/api/v1  (browse honours limit; search answers 10 rows per page)
 //   trusttools— ai.trusttools.cn/api/skills/search (POST, item carries repo_url/repo_path)
 //   LobeHub   — chat-agents.lobehub.com/index.json (agent index, installable as a SKILL)
 //   skillsmp  — skillsmp.com/api/skills (paged search; Cloudflare-fronted, needs the curl
 //               transport because this process's own TLS fingerprint is refused)
-// modelscope (api/v1/dolphin/skills → 404) is intentionally absent: the endpoint is gone.
+//   modelscope— modelscope.cn/api/v1/dolphin/skills (PUT, PageNumber/PageSize + TotalCount)
+// Every source here answers a real `page`: either the upstream pages, or a whole catalogue
+// is fetched once and sliced locally. That is what makes「加载更多」actually extend the list.
 import { getJsonEscalating, postJsonEscalating } from "./http.js";
 
-const UA = { "User-Agent": "dsh-skill-mcp-market/0.4", accept: "application/json" };
+const UA = { "User-Agent": "dsh-skill-mcp-market/0.9", accept: "application/json" };
 
 async function getJson(url, timeoutMs = 15000) {
   const response = await fetch(url, { headers: UA, signal: AbortSignal.timeout(timeoutMs) });
@@ -26,50 +28,27 @@ async function postJson(url, body, timeoutMs = 15000) {
   return response.json();
 }
 
+/** Local page slice for sources whose upstream hands over a whole catalogue at once. */
+function slice(rows, page, pageSize) {
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Number(pageSize) || 24);
+  const all = Array.isArray(rows) ? rows : [];
+  return { rows: all.slice((p - 1) * size, p * size), start: (p - 1) * size, size, all };
+}
+
 // ---------------------------------------------------------------- clawhub
 // clawhub 的 fetch 在本机偶发瞬时中断（fetch failed），做一次网络重试，
 // 避免把一次抖动当成「不可达」误导用户。
 async function getJsonClawHub(url, attempt = 0) {
   try {
-    return await getJson(url);
+    // clawhub 的前端 CDN 对 Node 的 TLS/连接指纹时好时坏，所以走 fetch→curl→python 逐级降级。
+    return await getJsonEscalating(url, { headers: UA, timeoutMs: 25000 });
   } catch (error) {
     if (attempt < 1 && /fetch failed|ETIMEDOUT|ECONNRESET|socket|network|timeout/i.test(String((error && error.message) || error))) {
       return getJsonClawHub(url, attempt + 1);
     }
     throw error;
   }
-}
-
-export async function searchClawHub({ query = "", pageSize = 24 }) {
-  const wanted = Math.max(1, Math.min(50, Number(pageSize) || 24));
-  const q = String(query || "").trim();
-  let data;
-  if (q) {
-    // search 端点固定回 10 条（limit 参数无效），多取 2 页本地过滤拼接
-    const [first, second] = await Promise.all([
-      getJsonClawHub(`https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}&limit=10`).catch(() => null),
-      getJsonClawHub(`https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}&page=2&limit=10`).catch(() => null),
-    ]);
-    if (!first) throw new Error("clawhub 搜索不可达（网络中断，已重试一次）");
-    const rows0 = Array.isArray(first?.results) ? first.results : Array.isArray(first?.items) ? first.items : [];
-    const rows1 = second ? (Array.isArray(second?.results) ? second.results : Array.isArray(second?.items) ? second.items : []) : [];
-    const seen = new Set();
-    const merged = [];
-    for (const raw of [...rows0, ...rows1]) {
-      const key = String(raw.id ?? raw.slug ?? raw.displayName ?? "");
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      merged.push(raw);
-    }
-    return mapClawHubRows(merged, q, "search");
-  }
-  // 浏览：首页列表支持 limit（实测 limit=50 有效），一次取够「加载更多」所需
-  data = await getJsonClawHub(`https://clawhub.ai/api/v1/skills?limit=${wanted}`);
-  const rows = Array.isArray(data.items) ? data.items : Array.isArray(data.results) ? data.results : [];
-  const out = mapClawHubRows(rows, q, "browse", wanted);
-  // 区分「上游可达但没有数据」与「不可达」：可达但空就给明确提示，免得误报 fetch failed
-  if (!rows.length) out.hint = "clawhub 当前没有返回条目（可达，但列表为空）";
-  return out;
 }
 
 function mapClawHubRows(rows, q, mode, limitOverride) {
@@ -101,23 +80,100 @@ function mapClawHubRows(rows, q, mode, limitOverride) {
   return { source: "clawhub", items, total: items.length };
 }
 
-// ---------------------------------------------------------------- trusttools
-export async function searchTrustTools({ query = "", pageSize = 24, cache } = {}) {
-  // trusttools ignores `pageSize` and always answers with 10 rows per page, so a full grid
-  // needs several pages stitched together (pages are disjoint, verified).
-  const wanted = Math.max(1, Math.min(60, Number(pageSize) || 24));
-  const pagesNeeded = Math.min(6, Math.ceil(wanted / 10));
+const CLAWHUB_CATALOG_KEY = "clawhub_catalog_v1";
+const CLAWHUB_CATALOG_TTL = 6 * 3600 * 1000;
+
+// 浏览端点每屏 50 条并带 nextCursor（JSON 字符串），顺着它累积成本地目录再按页切片：
+// 这样第 2 页、第 20 页拿到的都是真正的新条目，而不是上游的第一屏。
+async function extendClawHubCatalog(cache, need) {
+  let state = cache ? await cache.get(CLAWHUB_CATALOG_KEY, CLAWHUB_CATALOG_TTL) : undefined;
+  if (!state || !Array.isArray(state.rows)) state = { rows: [], cursor: null, done: false };
+  const seen = new Set(state.rows.map((raw) => String(raw.id ?? raw.slug ?? "")));
+  let guard = 0;
+  while (!state.done && state.rows.length < need && guard < 10) {
+    guard += 1;
+    const cursor = state.cursor ? `&cursor=${encodeURIComponent(state.cursor)}` : "";
+    const data = await getJsonClawHub(`https://clawhub.ai/api/v1/skills?limit=50${cursor}`);
+    const rows = Array.isArray(data.items) ? data.items : Array.isArray(data.results) ? data.results : [];
+    for (const raw of rows) {
+      const key = String(raw.id ?? raw.slug ?? "");
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      state.rows.push(raw);
+    }
+    const next = data.nextCursor || null;
+    if (rows.length === 0 || !next || next === state.cursor) state.done = true;
+    else state.cursor = next;
+  }
+  if (cache) await cache.put(CLAWHUB_CATALOG_KEY, state);
+  return state;
+}
+
+export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache }) {
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
+  const q = String(query || "").trim();
+  if (q) {
+    // search 端点固定回 10 条/页，顺着 page 取到当前页并拼接上首页，避免翻页拿空。
+    const wanted = Math.min(60, size * p);
+    const pages = [];
+    const perPage = 10;
+    for (let i = 1; i <= Math.min(6, Math.ceil(wanted / perPage)); i += 1) {
+      pages.push(`https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}&page=${i}&limit=${perPage}`);
+    }
+    const settled = await Promise.allSettled(pages.map((url) => getJsonClawHub(url)));
+    if (settled.every((item) => item.status === "rejected")) {
+      throw new Error("clawhub 搜索不可达（网络中断，已重试一次）");
+    }
+    const seen = new Set();
+    const merged = [];
+    for (const item of settled) {
+      if (item.status !== "fulfilled") continue;
+      const rows = Array.isArray(item.value?.results) ? item.value.results : Array.isArray(item.value?.items) ? item.value.items : [];
+      for (const raw of rows) {
+        const key = String(raw.id ?? raw.slug ?? raw.displayName ?? "");
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        merged.push(raw);
+      }
+    }
+    const slicedRows = merged.slice((p - 1) * size, p * size);
+    const out = mapClawHubRows(slicedRows, q, "search", slicedRows.length);
+    out.total = merged.length >= wanted ? wanted + 1 : merged.length;
+    out.hasMore = merged.length >= wanted;
+    return out;
+  }
+  // 浏览：顺着 nextCursor 把目录累积到需要的深度，再本地切出这一页。
+  const need = Math.min(600, size * p);
+  const state = await extendClawHubCatalog(cache, need);
+  const rows = state.rows;
+  const matched = rows.slice((p - 1) * size, p * size);
+  const out = mapClawHubRows(matched, q, "browse", matched.length);
+  if (!rows.length) out.hint = "clawhub 当前没有返回条目（可达，但列表为空）";
+  out.hasMore = p * size < rows.length || (!state.done && rows.length >= p * size);
+  out.total = state.done ? rows.length : Math.max(rows.length, p * size) + 1;
+  return out;
+}
+
+export async function searchTrustTools({ query = "", page = 1, pageSize = 24, cache } = {}) {
+  // trusttools ignores `pageSize` and always answers with 10 rows per page, so a page of 24
+  // needs three upstream pages stitched together (pages are disjoint, verified).
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Math.min(60, Number(pageSize) || 24));
   const perPage = 10;
+  const perBatch = Math.ceil(size / perPage);
+  const first = (p - 1) * perBatch + 1;
   const rows = [];
   const seen = new Set();
   let total = 0;
-  for (let page = 1; page <= pagesNeeded; page += 1) {
-    const key = `trusttools:${String(query).trim().toLowerCase()}:${page}`;
+  for (let index = 0; index < perBatch; index += 1) {
+    const upstreamPage = first + index;
+    const key = `trusttools:${String(query).trim().toLowerCase()}:${upstreamPage}`;
     let data = cache ? await cache.get(key, 10 * 60 * 1000) : undefined;
     if (!data) {
       data = await postJsonEscalating(
         "https://ai.trusttools.cn/api/skills/search",
-        { q: query, page, pageSize: perPage },
+        { q: query, page: upstreamPage, pageSize: perPage },
         { timeoutMs: 25000 },
       );
       if (cache) await cache.put(key, data);
@@ -134,7 +190,7 @@ export async function searchTrustTools({ query = "", pageSize = 24, cache } = {}
     }
     if (batch.length === 0 || added === 0) break; // catalogue exhausted or the page repeats
   }
-  const items = rows.slice(0, wanted).map((raw) => {
+  const items = rows.slice(0, size).map((raw) => {
     const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
     const path = String(raw.repo_path || "").replace(/\/SKILL\.md$/i, "");
     return {
@@ -157,11 +213,17 @@ export async function searchTrustTools({ query = "", pageSize = 24, cache } = {}
       installable: Boolean(repo && path),
     };
   });
-  return { source: "trusttools", items, total: total || items.length };
+  const known = total || 0;
+  return {
+    source: "trusttools",
+    items,
+    total: known,
+    hasMore: known ? p * size < known : items.length >= size,
+  };
 }
 
 // ---------------------------------------------------------------- LobeHub agents (skills)
-export async function searchLobeHubSkills({ query = "", pageSize = 24, cache }) {
+export async function searchLobeHubSkills({ query = "", page = 1, pageSize = 24, cache }) {
   let agents = await cache.get("lobehub_agents", 6 * 3600 * 1000);
   if (!agents) {
     const data = await getJson("https://chat-agents.lobehub.com/index.json", 25000);
@@ -169,13 +231,17 @@ export async function searchLobeHubSkills({ query = "", pageSize = 24, cache }) 
     await cache.put("lobehub_agents", agents);
   }
   const q = query.trim().toLowerCase();
-  const items = [];
+  const matched = [];
   for (const raw of agents) {
-    if (items.length >= pageSize) break;
     const meta = raw.meta || {};
     const hay = `${raw.identifier} ${meta.title || ""} ${meta.description || ""} ${(meta.tags || []).join(" ")}`.toLowerCase();
     if (q && !hay.includes(q)) continue;
-    items.push({
+    matched.push(raw);
+  }
+  const { rows } = slice(matched, page, pageSize);
+  const items = rows.map((raw) => {
+    const meta = raw.meta || {};
+    return {
       id: `lobehub-agent:${raw.identifier}`,
       slug: raw.identifier,
       name: meta.title || raw.identifier,
@@ -189,9 +255,9 @@ export async function searchLobeHubSkills({ query = "", pageSize = 24, cache }) 
       tags: Array.isArray(meta.tags) ? meta.tags : [],
       installable: true,
       note: "安装时会把该智能体的设定写成 SKILL.md",
-    });
-  }
-  return { source: "lobehub-agent", items, total: agents.length };
+    };
+  });
+  return { source: "lobehub-agent", items, total: matched.length, hasMore: (Number(page) || 1) * pageSize < matched.length };
 }
 
 /** Turn a LobeHub agent document into a SKILL.md bundle. */
@@ -236,20 +302,20 @@ function skillsmpTarget(raw) {
   return { repo, branch, skillDir };
 }
 
-export async function searchSkillsMp({ query = "", pageSize = 24, cache }) {
+export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cache }) {
   const q = String(query || "").trim();
-  const key = `skillsmp:${q || "all"}:${pageSize}`;
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
+  const key = `skillsmp:${q || "all"}:${p}:${size}`;
   const cached = cache ? await cache.get(key, SKILLSMP_TTL) : undefined;
-  if (Array.isArray(cached) && cached.length) {
-    return { source: "skillsmp", items: cached, total: cached.length };
-  }
-  const params = new URLSearchParams({ q, page: "1", limit: String(Math.max(pageSize, 10)) });
+  if (cached && Array.isArray(cached.items) && cached.items.length) return { ...cached, source: "skillsmp" };
+  const params = new URLSearchParams({ q, page: String(p), limit: String(Math.max(size, 10)) });
   const data = await getJsonEscalating(`https://skillsmp.com/api/skills?${params.toString()}`, {
     headers: { referer: "https://skillsmp.com/" },
     timeoutMs: 20000,
   });
   const rows = Array.isArray(data.skills) ? data.skills : [];
-  const items = rows.slice(0, pageSize).map((raw) => {
+  const items = rows.slice(0, size).map((raw) => {
     const { repo, branch, skillDir } = skillsmpTarget(raw);
     return {
       id: `skillsmp:${raw.id || raw.name}`,
@@ -271,10 +337,64 @@ export async function searchSkillsMp({ query = "", pageSize = 24, cache }) {
       installable: Boolean(repo),
     };
   });
+  const total = Number(data.pagination && data.pagination.total) || p * size + (rows.length >= size ? 1 : 0);
+  const payload = { source: "skillsmp", items, total, hasMore: p * size < total };
   // An empty page is never cached: one upstream hiccup must not blank the market for ten
   // minutes, and the next request should retry immediately.
-  if (cache && items.length) await cache.put(key, items);
-  return { source: "skillsmp", items, total: Number(data.pagination && data.pagination.total) || items.length };
+  if (cache && items.length) await cache.put(key, payload);
+  return payload;
+}
+
+// ---------------------------------------------------------------- ModelScope
+// PUT https://modelscope.cn/api/v1/dolphin/skills {PageNumber,PageSize,Query?} → Data.SkillList,
+// Data.TotalCount（实测 88k+ 条、页与页不重复）。技能正文挂在 SourceURL 的 GitHub 地址上。
+const MODELSCOPE_SKILLS_URL = "https://modelscope.cn/api/v1/dolphin/skills";
+
+export async function searchModelScope({ query = "", page = 1, pageSize = 24 } = {}) {
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
+  const body = { PageNumber: p, PageSize: size };
+  const q = String(query || "").trim();
+  if (q) body.Query = q;
+  const response = await fetch(MODELSCOPE_SKILLS_URL, {
+    method: "PUT",
+    headers: { ...UA, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(25000),
+  });
+  if (!response.ok) throw new Error(`ModelScope HTTP ${response.status}`);
+  const payload = await response.json();
+  const data = payload.Data || {};
+  const rows = Array.isArray(data.SkillList) ? data.SkillList : [];
+  const total = Number(data.TotalCount) || 0;
+  const items = rows.filter((raw) => raw && raw.Name).map((raw) => {
+    const owner = raw.Path || raw.Owner || "";
+    const name = raw.Name || "";
+    const ident = owner ? `${owner}/${name}` : name;
+    const source = String(raw.SourceURL || "");
+    const gh = /^https?:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/]+)\/(?:blob|tree)\/([^/]+)\/(.+)$/i.exec(source);
+    const repo = gh ? `${gh[1]}/${gh[2]}` : "";
+    const branch = gh ? gh[3] : "main";
+    const skillDir = gh ? gh[4].replace(/\/?SKILL\.md$/i, "") : "";
+    return {
+      id: `modelscope:${ident}`,
+      slug: name,
+      name: raw.DisplayName || name,
+      description: raw.Description || raw.DescriptionEn || "",
+      category: raw.L1 && typeof raw.L1 === "object" ? raw.L1.ChineseName || "" : "",
+      source: "modelscope",
+      sourceLabel: "ModelScope",
+      owner,
+      homepage: source || `https://modelscope.cn/skills/${ident}`,
+      upstreamUrl: repo ? `${repo}@${branch}` : "",
+      ref: branch,
+      skillDir,
+      downloads: Number(raw.DownloadCount || 0),
+      tags: Array.isArray(raw.Tags) ? raw.Tags : [],
+      installable: Boolean(repo),
+    };
+  });
+  return { source: "modelscope", items, total: total || p * size + (rows.length >= size ? 1 : 0), hasMore: total ? p * size < total : rows.length >= size };
 }
 
 /** Resolve a clawhub reference (`owner/slug`) to its GitHub-backed skill directory. */

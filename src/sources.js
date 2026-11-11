@@ -5,7 +5,13 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { enrichPageDescriptions, enrichSkillsShFast } from "./enrich.js";
-import { searchClawHub, searchLobeHubSkills, searchSkillsMp, searchTrustTools } from "./extra-sources.js";
+import {
+  searchClawHub,
+  searchLobeHubSkills,
+  searchModelScope,
+  searchSkillsMp,
+  searchTrustTools,
+} from "./extra-sources.js";
 
 const UA = { "User-Agent": "dsh-skill-mcp-market/0.3 (+skill and mcp market)", accept: "application/json" };
 
@@ -54,26 +60,33 @@ export function makeCache(dir) {
 }
 
 // ------------------------------------------------------------------ skills.sh
-/**
- * skills.sh has no listing API, but its home page links the skills it is featuring right
- * now. Scrape those links so an empty search box still shows a real catalogue instead of
- * a blank market.
- */
-export async function browseSkillsSh({ pageSize = 24, cache } = {}) {
-  let rows = cache ? await cache.get("skills_sh_home", 30 * 60 * 1000) : null;
-  if (!Array.isArray(rows) || rows.length === 0) {
-    const html = await fetchText("https://www.skills.sh/", 25000);
-    const seen = new Set();
-    rows = [];
-    for (const match of html.matchAll(/\/([A-Za-z0-9_.-]+)\/skills\/([A-Za-z0-9_.-]+)/g)) {
-      const key = `${match[1]}/${match[2]}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      rows.push({ owner: `${match[1]}/skills`, slug: match[2] });
-    }
-    if (rows.length > 0 && cache) await cache.put("skills_sh_home", rows);
+// 首页只挂了约 48 条精选；真正的目录在 sitemap（sitemap-skills-1/-2.xml，合计约 2 万条）。
+// 把整份目录缓存一天、再本地切片，「加载更多」才可能翻到第 49 条之后的技能。
+const SKILLS_SH_SITEMAP = "https://www.skills.sh/sitemap.xml";
+const SKILLS_SH_CATALOG_KEY = "skills_sh_catalog_v2";
+const SKILLS_SH_CATALOG_TTL = 24 * 3600 * 1000;
+const SKILLS_SH_URL_RE = /^https?:\/\/(?:www\.)?skills\.sh\/([^/]+)\/([^/]+)\/([^/]+)\/?$/i;
+
+/** skills.sh 的列表接口没有简介字段：读不到 SKILL.md 时给一句诚实的兜底，卡片才不会空着。 */
+function fillMissingDescriptions(items) {
+  for (const item of items || []) {
+    if (item.description) continue;
+    const where = item.owner ? `${item.owner} ` : "";
+    item.description = `${where}收录于 skills.sh 的技能；上游未提供简介，安装后会读取它的 SKILL.md`;
   }
-  const items = rows.slice(0, pageSize).map(({ owner, slug }) => ({
+}
+
+/** 本地分页切片：上游没有 page 参数的源都靠它实现真正的翻页。 */
+function pageSlice(rows, page, pageSize) {
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Number(pageSize) || 24);
+  return (Array.isArray(rows) ? rows : []).slice((p - 1) * size, p * size);
+}
+
+function skillsShCard(row) {
+  const owner = row.owner;
+  const slug = row.slug;
+  return {
     id: `skills.sh:${owner}/${slug}`,
     slug,
     name: slug,
@@ -86,38 +99,90 @@ export async function browseSkillsSh({ pageSize = 24, cache } = {}) {
     skillDir: "",
     installs: 0,
     installable: true,
-  }));
-  // 首页推荐不带描述（sitemap 只有 URL）。补前 10 条的描述，带上限避免 24 条逐个读太慢。
+  };
+}
+
+/** 走 sitemap 取全量目录（首次约 1 分钟，之后一天内直接读缓存）。 */
+export async function skillsShCatalog(cache) {
+  const cached = cache ? await cache.get(SKILLS_SH_CATALOG_KEY, SKILLS_SH_CATALOG_TTL) : undefined;
+  if (Array.isArray(cached) && cached.length > 0) return cached;
+  const index = await fetchText(SKILLS_SH_SITEMAP, 30000);
+  const shards = [...index.matchAll(/<loc>([^<]+)<\/loc>/g)]
+    .map((m) => m[1])
+    .filter((url) => /sitemap-skills-\d+\.xml$/i.test(url));
+  const settled = await Promise.allSettled(shards.map((shard) => fetchText(shard, 180000)));
+  const out = [];
+  const seen = new Set();
+  for (const item of settled) {
+    if (item.status !== "fulfilled") continue;
+    for (const match of String(item.value).matchAll(/<loc>([^<]+)<\/loc>/g)) {
+      const hit = SKILLS_SH_URL_RE.exec(match[1]);
+      if (!hit) continue;
+      const key = `${hit[1]}/${hit[2]}/${hit[3]}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ owner: `${hit[1]}/${hit[2]}`, slug: hit[3] });
+    }
+  }
+  if (out.length > 0 && cache) await cache.put(SKILLS_SH_CATALOG_KEY, out);
+  return out;
+}
+
+/** 首页推荐的约 48 条：全量目录还没就绪时的兜底，保证首屏不空白。 */
+async function skillsShHighlights(cache) {
+  const cached = cache ? await cache.get("skills_sh_home", 30 * 60 * 1000) : undefined;
+  if (Array.isArray(cached) && cached.length > 0) return cached;
+  const html = await fetchText("https://www.skills.sh/", 25000);
+  const seen = new Set();
+  const rows = [];
+  for (const match of html.matchAll(/\/([A-Za-z0-9_.-]+)\/skills\/([A-Za-z0-9_.-]+)/g)) {
+    const key = `${match[1]}/${match[2]}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ owner: `${match[1]}/skills`, slug: match[2] });
+  }
+  if (rows.length > 0 && cache) await cache.put("skills_sh_home", rows);
+  return rows;
+}
+
+export async function browseSkillsSh({ query = "", page = 1, pageSize = 24, cache } = {}) {
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Number(pageSize) || 24);
+  let catalog = cache ? await cache.get(SKILLS_SH_CATALOG_KEY, SKILLS_SH_CATALOG_TTL) : undefined;
+  let hint;
+  if (!Array.isArray(catalog) || catalog.length === 0) {
+    catalog = await skillsShHighlights(cache);
+    hint = "skills.sh 全量目录（约 2 万条）正在后台载入，首次约需 1 分钟；现在先显示首页推荐，稍后再点「加载更多」即可翻到更多";
+  }
+  const needle = String(query || "").trim().toLowerCase();
+  const matched = needle
+    ? catalog.filter((row) => `${row.owner}/${row.slug}`.toLowerCase().includes(needle))
+    : catalog;
+  const items = pageSlice(matched, p, size).map(skillsShCard);
   try {
+    // 首页/sitemap 都不带描述，按可见的这一屏补（上限 10 条，避免 24 条逐个读太慢）。
     await enrichSkillsShFast(items, cache, 10);
   } catch {
     // descriptions are best-effort: a failed read never blocks the list
   }
-  return { source: "skills.sh", items, total: rows.length };
+  fillMissingDescriptions(items);
+  return { source: "skills.sh", items, total: matched.length, hasMore: p * size < matched.length, hint };
 }
 
 /** skills.sh exposes a real JSON search API (Algolia-backed). */
-export async function searchSkillsSh({ query = "", pageSize = 24, cache }) {
-  // The upstream search API rejects queries shorter than 2 characters. Browsing with an
-  // empty box is a legitimate state, so fall back to the home-page highlights and say so.
-  if (query.trim().length < 2) {
-    try {
-      const browse = await browseSkillsSh({ pageSize, cache });
-      if (browse.items.length > 0) {
-        return {
-          ...browse,
-          hint: "未输入关键词：以下是 skills.sh 首页当前推荐的技能，输入至少 2 个字符可精确搜索",
-        };
-      }
-    } catch {
-      // fall through to the plain hint below
-    }
-    return { source: "skills.sh", items: [], total: 0, hint: "skills.sh 需要至少 2 个字符的关键词" };
-  }
-  const url = `https://www.skills.sh/api/search?q=${encodeURIComponent(query)}&limit=${pageSize}`;
-  const data = JSON.parse(await fetchText(url, 20000));
+export async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cache }) {
+  const q = String(query || "").trim();
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Number(pageSize) || 24);
+  // The upstream search API rejects queries shorter than 2 characters; an empty box is a
+  // legitimate state, so browse the (whole) catalogue instead.
+  if (q.length < 2) return browseSkillsSh({ query: q, page: p, pageSize: size, cache });
+  // 上游没有 offset：只能一次取到第 p 页的深度，再在本地切出最后一屏。
+  const depth = Math.min(200, size * p);
+  const url = `https://www.skills.sh/api/search?q=${encodeURIComponent(q)}&limit=${depth}`;
+  const data = JSON.parse(await fetchText(url, 40000));
   const rows = Array.isArray(data.skills) ? data.skills : [];
-  const items = rows.map((raw) => {
+  const items = rows.slice((p - 1) * size, p * size).map((raw) => {
     const sourceRepo = String(raw.source || raw.id || "").split("/").slice(0, 2).join("/");
     const slug = raw.skillId || raw.name || String(raw.id || "").split("/").pop();
     return {
@@ -141,7 +206,10 @@ export async function searchSkillsSh({ query = "", pageSize = 24, cache }) {
   } catch {
     // descriptions are best-effort
   }
-  return { source: "skills.sh", items, total: Number(data.count) || items.length };
+  fillMissingDescriptions(items);
+  const hasMore = rows.length >= depth;
+  const total = hasMore ? Math.max(Number(data.count) || 0, depth + 1) : (p - 1) * size + rows.length;
+  return { source: "skills.sh", items, total, hasMore };
 }
 
 // ------------------------------------------------------------------ LobeHub MCP
@@ -255,20 +323,21 @@ export async function lobehubMcpConfig(slug) {
 
 // ------------------------------------------------------------------ browse.sh
 /** browse.sh exposes the whole catalogue with title, description, category and tags. */
-export async function searchBrowseSh({ query = "", pageSize = 24, cache }) {
-  let rows = await cache.get("browse_sh_api", 30 * 60 * 1000);
+export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cache }) {
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Number(pageSize) || 24);
+  let rows = cache ? await cache.get("browse_sh_api", 30 * 60 * 1000) : undefined;
   if (!rows) {
     const data = JSON.parse(await fetchText("https://browse.sh/api/skills", 25000));
     rows = Array.isArray(data.skills) ? data.skills : [];
-    if (rows.length) await cache.put("browse_sh_api", rows);
+    if (rows.length && cache) await cache.put("browse_sh_api", rows);
   }
-  const q = query.trim().toLowerCase();
-  const items = [];
+  const q = String(query || "").trim().toLowerCase();
+  const matched = [];
   for (const raw of rows) {
-    if (items.length >= pageSize) break;
     const hay = `${raw.title || ""} ${raw.description || ""} ${raw.slug || ""} ${(raw.tags || []).join(" ")}`.toLowerCase();
     if (q && !hay.includes(q)) continue;
-    items.push({
+    matched.push({
       id: `browse.sh:${raw.slug}`,
       slug: raw.name || String(raw.slug || "").split("/").pop(),
       name: raw.title || raw.name || raw.slug,
@@ -285,53 +354,54 @@ export async function searchBrowseSh({ query = "", pageSize = 24, cache }) {
       note: "browse.sh 的技能源码仓库在 GitHub 上返回 404（私有或已迁走），只能浏览",
     });
   }
-  return { source: "browse.sh", items, total: rows.length };
+  // browse.sh 一次返回整份目录（约 480 条），本地切片即可真正翻页。
+  const items = pageSlice(matched, p, size);
+  return { source: "browse.sh", items, total: matched.length, hasMore: p * size < matched.length };
 }
 
-// ------------------------------------------------------------------ aggregation
-const fallbackCache = makeCache(join(process.env.TEMP || process.env.TMPDIR || ".", "dsh-market-cache"));
+export const ALL_SOURCES = [
+  "skills.sh",
+  "clawhub",
+  "skillsmp",
+  "trusttools",
+  "browse.sh",
+  "lobehub-agent",
+  "skillhub",
+  "modelscope",
+];
 
-export const ALL_SOURCES = ["skills.sh", "clawhub", "skillsmp", "trusttools", "browse.sh", "lobehub-agent", "skillhub"];
+// 每个源现在都实现了真正的翻页：有 page 参数的服务端分页，没有的把整份目录缓存后本地切片。
+export const LOAD_MORE_CAPABLE = new Set(ALL_SOURCES);
 
-// skillhub is the only source whose upstream honours a `page` parameter; every other
-// source returns a single fixed page, so「加载更多」(pageSize growing by 24) only
-// genuinely extends the list for skillhub. Expose that fact to the client.
-export const LOAD_MORE_CAPABLE = new Set(["skillhub"]);
+const SOURCE_HANDLERS = {
+  "skills.sh": searchSkillsSh,
+  clawhub: searchClawHub,
+  skillsmp: searchSkillsMp,
+  trusttools: searchTrustTools,
+  "browse.sh": searchBrowseSh,
+  "lobehub-agent": searchLobeHubSkills,
+  skillhub: searchSkillHub,
+  modelscope: searchModelScope,
+};
 
-export async function searchSkills({ query, source = "all", pageSize = 24, cache = fallbackCache }) {
+export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache }) {
   const wanted = source === "all" ? ALL_SOURCES : [source];
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Math.min(60, Number(pageSize) || 24));
   const items = [];
   const degraded = [];
   const hints = [];
+  let total = 0;
+  let hasMore = false;
   for (const name of wanted) {
+    const handler = SOURCE_HANDLERS[name];
+    if (!handler) continue;
     try {
-      if (name === "skills.sh") {
-        const result = await searchSkillsSh({ query, pageSize, cache });
-        if (result.hint) hints.push(`skills.sh：${result.hint}`);
-        items.push(...result.items);
-      } else if (name === "clawhub") {
-        const result = await searchClawHub({ query, pageSize });
-        if (result.hint) hints.push(`clawhub：${result.hint}`);
-        items.push(...result.items);
-      } else if (name === "skillsmp") {
-        const result = await searchSkillsMp({ query, pageSize, cache });
-        items.push(...result.items);
-      } else if (name === "trusttools") {
-        const result = await searchTrustTools({ query, pageSize, cache });
-        items.push(...result.items);
-      } else if (name === "lobehub-agent") {
-        const result = await searchLobeHubSkills({ query, pageSize, cache });
-        items.push(...result.items);
-      } else if (name === "browse.sh") {
-        const result = await searchBrowseSh({ query, pageSize, cache });
-        items.push(...result.items);
-      } else if (name === "skillhub") {
-        // skillhub is the only source with real page params, so「加载更多」(pageSize
-        // grows by 24) only genuinely extends the list for it; every other source's
-        // upstream is single-page (or un-paginated), so load-more re-fetches the same rows.
-        const result = await searchSkillHub({ query, page: 1, pageSize });
-        items.push(...result.items);
-      }
+      const result = await handler({ query, page: p, pageSize: size, cache });
+      if (result && result.hint) hints.push(`${name}：${result.hint}`);
+      if (result && Array.isArray(result.items) && result.items.length) items.push(...result.items);
+      total += Number(result && result.total) || 0;
+      if (result && result.hasMore) hasMore = true;
     } catch (error) {
       degraded.push({ source: name, error: String(error?.message || error) });
     }
@@ -354,19 +424,31 @@ export async function searchSkills({ query, source = "all", pageSize = 24, cache
         : hints.length
           ? hints
           : ["所选市场暂时没有取到数据，可能是上游不可达或响应超时，请稍后重试"];
-  return { items, degraded, hints, sourceErrors, total: items.length };
+  if (!total || total < items.length) total = hasMore ? p * size + 1 : (p - 1) * size + items.length;
+  return {
+    items,
+    page: p,
+    pageSize: size,
+    pages: Math.max(1, Math.ceil(total / size)),
+    total,
+    hasMore,
+    degraded,
+    hints,
+    sourceErrors,
+  };
 }
 
 /**
- * Warm the two catalogues that are expensive on a cold start (browse.sh ships ~700 KB,
- * skillsmp is a paged upstream). Called in the background once the plugin is applied, so
- * the first time the panel opens the cache is already populated instead of the user
- * staring at an empty grid while a 25-second fetch completes.
+ * Warm the catalogues that are expensive on a cold start (browse.sh ships ~480 entries,
+ * skills.sh needs the ~2 MB sitemap, LobeHub's index is ~500 agents, skillsmp is a paged
+ * upstream). Runs in the background so the first panel open is already populated.
  */
 export async function warmMarketCache(cache = fallbackCache) {
   const results = await Promise.allSettled([
-    searchBrowseSh({ query: "", pageSize: 24, cache }),
-    searchSkillsMp({ query: "", pageSize: 24, cache }),
+    searchBrowseSh({ query: "", page: 1, pageSize: 24, cache }),
+    searchLobeHubSkills({ query: "", page: 1, pageSize: 24, cache }),
+    searchModelScope({ query: "", page: 1, pageSize: 24 }),
+    skillsShCatalog(cache),
   ]);
-  return results.map((r) => (r.status === "fulfilled" ? r.value.items.length : 0));
+  return results.map((r) => (r.status === "fulfilled" ? (Array.isArray(r.value) ? r.value.length : (r.value.items || []).length) : 0));
 }

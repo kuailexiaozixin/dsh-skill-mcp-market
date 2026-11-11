@@ -159,9 +159,11 @@ window.__ModuleLoader__.load({
       // 切源/改查询时若命中就立即渲染缓存、后台再刷新，避免每次切源都白屏重查。
       const resultCacheRef = useRef({});
       const [nativeDirs, setNativeDirs] = useState([]);
-      // 「加载更多」对各源的真实可用性（后端按源判定）+ 一句提示
-      const [skillsCanLoadMore, setSkillsCanLoadMore] = useState(false);
-      const [skillsLoadMoreNote, setSkillsLoadMoreNote] = useState('');
+      // 技能市场的分页：每个源都支持真正的翻页，页数/总数由后端这一页返回的元数据决定
+      const [skillsPage, setSkillsPage] = useState(1);
+      const [skillsTotalPages, setSkillsTotalPages] = useState(1);
+      const [skillsTotal, setSkillsTotal] = useState(0);
+      const [skillsHasMore, setSkillsHasMore] = useState(false);
 
       const loadInstalled = useCallback(async () => {
         const [s, m] = await Promise.all([call('skills.list'), call('mcp.list')]);
@@ -181,13 +183,20 @@ window.__ModuleLoader__.load({
       const searchSkills = useCallback(async (text, options) => {
         const src = (options && options.source) || 'all';
         const q = String(text || '');
-        const cacheKey = `sk|${src}|${q}`;
-        const cached = resultCacheRef.current[cacheKey];
+        const pageNo = (options && options.page) || 1;
+        const append = Boolean(options && options.append);
+        // 只有「首页」进缓存；翻页是增量追加，缓存它没有意义还会撑爆内存
+        const cacheKey = append ? '' : `sk|${src}|${q}|${pageNo}`;
+        const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
         // 命中缓存：立即渲染旧结果，不白屏；后台再刷新
         if (cached) {
           setSkills(cached.items || []);
+          setSkillsPage(1);
+          setSkillsTotalPages(cached.pages || 1);
+          setSkillsTotal(cached.total || (cached.items || []).length);
+          setSkillsHasMore(Boolean(cached.hasMore));
           if ((cached.items || []).length) setNotice('（缓存，正在刷新…）');
-        } else {
+        } else if (!append) {
           setBusy('skills.search');
         }
         setError('');
@@ -195,13 +204,33 @@ window.__ModuleLoader__.load({
           const d = await call('skills.search', {
             query: text,
             source: src,
-            pageSize: (options && options.size) || 24,
+            page: pageNo,
+            pageSize: (options && options.size) || size,
           });
           const rows = d.items || [];
-          resultCacheRef.current[cacheKey] = { items: rows, hints: d.hints || [], degraded: d.degraded || [] };
-          setSkills(rows);
-          setSkillsCanLoadMore(Boolean(d.canLoadMore));
-          setSkillsLoadMoreNote(d.canLoadMore ? '' : '（当前源单次返回完整目录，「加载更多」不会取到更多，可换 skillhub 源或用搜索框精确查）');
+          if (cacheKey) {
+            resultCacheRef.current[cacheKey] = {
+              items: rows,
+              pages: d.pages,
+              total: d.total,
+              hasMore: d.hasMore,
+              hints: d.hints || [],
+              degraded: d.degraded || [],
+            };
+          }
+          if (append) {
+            // 追加去重：翻页边界上偶尔会重复返回同一条，去重后列表才不会原地重复
+            setSkills((prev) => {
+              const seen = new Set(prev.map((x) => x.id));
+              return prev.concat(rows.filter((x) => !seen.has(x.id)));
+            });
+          } else {
+            setSkills(rows);
+          }
+          setSkillsPage(d.page || pageNo);
+          setSkillsTotalPages(d.pages || 1);
+          setSkillsTotal(Number(d.total) || rows.length);
+          setSkillsHasMore(Boolean(d.hasMore));
           const hints = (d.hints || []).filter(Boolean);
           if (!(d.items || []).length) {
             // An empty market is either "no match", "needs a keyword" or "upstream refused us".
@@ -874,10 +903,12 @@ window.__ModuleLoader__.load({
               ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: '16px 0 6px' } },
                   h('button', {
                     style: S.btn(),
-                    disabled: (tab === 'skills' && !skillsCanLoadMore) ||
+                    disabled: (tab === 'skills' && !skillsHasMore) ||
                       (tab === 'mcp' && mcpPage >= mcpTotalPages) ||
                       busy === 'skills.search' || busy === 'mcp.search',
-                    title: tab === 'skills' && !skillsCanLoadMore ? skillsLoadMoreNote : '',
+                    title: tab === 'skills' && skillsTotal
+                      ? `已显示 ${skills.length} / 约 ${skillsTotal} 个技能`
+                      : '',
                     onClick: () => {
                       if (tab === 'mcp') {
                         const next = mcpPage + 1;
@@ -885,14 +916,15 @@ window.__ModuleLoader__.load({
                         searchMcps(query, { page: next, append: true });
                         return;
                       }
-                      if (!skillsCanLoadMore) return;
-                      const next = size + 24;
-                      setSize(next);
-                      searchSkills(query, { source, size: next });
+                      if (!skillsHasMore) return;
+                      // 真正的翻页：请求下一页再追加，而不是把 pageSize 撑大重查
+                      searchSkills(query, { source, page: skillsPage + 1, append: true });
                     },
                   }, tab === 'mcp'
                     ? (mcpPage >= mcpTotalPages ? `已到最后一页（${mcpPage}/${mcpTotalPages}）` : `加载更多（${mcpPage}/${mcpTotalPages}）`)
-                    : (skillsCanLoadMore ? '加载更多' : '加载更多（当前源已取完）')))
+                    : (skillsHasMore
+                        ? `加载更多（${skillsPage}/${skillsTotalPages}）`
+                        : `已到最后一页（${skillsPage}/${skillsTotalPages}）`)))
               : null,
             tab === 'installed' ? h('div', null,
               h('div', { style: S.row },

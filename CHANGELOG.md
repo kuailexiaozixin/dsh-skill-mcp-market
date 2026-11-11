@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.10
+
+### 「加载更多」对每个源都真的能翻到新条目（0.5.9 的妥协做法已废弃）
+0.5.9 把不可翻页的源「置灰」并标注「（当前源已取完）」，那不是上游的限制，是我实现偷懒：
+skills.sh 只抓了首页那 48 条精选，其余源也只取了第一屏。参照 `hermes-business-agent` 里的
+`unified_skills_client.py`（服务端 page + 全量目录本地切片），现在每个源都能真正翻页：
+
+| 源 | 翻页方式 | 规模 |
+|---|---|---|
+| `skills.sh` | sitemap 全量目录 `sitemap-skills-1/-2.xml` → 缓存 24h → 本地切片 | ~20 000 |
+| `clawhub` | 顺 `nextCursor` 累积本地目录（每屏 50 条） → 本地切片 | 持续增长 |
+| `browse.sh` | 一次取整份目录（约 480 条）→ 本地切片 | ~480 |
+| `lobehub-agent` | `index.json` 全量（约 505 个 agent）→ 本地切片 | ~505 |
+| `skillsmp` | 服务端 `?page=&limit=` | ~1 200 |
+| `trusttools` | 服务端 `page`（实际 10 条/页，按批拼接） | 579 074 |
+| `skillhub` | 服务端 `page` | 226 000+ |
+| `modelscope` | 服务端 `PUT PageNumber/PageSize`（新增源） | 88 862 |
+
+- 客户端改为**请求下一页并追加去重**，不再「把 pageSize 加大重查」；按钮显示 `加载更多（n/m）`，
+  到底显示 `已到最后一页（n/m）`（SKILL 与 MCP 一致）。
+- 聚合源（`all`）也按页返回：8 个源各出 12 条，翻页后整页无重复。
+- `skills.sh` 列表接口本身没有简介字段：读不到 SKILL.md 时给一句诚实兜底，卡片不再空白。
+- 新增 `test/test-paging.mjs`：逐源断言「第 2 页与第 1 页零重叠、hasMore/total 合理」，并覆盖
+  聚合源与关键词搜索的翻页。
+
 ## 0.5.9
 
 ### 「加载更多」对各源真实可用 + 修复切换源反复重查/不可达误报
