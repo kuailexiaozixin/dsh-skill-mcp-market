@@ -1029,8 +1029,13 @@ export async function apply(ctx, config = {}) {
           categories: catalog.categories || [],
           source: wanted,
           page: catalog.page || 1,
-          totalPages: catalog.totalPages || 1,
+          totalPages: catalog.totalPages || 0,
           total: catalog.total || catalog.items.length,
+          // The registry has no published total; it walks cursors, so only `hasMore` can
+          // answer "is there another page" — the panel must not guess from totalPages.
+          canLoadMore: catalog.hasMore !== undefined
+            ? Boolean(catalog.hasMore)
+            : (catalog.page || 1) < (catalog.totalPages || 1),
         };
       }
       case "mcp.install": {

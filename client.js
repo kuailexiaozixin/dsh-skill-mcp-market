@@ -283,7 +283,14 @@ window.__ModuleLoader__.load({
           });
           const rows = d.items || [];
           if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [] };
-          setMcps(opts.append ? (prev) => prev.concat(rows) : rows);
+          // Append must not repeat a card: the registry pages by version rows, so a server
+          // may legitimately return a slug that is already on screen.
+          setMcps(opts.append
+            ? (prev) => {
+                const seen = new Set(prev.map((m) => m.id || m.slug));
+                return prev.concat(rows.filter((m) => !seen.has(m.id || m.slug)));
+              }
+            : rows);
           setMcpPage(d.page || nextPage);
           // totalPages 0 means the source cannot count pages (the registry is cursor-based);
           // canLoadMore is then the only honest signal.
@@ -802,11 +809,13 @@ window.__ModuleLoader__.load({
                       onClick: () => setCategory(cat),
                     }, cat === 'all' ? '全部分类' : cat)))
               : null,
-            tab === 'mcp' && mcpTotal > 0
+            tab === 'mcp' && (mcpTotal > 0 || mcps.length > 0)
               ? h('div', { style: S.status },
                   mcpSource === 'lobehub'
                     ? `LobeHub · 共 ${mcpTotal.toLocaleString()} 个连接器 · 第 ${mcpPage}/${mcpTotalPages} 页`
-                    : `MCP 官方注册表 · ${mcpTotal} 个结果`)
+                    : (mcpTotalPages > 0
+                        ? `MCP 官方注册表 · 第 ${mcpPage}/${mcpTotalPages} 页`
+                        : `MCP 官方注册表 · 已显示 ${mcps.length} 个${mcpHasMore ? '（可继续加载）' : ''}`))
               : null,
             error ? h('div', { style: S.err }, error) : null,
             notice ? h('div', { style: S.status }, notice) : null,
