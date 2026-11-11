@@ -577,7 +577,22 @@ window.__ModuleLoader__.load({
               disabled: busy === `toggle:${item.slug}`,
               onClick: () => toggleSkill(item.slug, off),
             }, off ? '启用' : '停用'),
-            h('button', { style: S.btn(), disabled: busy === `detail:${item.slug}`, onClick: () => openSkillDetail(item.slug) }, '详情/编辑'),
+            h('button', {
+              style: S.btn(),
+              disabled: busy === `openDir:skill:${item.slug}`,
+              onClick: async () => {
+                setBusy(`openDir:skill:${item.slug}`);
+                setError('');
+                try {
+                  const r = await call('market.openDir', { kind: 'skill', slug: item.slug });
+                  setNotice(`已在资源管理器中定位到技能文件夹：${r.opened}`);
+                } catch (e) {
+                  setError(`打开文件夹失败：${e.message || e}`);
+                } finally {
+                  setBusy('');
+                }
+              },
+            }, '打开文件夹'),
             h('button', { style: S.btn(), disabled: busy === `remove:${item.slug}`, onClick: () => removeSkill(item.slug) }, '卸载')));
       });
 
@@ -590,7 +605,22 @@ window.__ModuleLoader__.load({
             h('span', null, item.tools && item.tools.length ? `· ${item.tools.length} 个工具` : '')),
           h('div', { style: S.row },
             h('button', { style: S.btn(), disabled: busy === `toggle:${item.serverName}`, onClick: () => toggleMcp(item.serverName, !item.enabled) }, item.enabled ? '停用' : '启用'),
-            h('button', { style: S.btn(), disabled: busy === `detail:${item.serverName}`, onClick: () => openMcpDetail(item.serverName) }, '详情/编辑'),
+            h('button', {
+              style: S.btn(),
+              disabled: busy === `openDir:mcp:${item.serverName}`,
+              onClick: async () => {
+                setBusy(`openDir:mcp:${item.serverName}`);
+                setError('');
+                try {
+                  const r = await call('market.openDir', { kind: 'mcp-item', serverName: item.serverName });
+                  setNotice(`已在资源管理器中定位到 MCP 定义：${r.opened}`);
+                } catch (e) {
+                  setError(`打开文件夹失败：${e.message || e}`);
+                } finally {
+                  setBusy('');
+                }
+              },
+            }, '打开文件夹'),
             h('button', {
               style: S.btn(),
               disabled: busy === `remove:${item.serverName}`,

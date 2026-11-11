@@ -1017,16 +1017,45 @@ export async function apply(ctx, config = {}) {
         };
       }
       case "market.openDir": {
-        // "Where are my installed skills?" is a real question: open the folder in the OS file
-        // manager so the user can inspect or edit SKILL.md / the MCP JSON in place.
-        const kind = String(body.kind || "skills") === "mcp" ? "mcp" : "skills";
-        const dirs = kind === "mcp" ? settings.mcpDirs : settings.skillDirs;
-        const target = (dirs || []).find(Boolean);
-        if (!target) throw new Error(kind === "mcp" ? "还没有配置 MCP 目录" : "还没有配置技能目录");
-        await ensureDir(target);
+        // "Where are my installed skills?" — open the folder in the OS file manager so the
+        // user can inspect or edit SKILL.md / the MCP JSON in place.
+        // 支持两种用法：
+        //   { kind: "skills" | "mcp" }            → 打开对应的配置目录
+        //   { kind: "skill", slug: "..." }        → 直接打开某个技能的文件夹
+        //   { kind: "mcp-item", serverName: "..." } → 直接打开某个 MCP 定义所在目录
+        const kind = String(body.kind || "skills");
+        const { join: joinPath } = await import("node:path");
+        let target = "";
+        if (kind === "skill") {
+          // 打开某个技能的文件夹
+          const slug = String(body.slug || "");
+          if (!slug) throw new Error("market.openDir: skill 需要一个 slug");
+          const all = await listInstalledSkills(await collectDshNativeSkillDirs());
+          const item = all.find((x) => x.slug === slug);
+          if (!item) throw new Error(`未找到技能 ${slug}`);
+          target = item.dir ? joinPath(item.dir, item.slug) : item.path;
+        } else if (kind === "mcp-item") {
+          // 打开某个 MCP 定义所在目录
+          const serverName = String(body.serverName || "");
+          if (!serverName) throw new Error("market.openDir: mcp-item 需要一个 serverName");
+          const defs = await mcp.list();
+          const item = defs.find((x) => x.serverName === serverName);
+          if (!item) throw new Error(`未找到 MCP ${serverName}`);
+          target = item.path ? joinPath(item.path, "..") : settings.mcpDirs[0];
+        } else {
+          // 打开配置目录
+          const dirs = kind === "mcp" ? settings.mcpDirs : settings.skillDirs;
+          target = (dirs || []).find(Boolean);
+          if (!target) throw new Error(kind === "mcp" ? "还没有配置 MCP 目录" : "还没有配置技能目录");
+        }
+        if (kind !== "skill" && kind !== "mcp-item") await ensureDir(target);
         await new Promise((resolve) => {
           const command = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
-          execFile(command, [target], { windowsHide: false }, () => resolve());
+          // Windows 上 explorer.exe 用 "/select," 定位到具体文件
+          const args = process.platform === "win32" && (kind === "skill" || kind === "mcp-item")
+            ? ["/select,", target]
+            : [target];
+          execFile(command, args, { windowsHide: false }, () => resolve());
         });
         return { opened: target, kind };
       }
