@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const { useState, useEffect, useCallback } = React;
+    const { useState, useEffect, useCallback, useRef } = React;
 
     const RPC = '/api/dsh-market/rpc';
 
@@ -155,6 +155,9 @@ window.__ModuleLoader__.load({
       const [category, setCategory] = useState('all');
       const [preview, setPreview] = useState(null);
       const [installedFilter, setInstalledFilter] = useState('');
+      // 最近一次的查询结果缓存（按 tab+source+category+sort+query 作 key），
+      // 切源/改查询时若命中就立即渲染缓存、后台再刷新，避免每次切源都白屏重查。
+      const resultCacheRef = useRef({});
       const [nativeDirs, setNativeDirs] = useState([]);
 
       const loadInstalled = useCallback(async () => {
@@ -173,15 +176,27 @@ window.__ModuleLoader__.load({
       }, []);
 
       const searchSkills = useCallback(async (text, options) => {
-        setBusy('skills.search');
+        const src = (options && options.source) || 'all';
+        const q = String(text || '');
+        const cacheKey = `sk|${src}|${q}`;
+        const cached = resultCacheRef.current[cacheKey];
+        // 命中缓存：立即渲染旧结果，不白屏；后台再刷新
+        if (cached) {
+          setSkills(cached.items || []);
+          if ((cached.items || []).length) setNotice('（缓存，正在刷新…）');
+        } else {
+          setBusy('skills.search');
+        }
         setError('');
         try {
           const d = await call('skills.search', {
             query: text,
-            source: (options && options.source) || 'all',
+            source: src,
             pageSize: (options && options.size) || 24,
           });
-          setSkills(d.items || []);
+          const rows = d.items || [];
+          resultCacheRef.current[cacheKey] = { items: rows, hints: d.hints || [], degraded: d.degraded || [] };
+          setSkills(rows);
           const hints = (d.hints || []).filter(Boolean);
           if (!(d.items || []).length) {
             // An empty market is either "no match", "needs a keyword" or "upstream refused us".
@@ -213,7 +228,15 @@ window.__ModuleLoader__.load({
         const nextCategory = opts.category !== undefined ? opts.category : mcpCategory;
         const nextSort = opts.sort !== undefined ? opts.sort : mcpSort;
         const nextPage = opts.page || 1;
-        setBusy('mcp.search');
+        // 首屏查询（非 append）命中缓存时立即渲染旧结果，后台再刷新，避免切源白屏
+        const cacheKey = opts.append ? '' : `mc|${nextSource}|${nextCategory === 'all' ? '' : nextCategory}|${nextSort === 'default' ? '' : nextSort}|${String(text || '')}|${nextPage}`;
+        const cached = cacheKey ? resultCacheRef.current[cacheKey] : null;
+        if (cached) {
+          setMcps(cached.items || []);
+          setNotice('（缓存，正在刷新…）');
+        } else {
+          setBusy('mcp.search');
+        }
         setError('');
         try {
           const d = await call('mcp.search', {
@@ -224,6 +247,7 @@ window.__ModuleLoader__.load({
             page: nextPage,
           });
           const rows = d.items || [];
+          if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [] };
           setMcps(opts.append ? (prev) => prev.concat(rows) : rows);
           setMcpPage(d.page || nextPage);
           setMcpTotalPages(d.totalPages || 1);

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.8
+
+### skills.sh 描述补齐 + 切源走缓存（不再白屏重查）
+- **skills.sh 描述**：上游目录/搜索 API 不携带描述字段（只返回 `id/source/skillId/name/installs`），
+  之前只有「搜索」路径会尽力从 GitHub `SKILL.md` frontmatter 补描述（前 10 条、0.3–2s/条、超时留空），
+  「浏览」（空搜索框的首页推荐）完全不补 → 整页都是 `skills.sh · owner/skills`。现在浏览路径也补前 10 条描述。
+- **切源/改查询走 stale-while-revalidate**：客户端加了一个按 `(tab, source, category, sort, query, page)` 的结果缓存。
+  切源或改查询时若命中就**立即渲染旧结果**（提示「缓存，正在刷新…」），后台再刷新；不再每次切源都清空重查、白屏等待。
+- 插件代码无其他变化。
+
 ## 0.5.7
 
 ### 已安装标签：「详情/编辑」改为「打开文件夹」

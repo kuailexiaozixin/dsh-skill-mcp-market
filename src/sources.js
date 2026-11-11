@@ -87,6 +87,12 @@ export async function browseSkillsSh({ pageSize = 24, cache } = {}) {
     installs: 0,
     installable: true,
   }));
+  // 首页推荐不带描述（sitemap 只有 URL）。补前 10 条的描述，带上限避免 24 条逐个读太慢。
+  try {
+    await enrichSkillsShFast(items, cache, 10);
+  } catch {
+    // descriptions are best-effort: a failed read never blocks the list
+  }
   return { source: "skills.sh", items, total: rows.length };
 }
 
