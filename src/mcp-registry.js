@@ -20,7 +20,10 @@ const REGISTRY_URL = "https://registry.modelcontextprotocol.io/v0/servers";
 const CATALOGUE_TTL = 10 * 60 * 1000;
 // Bumped whenever a card's shape changes, so an upgrade never serves cards built by the
 // previous code from the disk cache.
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
+
+/** Default page size for the paged registry reader (the panel shows 24 cards per page). */
+export const REGISTRY_PAGE_SIZE = 24;
 
 /** Every entry is a distinct published version; keep the latest one per server name. */
 function latestOnly(rows) {
@@ -188,13 +191,78 @@ async function searchRegistryTerm(query, pageSize, cache, cursor = "") {
   const key = `registry:${CACHE_VERSION}:${String(query || "").trim().toLowerCase() || "all"}:${pageSize}`;
   if (!cursor && cache) {
     const cached = await cache.get(key, CATALOGUE_TTL);
-    if (Array.isArray(cached) && cached.length) return { items: cached, nextCursor: "", cached: true };
+    const entry = Array.isArray(cached) ? { items: cached, nextCursor: "" } : cached;
+    // The cursor is part of the cached value: dropping it would make page 2 replay page 1.
+    if (entry && Array.isArray(entry.items) && entry.items.length) {
+      return { items: entry.items, nextCursor: String(entry.nextCursor || ""), cached: true };
+    }
   }
+  const entry = await fetchRegistryPage(query, pageSize, cursor);
+  if (!cursor && cache && entry.items.length) await cache.put(key, entry);
+  return { ...entry, cached: false };
+}
+
+async function fetchRegistryPage(query, pageSize, cursor, category = "") {
   const data = await getJson(registryQueryUrl(query, pageSize, cursor), { timeoutMs: 20000 });
   const servers = latestOnly(Array.isArray(data.servers) ? data.servers : []);
-  const items = servers.map(registryCard);
-  if (!cursor && cache && items.length) await cache.put(key, items);
-  return { items, nextCursor: (data.metadata && data.metadata.nextCursor) || "", cached: false };
+  let items = servers.map(registryCard);
+  // The registry has no category facet; match the categories its own descriptions imply.
+  const wanted = String(category || "").trim().toLowerCase();
+  if (wanted) items = items.filter((card) => `${card.category} ${card.description}`.toLowerCase().includes(wanted));
+  return { items, nextCursor: (data.metadata && data.metadata.nextCursor) || "" };
+}
+
+/**
+ * Page N of the registry catalogue.
+ *
+ * The API is cursor-based and reports no total, so page N is reached by walking the
+ * cursors 1..N. Every intermediate page is cached under its logical index, which means
+ * "load more" costs exactly one upstream call, and a page-1 cache hit still carries the
+ * cursor that makes page 2 work at all (the old code stored items only, so every page
+ * after the first silently replayed page 1).
+ */
+/**
+ * Cache key of the accumulated registry catalogue. Exported because the caller's offline
+ * fallback must read exactly the same slot the paged reader fills.
+ */
+export function registryCatalogueCacheKey(query, pageSize, category = "") {
+  const size = Math.max(1, Math.min(100, Number(pageSize) || REGISTRY_PAGE_SIZE));
+  return `registry:${CACHE_VERSION}:cat:${String(query || "").trim().toLowerCase() || "all"}:${String(category || "").trim().toLowerCase()}:${size}`;
+}
+
+export async function searchMcpRegistryPage({ query = "", page = 1, pageSize = REGISTRY_PAGE_SIZE, category = "", cache } = {}) {
+  const size = Math.max(1, Math.min(100, Number(pageSize) || REGISTRY_PAGE_SIZE));
+  const wanted = Math.max(1, Number(page) || 1);
+  // The upstream cursor pages *version rows*, not servers: one server can occupy several
+  // rows and a single raw page can dedupe down to five cards. Paging therefore accumulates
+  // a deduped catalogue first and slices it, which is the only way to get stable pages with
+  // no repeats and no gaps. `rawLimit` is widened so a page usually needs one upstream call.
+  const rawLimit = Math.min(100, Math.max(size + 10, size * 3));
+  const key = registryCatalogueCacheKey(query, size, category);
+  let state = cache ? await cache.get(key, CATALOGUE_TTL) : null;
+  if (!state || !Array.isArray(state.items)) state = { items: [], cursor: "", done: false };
+
+  let guard = 0;
+  while (!state.done && state.items.length < wanted * size && guard < 8) {
+    const raw = await fetchRegistryPage(query, rawLimit, state.cursor, category);
+    const seen = new Set(state.items.map((card) => card.slug));
+    for (const card of raw.items) {
+      if (seen.has(card.slug)) continue;
+      seen.add(card.slug);
+      state.items.push(card);
+    }
+    state.cursor = String(raw.nextCursor || "");
+    state.done = !state.cursor;
+    guard += 1;
+  }
+  if (cache && state.items.length > 0) await cache.put(key, state);
+
+  const start = (wanted - 1) * size;
+  const items = state.items.slice(start, start + size);
+  // An empty page means the walk could not reach it (or the catalogue ended): report "no
+  // more" so the panel stops offering a button that would keep returning nothing.
+  const hasMore = items.length > 0 ? (start + size < state.items.length || !state.done) : false;
+  return { items, page: wanted, pageSize: size, nextCursor: state.done ? "" : state.cursor, hasMore };
 }
 
 /** Resolve one registry server name to an installable definition (exact match wins). */

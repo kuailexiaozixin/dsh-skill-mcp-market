@@ -329,17 +329,19 @@ export async function installSkill({ source = "github", reference = "", skillDir
 }
 
 /** Remove an installed skill by moving it into the market trash. */
-export async function uninstallSkill({ slug, dirs, trashDir }) {  const key = kebab(slug);
+export async function uninstallSkill({ slug, dirs, trashDir }) {
+  const key = kebab(slug);
   const removed = [];
   for (const dir of dirs) {
     const candidates = [join(dir, key), join(dir, `${key}.md`)];
     for (const candidate of candidates) {
       if (!existsSync(candidate)) continue;
-      // Trash inside the skill's own directory: a cross-drive rename fails with EXDEV.
-      const localTrash = join(dir, ".trash");
-      await ensureDir(localTrash);
+      // Trash inside the skill's own directory by default: a cross-drive rename fails with
+      // EXDEV, so a caller-supplied trashDir still falls back to copy-then-delete.
+      const targetTrash = trashDir ? join(trashDir) : join(dir, ".trash");
+      await ensureDir(targetTrash);
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const dest = join(localTrash, `${key}-${stamp}${candidate.endsWith(".md") ? ".md" : ""}`);
+      const dest = join(targetTrash, `${key}-${stamp}${candidate.endsWith(".md") ? ".md" : ""}`);
       try {
         await rename(candidate, dest);
       } catch (error) {

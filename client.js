@@ -146,7 +146,8 @@ window.__ModuleLoader__.load({
       const [mcpCategory, setMcpCategory] = useState('all');
       const [mcpSort, setMcpSort] = useState('default');
       const [mcpPage, setMcpPage] = useState(1);
-      const [mcpTotalPages, setMcpTotalPages] = useState(1);
+      const [mcpTotalPages, setMcpTotalPages] = useState(0);
+      const [mcpHasMore, setMcpHasMore] = useState(false);
       const [mcpTotal, setMcpTotal] = useState(0);
       const [mcpCategories, setMcpCategories] = useState([]);
       const [size, setSize] = useState(24);
@@ -284,7 +285,12 @@ window.__ModuleLoader__.load({
           if (cacheKey) resultCacheRef.current[cacheKey] = { items: rows, categories: d.categories || [] };
           setMcps(opts.append ? (prev) => prev.concat(rows) : rows);
           setMcpPage(d.page || nextPage);
-          setMcpTotalPages(d.totalPages || 1);
+          // totalPages 0 means the source cannot count pages (the registry is cursor-based);
+          // canLoadMore is then the only honest signal.
+          setMcpTotalPages(d.totalPages || 0);
+          setMcpHasMore(d.canLoadMore !== undefined
+            ? Boolean(d.canLoadMore)
+            : (d.page || nextPage) < (d.totalPages || 1));
           setMcpTotal(d.total || rows.length);
           setMcpCategories(d.categories || []);
           // The host reports catalogue degradation separately from "no match", so both the
@@ -899,20 +905,21 @@ window.__ModuleLoader__.load({
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,
             // Paging belongs under the list: reaching the last row should be the last step,
             // not a scroll back to the toolbar.
-            tab === 'skills' || (tab === 'mcp' && mcpSource === 'lobehub')
+            tab === 'skills' || tab === 'mcp'
               ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: '16px 0 6px' } },
                   h('button', {
                     style: S.btn(),
                     disabled: (tab === 'skills' && !skillsHasMore) ||
-                      (tab === 'mcp' && mcpPage >= mcpTotalPages) ||
+                      (tab === 'mcp' && !mcpHasMore) ||
                       busy === 'skills.search' || busy === 'mcp.search',
                     title: tab === 'skills' && skillsTotal
                       ? `已显示 ${skills.length} / 约 ${skillsTotal} 个技能`
-                      : '',
+                      : (tab === 'mcp' && mcpTotal > mcps.length ? `已显示 ${mcps.length} / 共 ${mcpTotal} 个连接器` : ''),
                     onClick: () => {
                       if (tab === 'mcp') {
+                        if (!mcpHasMore) return;
                         const next = mcpPage + 1;
-                        setMcpPage(next);
+                        // 页码只在这里推进；服务端翻页成功后会用响应里的 page 覆盖
                         searchMcps(query, { page: next, append: true });
                         return;
                       }
@@ -921,7 +928,11 @@ window.__ModuleLoader__.load({
                       searchSkills(query, { source, page: skillsPage + 1, append: true });
                     },
                   }, tab === 'mcp'
-                    ? (mcpPage >= mcpTotalPages ? `已到最后一页（${mcpPage}/${mcpTotalPages}）` : `加载更多（${mcpPage}/${mcpTotalPages}）`)
+                    ? (!mcpHasMore
+                        ? `已到最后一页（第 ${mcpPage} 页）`
+                        : (mcpTotalPages > mcpPage
+                            ? `加载更多（${mcpPage}/${mcpTotalPages}）`
+                            : `加载更多（第 ${mcpPage} 页）`))
                     : (skillsHasMore
                         ? `加载更多（${skillsPage}/${skillsTotalPages}）`
                         : `已到最后一页（${skillsPage}/${skillsTotalPages}）`)))

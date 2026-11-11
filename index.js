@@ -20,7 +20,7 @@ import { rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { installSkill, listInstalledSkills, uninstallSkill, updateSkill } from "./src/skills.js";
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
-import { fallbackCards, registryDefinitionByName, searchMcpRegistry } from "./src/mcp-registry.js";
+import { REGISTRY_PAGE_SIZE, fallbackCards, registryCatalogueCacheKey, registryDefinitionByName, searchMcpRegistryPage } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
 import { makeCache, searchSkills, warmMarketCache } from "./src/sources.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket } from "./src/lobehub-market.js";
@@ -163,14 +163,24 @@ async function registerInstalledSkillToCatalog(installed, log) {
 
 async function loadMcpCatalog(cache, query = "", source = "registry", options = {}) {
   if (source === "lobehub") return loadLobeHubCatalog(cache, query, options);
-  const key = `registry:v2:${String(query || "").trim().toLowerCase() || "all"}:60`;
+  const page = Math.max(1, Number(options.page) || 1);
+  const category = String(options.category || "").trim();
   const problems = [];
   let answered = false;
 
   try {
-    const result = await searchMcpRegistry({ query, pageSize: 60, cache });
+    const result = await searchMcpRegistryPage({ query, page, pageSize: REGISTRY_PAGE_SIZE, category, cache });
     answered = true;
-    if (result.items.length > 0) return { items: result.items, hint: "", live: true };
+    if (result.items.length > 0) {
+      return {
+        items: result.items,
+        hint: "",
+        live: true,
+        source: "registry",
+        page: result.page,
+        hasMore: result.hasMore,
+      };
+    }
   } catch (error) {
     problems.push(`官方注册表：${shortError(error)}`);
   }
@@ -182,19 +192,29 @@ async function loadMcpCatalog(cache, query = "", source = "registry", options = 
       items: [],
       hint: `没有匹配「${String(query || "").trim()}」的连接器。换个关键词（单个词更好），或直接按注册表名称安装。`,
       live: true,
+      source: "registry",
+      page,
+      hasMore: false,
     };
   }
 
-  const stale = await cache.get(key, 30 * 24 * 3600 * 1000);
-  if (Array.isArray(stale) && stale.length > 0) {
+  const stale = await cache.get(registryCatalogueCacheKey(query, REGISTRY_PAGE_SIZE, category), 30 * 24 * 3600 * 1000);
+  const staleItems = Array.isArray(stale) ? stale : (stale && Array.isArray(stale.items) ? stale.items : []);
+  if (staleItems.length > 0) {
     return {
-      items: stale,
+      items: staleItems.slice((page - 1) * REGISTRY_PAGE_SIZE, page * REGISTRY_PAGE_SIZE),
       hint: `目录暂时不可达（${problems.join("；")}），下面是上次成功获取的目录；仍可直接按名称安装。`,
+      source: "registry",
+      page,
+      hasMore: staleItems.length > page * REGISTRY_PAGE_SIZE,
     };
   }
   return {
     items: fallbackCards(query),
     hint: `目录暂时不可达（${problems.join("；")}）。下面是内置的常见条目；也可以直接 mcp_market_install({slug:"registry 名称"})，或用 command/args 手动配置。`,
+    source: "registry",
+    page: 1,
+    hasMore: false,
   };
 }
 
@@ -662,12 +682,16 @@ export async function apply(ctx, config = {}) {
           source: item.source || "registry",
         }));
       const installed = args.includeInstalled === false ? [] : await mcp.list();
+      const page = Number(catalog.page) || 1;
       return {
         total: catalog.total || items.length,
         items,
         installed,
-        page: catalog.page || 1,
-        totalPages: catalog.totalPages || 1,
+        page,
+        totalPages: catalog.totalPages || 0,
+        // Paging is real for BOTH markets now: LobeHub has a page count, the registry walks
+        // cursors, and either one reports whether another page exists.
+        canLoadMore: catalog.hasMore !== undefined ? Boolean(catalog.hasMore) : page < (catalog.totalPages || 1),
         categories: catalog.categories || [],
         source: wanted,
         mcpDirs: settings.mcpDirs,

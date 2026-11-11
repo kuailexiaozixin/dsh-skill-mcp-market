@@ -244,6 +244,10 @@ DSH 本来就有技能运行时和 MCP 运行时，缺的只是市场这一层�
 `skillhub` / `modelscope`），没有的把整份目录抓一次缓存下来再本地切片（`skills.sh` 走
 `sitemap-skills-*.xml` 约 2 万条、`clawhub` 顺 `nextCursor` 累积、`browse.sh` 约 480 条、
 `lobehub-agent` 约 505 个）。所以第 2 页起拿到的一定是新条目。
+
+MCP 两个市场同样能翻页：`lobehub` 是服务端 `page`（共 12 万个连接器），官方注册表是 cursor 分页
+（按「版本行」翻页，所以先累积去重目录再切片，每页 24 条）；注册表没有总页数，按钮显示
+`加载更多（第 n 页）`。
 | `github` | 直接给仓库或 `@ref`；jsDelivr 列树失败时回退 GitHub contents API 与 codeload tarball |
 
 ## 目录结构

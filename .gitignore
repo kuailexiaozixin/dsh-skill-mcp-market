@@ -8,3 +8,4 @@ Thumbs.db
 
 # 测试产物（本机生成的结果，不入库）
 test/test-results.json
+test-results.json

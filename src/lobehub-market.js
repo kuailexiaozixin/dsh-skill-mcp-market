@@ -197,14 +197,26 @@ export async function searchLobeHubMarket({ query = "", pageSize = 24, category 
 /** Turn one manifest deployment option into the plugin's MCP definition shape. */
 function definitionFromManifest(manifest, identifier) {
   const options = Array.isArray(manifest.deploymentOptions) ? manifest.deploymentOptions : [];
-  const withCommand = options.find((option) => option.connection && option.connection.command);
-  const withUrl = options.find((option) => option.connection && option.connection.url);
-  const chosen = withCommand || withUrl || options[0] || {};
+  const usable = options.filter((option) => option && option.connection && (option.connection.command || option.connection.url));
+  // The market marks the vendor-recommended recipe; prefer it, then any runnable one.
+  const chosen = usable.find((option) => option.isRecommended) || usable[0] || options[0] || {};
   const connection = chosen.connection || {};
   const schema = connection.configSchema && connection.configSchema.properties ? connection.configSchema.properties : {};
+  const required = new Set(
+    Array.isArray(connection.configSchema && connection.configSchema.required) ? connection.configSchema.required : [],
+  );
   const env = {};
-  for (const [name, spec] of Object.entries(connection.env || schema)) {
-    env[name] = typeof spec === "string" ? spec : String(spec?.default ?? spec?.example ?? "");
+  // Literal values declared by the entry are kept as-is (they are real defaults, not secrets).
+  for (const [name, spec] of Object.entries(connection.env || {})) {
+    env[name] = typeof spec === "string" ? spec : String((spec && (spec.default ?? spec.value)) ?? "");
+  }
+  // Schema-declared settings: a concrete default is honoured, a required-but-unset secret
+  // becomes a ${VAR} placeholder so the value stays in the user's environment.
+  for (const [name, spec] of Object.entries(schema)) {
+    if (env[name] !== undefined) continue;
+    const fallback = spec ? spec.default ?? spec.example : undefined;
+    if (fallback !== undefined && fallback !== null && String(fallback) !== "") env[name] = String(fallback);
+    else if (required.has(name)) env[name] = `\${${name}}`;
   }
   const isHttp = Boolean(connection.url);
   return {
@@ -215,24 +227,32 @@ function definitionFromManifest(manifest, identifier) {
     args: Array.isArray(connection.args) ? connection.args : [],
     url: connection.url || "",
     env,
+    envRequired: Object.keys(env).filter((name) => env[name] === `\${${name}}`),
     headers: connection.headers && typeof connection.headers === "object" ? connection.headers : {},
     homepage: manifest.homepage || "",
     category: manifest.category || "",
     source: "lobehub",
     slug: identifier,
     envHints: Object.fromEntries(
-      Object.entries(connection.env || schema).map(([name, spec]) => [name, String((spec && (spec.description || spec.title)) || "")]),
+      Object.entries({ ...schema }).map(([name, spec]) => [name, String((spec && (spec.description || spec.title)) || "")]),
     ),
   };
 }
 
 /** Read one plugin manifest (public endpoint) and reduce it to a runnable definition. */
 export async function lobehubManifestDefinition(identifier) {
-  const url = `${LOBEHUB_MARKET_BASE}/api/v1/plugins/${encodeURIComponent(identifier)}/manifest`;
+  // Cards carry the market prefix in their id (`lobehub:<slug>`) while the manifest route
+  // wants the bare slug, so the prefix is stripped here instead of at every call site.
+  const slug = String(identifier || "").trim().replace(/^lobehub:/i, "");
+  if (!slug) throw new Error("缺少 LobeHub 条目标识");
+  const url = `${LOBEHUB_MARKET_BASE}/api/v1/plugins/${encodeURIComponent(slug)}/manifest`;
   const manifest = await getJson(url, { timeoutMs: 25000 });
-  const definition = definitionFromManifest(manifest, identifier);
+  if (!manifest || manifest.error) {
+    throw new Error(`LobeHub 找不到条目 "${slug}"：${(manifest && manifest.error) || "清单为空"}`);
+  }
+  const definition = definitionFromManifest(manifest, slug);
   if (!definition.command && !definition.url) {
-    throw new Error(`LobeHub 条目 "${identifier}" 没有声明可用的启动方式（既无命令也无远程地址）`);
+    throw new Error(`LobeHub 条目 "${slug}" 没有声明可用的启动方式（既无命令也无远程地址）`);
   }
   return definition;
 }

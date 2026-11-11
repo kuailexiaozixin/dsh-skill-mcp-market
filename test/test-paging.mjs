@@ -55,5 +55,33 @@ const qd = ids(q2.items).filter((id) => ids(q1.items).includes(id));
 console.log(`skills.sh 搜索 agent: p1=${q1.items.length} p2=${q2.items.length} overlap=${qd.length} hasMore=${q1.hasMore}`);
 if (q1.items.length === 0 || q2.items.length === 0 || qd.length > 0) failures += 1;
 
+// MCP 官方注册表：cursor 分页 —— 连续三页零重叠、缓存命中后仍能翻、越界页为空
+{
+  const { searchMcpRegistryPage, REGISTRY_PAGE_SIZE } = await import("../src/mcp-registry.js");
+  const pageIds = [];
+  let hasMoreAt3 = false;
+  for (const page of [1, 2, 3]) {
+    const r = await searchMcpRegistryPage({ query: "", page, pageSize: REGISTRY_PAGE_SIZE, cache });
+    pageIds.push(ids(r.items));
+    if (page === 3) hasMoreAt3 = r.hasMore;
+  }
+  const overlaps = pageIds.flatMap((list, i) => (i === 0 ? [] : list.filter((id) => pageIds.slice(0, i).flat().includes(id))));
+  const okSizes = pageIds.every((list) => list.length === REGISTRY_PAGE_SIZE);
+  console.log(`\nregistry(\u5b98\u65b9\u6ce8\u518c\u8868) p1/p2/p3 = ${pageIds.map((l) => l.length).join("/")} overlap=${overlaps.length} hasMore@p3=${hasMoreAt3}`);
+  if (!okSizes || overlaps.length > 0) failures += 1;
+
+  // 缓存命中后（第二次读 p1）仍然要能翻页：cursor 必须随缓存一起保存
+  const again1 = await searchMcpRegistryPage({ query: "", page: 1, pageSize: REGISTRY_PAGE_SIZE, cache });
+  const again2 = await searchMcpRegistryPage({ query: "", page: 2, pageSize: REGISTRY_PAGE_SIZE, cache });
+  const cachedOverlap = ids(again2.items).filter((id) => ids(again1.items).includes(id));
+  const cachedOk = ids(again1.items).join() === pageIds[0].join() && ids(again2.items).join() === pageIds[1].join();
+  console.log(`registry \u7f13\u5b58\u547d\u4e2d p1/p2 \u4e0e\u9996\u6b21\u4e00\u81f4=${cachedOk} overlap=${cachedOverlap.length}`);
+  if (!cachedOk || cachedOverlap.length > 0) failures += 1;
+
+  const beyond = await searchMcpRegistryPage({ query: "", page: 9999, pageSize: REGISTRY_PAGE_SIZE, cache });
+  console.log(`registry \u8d8a\u754c\u9875 9999 \u2014 ${beyond.items.length} \u6761, hasMore=${beyond.hasMore}`);
+  if (beyond.items.length !== 0 || beyond.hasMore) failures += 1;
+}
+
 console.log(failures === 0 ? "\nALL PAGING CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
