@@ -40,8 +40,21 @@ export function parseFrontmatter(text) {
   const body = src.slice(end + 4).replace(/^\r?\n/, "");
   const data = {};
   let listKey = null;
+  let blockKey = null; // for YAML block scalars (> or |)
+  let blockBuf = [];
   for (const rawLine of block.split(/\r?\n/)) {
     const line = rawLine.replace(/\s+$/, "");
+    if (blockKey) {
+      // inside a block scalar: indented lines or blank lines continue the block
+      if (line.trim() === "" || /^\s/.test(line)) {
+        blockBuf.push(line.replace(/^\s+/, ""));
+        continue;
+      }
+      // dedent reached: finalize the block scalar
+      data[blockKey] = blockBuf.join("\n").trim();
+      blockKey = null;
+      blockBuf = [];
+    }
     if (!line.trim() || line.trim().startsWith("#")) continue;
     const listItem = /^\s*-\s+(.*)$/.exec(line);
     if (listItem && listKey) {
@@ -57,10 +70,19 @@ export function parseFrontmatter(text) {
     if (raw.trim() === "") {
       listKey = key;
       data[key] = [];
+    } else if (/^[>|][+-]?\s*$/.test(raw)) {
+      // YAML block scalar (folded > or literal |)
+      blockKey = key;
+      blockBuf = [];
+      listKey = null;
     } else {
       listKey = null;
       data[key] = scalar(raw);
     }
+  }
+  // finalize a trailing block scalar
+  if (blockKey) {
+    data[blockKey] = blockBuf.join("\n").trim();
   }
   for (const [key, value] of Object.entries(data)) {
     if (Array.isArray(value) && value.length === 0) data[key] = value;

@@ -1040,8 +1040,11 @@ window.__ModuleLoader__.load({
                     setError('');
                     setNotice('');
                     try {
-                      // 宿主没有系统文件夹选择器 API，面板是 web 页面，改用 <input type=file webkitdirectory>。
-                      // 用户选文件夹后前端读所有文件，POST 回宿主，宿主解包到临时目录再走 uploadSkillFromFolder。
+                      // 弹系统文件夹选择器：宿主 @deepseek-ai 包没有 showOpenDialog 暴露给插件，面板是 web 页面，
+                      // 改用 <input type=file webkitdirectory>（Chromium 弹原生文件夹对话框，效果与 workbuddy 相同）。
+                      // 用户选文件夹后前端 f.text() 读所有文件（相对路径 + 内容），POST 回宿主，宿主解包到临时目录再走 uploadSkillFromFolder。
+                      // 自动跳过 .git / .venv / node_modules 等无关目录，避免把整个 Python 环境读上来。
+                      const SKIP_DIRS = new Set(['.git', '.venv', 'venv', 'node_modules', '.idea', '.vscode', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', 'dist', 'build', '.next', '.nuxt', '.svelte-kit']);
                       const input = document.createElement('input');
                       input.type = 'file';
                       input.webkitdirectory = true;
@@ -1057,6 +1060,8 @@ window.__ModuleLoader__.load({
                       const files = [];
                       for (const f of picked) {
                         const rel = (f.webkitRelativePath || f.name).split('/').join('/');
+                        const parts = rel.split('/');
+                        if (parts.some((p2, i) => i > 0 && SKIP_DIRS.has(p2))) continue;
                         const text = await f.text();
                         files.push({ path: rel, content: text });
                       }

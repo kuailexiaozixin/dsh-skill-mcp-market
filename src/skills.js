@@ -490,14 +490,24 @@ export async function uploadSkillFromFolder({ folder, skillDirs, force = false }
     results.push({ ok: true, slug: finalSlug, name: meta.name, files: Object.keys(files).length, dir: targetDir, scanned: scan.allowed === true });
   };
 
+  const SKIP_DIRS = new Set([
+    ".git", ".venv", "venv", "node_modules", ".idea", ".vscode",
+    ".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache",
+    "dist", "build", ".next", ".nuxt", ".svelte-kit",
+  ]);
+
   const readFiles = async (dir, prefix) => {
     const out = {};
     const walk = async (current, p) => {
       for (const entry of await readdir(current, { withFileTypes: true })) {
         const rel = p ? `${p}/${entry.name}` : entry.name;
         const full = join(current, entry.name);
-        if (entry.isDirectory()) await walk(full, rel);
-        else out[rel] = await readFile(full, "utf8");
+        if (entry.isDirectory()) {
+          if (SKIP_DIRS.has(entry.name)) continue;
+          await walk(full, rel);
+        } else {
+          out[rel] = await readFile(full, "utf8");
+        }
       }
     };
     await walk(dir, prefix);

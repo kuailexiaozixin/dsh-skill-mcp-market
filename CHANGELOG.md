@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.18
+
+- 修「上传技能」对带 Python 虚拟环境 / 构建产物的技能目录误拒：前端 `<input type=file webkitdirectory>` 读出文件后、宿主 `uploadSkillFromFolder` 读盘时，都自动跳过 `.git`、`.venv`、`venv`、`node_modules`、`dist`、`build`、`__pycache__`、`.idea`、`.vscode`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、`.next`、`.nuxt`、`.svelte-kit` 等无关目录。
+- 修 SKILL.md 用 YAML 块级描述（`description: >` 折行 / `description: |` 保留）时 frontmatter 解析器只读到单个 `>` / `|` 字符、导致 description 为空被拒的问题：`src/frontmatter.js` 现在识别块标量，把缩进行累积成完整描述文本。
+
 ## 0.5.17
 
 - 新增「上传技能」按钮（已安装页导入行旁）：点击弹系统文件夹选择器（`<input type=file webkitdirectory>`），选中含 `SKILL.md` 的文件夹后整目录批量上传，子目录里每个含 `SKILL.md` 的逐个安装，全部走 `scanSkillBundle` 安全扫描。
