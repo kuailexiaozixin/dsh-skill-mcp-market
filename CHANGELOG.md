@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.2
+
+### 文档：安装/升级卡住、`ERR_PNPM_EPERM` 的原因与修法
+- 说明根因：pnpm 用「重命名临时目录覆盖目标目录」的方式落地包，Windows 下覆盖前要删旧目录，而 DSH 正加载着这个插件
+  → `EPERM`，表现为安装卡在 `added 0` 或直接失败。
+- 给出实测有效的修法：先 `rmdir /s /q` 删掉
+  `~/.dsh/profiles/desktop/node_modules/dsh-skill-mcp-market`，再 `dsh plugin --profile desktop add …`（实测 3.7 秒完成）；
+  或先退出 DSH 再装；或使用应用内「插件」页的更新按钮。
+- 警示：不要用 Git-Bash/MSYS 的 `rm` 删 `link:` 形式的 `node_modules` 条目——它会跟随符号链接删掉源码仓库
+  （开发期间因此损坏过一次本地 `.git` 元数据，已从存活对象重建，远端历史未受影响）。
+- 插件代码无变化。
+
 ## 0.5.1
 
 ### 修复：插件无法卸载（“其他配置仍在使用的组合包的组件，请先停用它们”）

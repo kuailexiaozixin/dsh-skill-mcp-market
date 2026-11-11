@@ -113,6 +113,37 @@ dsh plugin --profile desktop add link:/path/to/dsh-market                       
 `link:` 情况下 `bundles` 里仍写包名；改完源码用 `plugin_manager set_plugin` 把 `include:dsh-skill-mcp-market` 关一次再开一次即可重挂（见「开发」）。同一个包可以装进多个 profile，各自独立配置。
 
 
+### 安装/升级卡住或报 EPERM 怎么办
+
+两种表现，同一个原因：
+
+```
+Progress: resolved 185, reused 0, downloaded 1, added 0     # 卡住不动
+[ERR_PNPM_EPERM] [importPackage ...\node_modules\dsh-skill-mcp-market] EPERM: operation not permitted, rename '..._tmp_...' -> '...\dsh-skill-mcp-market'
+```
+
+pnpm 落地一个包的方式是：把解压好的 `<pkg>_tmp_xxx` **重命名覆盖** `<pkg>`。Windows 上覆盖前要先删掉旧目录，而 DSH 正加载着这个插件（模块已 import 进进程），这一步会 `EPERM`，于是安装卡住或直接失败。
+
+**修法（实测 3.7 秒装完）**：先手动删掉目标目录，再装。
+
+```bat
+rmdir /s /q "C:\Users\<你>\.dsh\profiles\desktop\node_modules\dsh-skill-mcp-market"
+dsh plugin --profile desktop add dsh-skill-mcp-market
+```
+
+也可以：先完全退出 DSH，再 `dsh plugin --profile desktop add dsh-skill-mcp-market`，装完重新启动；或者用应用内「插件」页的**更新**按钮（它会先停用再替换）。
+
+两个坑要避开：
+
+- **不要用 GitHub Bash / MSYS 的 `rm` 删 `link:` 形式的目录**。`node_modules\dsh-skill-mcp-market` 是指向源码仓库的符号链接，`rm` 会**跟随链接**删掉仓库里的文件（我就这样毁过一次仓库的 `.git` 元数据）。Windows 下请用 `rmdir`（只删链接本身），或在资源管理器里删除。
+- 已经是最新版本时不需要再 `add`：先确认版本
+
+```bat
+node -e "console.log(require('C:/Users/<你>/.dsh/profiles/desktop/node_modules/dsh-skill-mcp-market/package.json').version)"
+```
+
+想改回"改源码即时生效"的开发模式，再执行 `dsh plugin --profile desktop add link:D:/你的仓库路径`（同样先删掉目标目录）。
+
 ### 安装后确认
 
 1. 左侧菜单出现 **「SKILL技能&MCP连接器」**；
