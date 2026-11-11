@@ -8,9 +8,10 @@ import { downloadSkillDir, listTree, parseRepoRef, readRepoFile, resolveRef, ski
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { resolveSkillsShInstall } from "./sources.js";
 import { describeFindings, scanSkillBundle } from "./verify.js";
+import { writeJson } from "./home.js";
 import { locateSkillRoot, readZip, stripCommonPrefix } from "./zip.js";
 import { clawhubResolve, lobehubAgentSkill } from "./extra-sources.js";
-import { ensureDir, expandPath, writeJson } from "./home.js";
+import { ensureDir, expandPath } from "./home.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG_FILE = join(HERE, "..", "catalog", "skills.json");
@@ -432,3 +433,88 @@ export async function updateSkill({ dirs, slug, name, description, body }) {
 }
 
 export { readRepoFile };
+
+/**
+ * 批量上传：一次拷入一个技能「根目录」（含 SKILL.md，子目录里每个含 SKILL.md 的是子技能，逐个安装）。
+ * 宿主侧由 index.js 的 `skills.upload` RPC 调起：面板的「上传技能」按钮弹系统文件夹选择器，
+ * 选中的本地文件夹路径经 webServer RPC 回传，本函数负责校验 + 拷贝 + 安全扫描。
+ * 与 installSkill 共用同一套 writeSkill 规则（frontmatter 必填、高危扫描拦截、.market-install.json）。
+ */
+export async function uploadSkillFromFolder({ folder, skillDirs, force = false }) {
+  const roots = Array.isArray(skillDirs) && skillDirs.length > 0 ? skillDirs : [];
+  if (roots.length === 0) throw new Error("no skill directories are configured");
+  const targetRoot = roots[0];
+  await ensureDir(targetRoot);
+
+  // 校验：folder 本身必须含 SKILL.md，或至少一个一级子目录含 SKILL.md。
+  const folderStat = await stat(folder).catch(() => null);
+  if (!folderStat || !folderStat.isDirectory()) throw new Error(`不是文件夹或不存在：${folder}`);
+  const topHasSkill = existsSync(join(folder, "SKILL.md"));
+  const subSkills = [];
+  if (!topHasSkill) {
+    for (const entry of await readdir(folder, { withFileTypes: true })) {
+      if (entry.isDirectory() && existsSync(join(folder, entry.name, "SKILL.md"))) subSkills.push(entry.name);
+    }
+  }
+  if (!topHasSkill && subSkills.length === 0) {
+    throw new Error(`${folder} 里没有 SKILL.md，也不含任何带 SKILL.md 的子目录；请选一个符合 SKILL 技能格式的文件夹（根或一级子目录必须含 SKILL.md）`);
+  }
+
+  const taken = await existingSlugs(roots);
+  const nextTaken = new Set(taken);
+  const results = [];
+  const copyOne = async (slugBase, files, skillText, originPath) => {
+    const finalSlug = force ? kebab(slugBase) || slugBase : uniqueSlug(kebab(slugBase) || slugBase, nextTaken);
+    nextTaken.add(finalSlug);
+    const targetDir = join(targetRoot, finalSlug);
+    const meta = skillMetaFromText(skillText || "", finalSlug);
+    if (!meta.name || !meta.description) {
+      throw new Error(`${finalSlug}：SKILL.md 缺少 frontmatter 的 name 或 description，无法导入`);
+    }
+    const scan = scanSkillBundle({ files, skillText });
+    if (!scan.allowed && !force) {
+      throw new Error(`${finalSlug} 安全检查未通过（${scan.stats.high} 项高危）：${describeFindings(scan.findings.filter((f) => f.severity === "high"))}。确认可信后请重新上传并勾选强制。`);
+    }
+    await ensureDir(targetDir);
+    for (const [relative, content] of Object.entries(files)) {
+      const target = join(targetDir, relative);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, content, "utf8");
+    }
+    await writeJson(join(targetDir, ".market-install.json"), {
+      slug: finalSlug,
+      name: meta.name,
+      origin: { source: "upload", path: originPath },
+      installedAt: new Date().toISOString(),
+    });
+    results.push({ ok: true, slug: finalSlug, name: meta.name, files: Object.keys(files).length, dir: targetDir, scanned: scan.allowed === true });
+  };
+
+  const readFiles = async (dir, prefix) => {
+    const out = {};
+    const walk = async (current, p) => {
+      for (const entry of await readdir(current, { withFileTypes: true })) {
+        const rel = p ? `${p}/${entry.name}` : entry.name;
+        const full = join(current, entry.name);
+        if (entry.isDirectory()) await walk(full, rel);
+        else out[rel] = await readFile(full, "utf8");
+      }
+    };
+    await walk(dir, prefix);
+    return out;
+  };
+
+  if (topHasSkill) {
+    // 根目录就是一个技能：整目录拷入。
+    const files = await readFiles(folder, "");
+    await copyOne(basename(folder), files, files["SKILL.md"], folder);
+  } else {
+    // 根目录是技能集：每个带 SKILL.md 的一级子目录各装一个。
+    for (const sub of subSkills) {
+      const subPath = join(folder, sub);
+      const files = await readFiles(subPath, "");
+      await copyOne(sub, files, files["SKILL.md"], subPath);
+    }
+  }
+  return { ok: true, count: results.length, target: targetRoot, items: results };
+}

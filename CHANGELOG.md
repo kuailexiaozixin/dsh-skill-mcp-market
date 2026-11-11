@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.17
+
+- 新增「上传技能」按钮（已安装页导入行旁）：点击弹系统文件夹选择器（`<input type=file webkitdirectory>`），选中含 `SKILL.md` 的文件夹后整目录批量上传，子目录里每个含 `SKILL.md` 的逐个安装，全部走 `scanSkillBundle` 安全扫描。
+- `src/skills.js` 新增 `uploadSkillFromFolder({ folder, skillDirs, force })`：根目录含 `SKILL.md` 整目录拷入；否则扫一级子目录逐个装；都没有则报「请选一个符合 SKILL 技能格式的文件夹」。复用 `installSkill` 的 `writeSkill` 规则（frontmatter 校验、`.market-install.json` 元数据、`uniqueSlug` 去重）。
+- `index.js` 新增 `skills.upload` RPC：支持 `body.path`（宿主本地目录）或 `body.files`（前端读出的文件数组，宿主解包到临时目录再上传）；成功后对每个新装技能 `registerInstalledSkillToCatalog` 注册到 DSH `/` 浮窗。
+- `client.js`：导入行「导入」按钮旁加「上传技能」按钮，`busy==='upload'` 时禁用，成功后 notice 显示上传的 slug 列表并刷新已安装。
+
 ## 0.5.16
 
 - 「已安装」页改为**卡片网格布局**（与技能市场 / MCP 市场同款 grid，一行多张卡片自适应换列），已装技能与已装 MCP 两段都换；卡片加了 220px 最小宽度避免窄格挤压。

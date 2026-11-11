@@ -10,8 +10,7 @@
 //   `ctx.tools` immediately — also without restarting DSH.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, settingsPath } from "./src/home.js";
@@ -936,6 +935,51 @@ export async function apply(ctx, config = {}) {
           force: Boolean(body.force),
           skillDirs: settings.skillDirs,
         });
+      }
+      case "skills.upload": {
+        // 面板「上传技能」按钮弹系统文件夹选择器，选中路径回传到这里。
+        // 一次拷入整个技能根目录（含 SKILL.md），子目录里每个含 SKILL.md 的逐个安装。
+        // 也支持前端把整个文件夹的文件读出来 POST 回宿主，宿主解包到临时目录再上传。
+        const { uploadSkillFromFolder } = await import("./src/skills.js");
+        let result;
+        if (body.files && Array.isArray(body.files) && body.files.length) {
+          // 前端 <input type=file webkitdirectory> 路径：解包到临时目录
+          const tmpRoot = join(tmpdir(), `dsh-market-upload-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+          await mkdir(tmpRoot, { recursive: true });
+          try {
+            for (const f of body.files) {
+              if (!f || !f.path) continue;
+              const dest = join(tmpRoot, f.path);
+              await mkdir(dirname(dest), { recursive: true });
+              await writeFile(dest, f.content || "", "utf8");
+            }
+            result = await uploadSkillFromFolder({
+              folder: tmpRoot,
+              skillDirs: settings.skillDirs,
+              force: Boolean(body.force),
+            });
+          } finally {
+            await rm(tmpRoot, { recursive: true, force: true });
+          }
+        } else {
+          const folder = expandPath(body.path || "");
+          if (!folder) throw new Error("请提供要上传的文件夹路径或 files 数组");
+          result = await uploadSkillFromFolder({
+            folder,
+            skillDirs: settings.skillDirs,
+            force: Boolean(body.force),
+          });
+        }
+        for (const item of result.items || []) {
+          try {
+            const installed = await listInstalledSkills(settings.skillDirs);
+            const match = installed.find((s) => s.slug === item.slug);
+            if (match) await registerInstalledSkillToCatalog(match, log);
+          } catch {
+            /* registration is best-effort */
+          }
+        }
+        return result;
       }
       case "skills.preview": {
         const tmpRoot = join(tmpdir(), `dsh-market-preview-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);

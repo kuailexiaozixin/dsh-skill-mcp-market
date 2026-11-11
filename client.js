@@ -1032,6 +1032,45 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, '导入')),
+                h('button', {
+                  style: S.btn(),
+                  disabled: busy === 'upload',
+                  onClick: async () => {
+                    setBusy('upload');
+                    setError('');
+                    setNotice('');
+                    try {
+                      // 宿主没有系统文件夹选择器 API，面板是 web 页面，改用 <input type=file webkitdirectory>。
+                      // 用户选文件夹后前端读所有文件，POST 回宿主，宿主解包到临时目录再走 uploadSkillFromFolder。
+                      const input = document.createElement('input');
+                      input.type = 'file';
+                      input.webkitdirectory = true;
+                      input.multiple = true;
+                      input.style.display = 'none';
+                      document.body.appendChild(input);
+                      const picked = await new Promise((resolve) => {
+                        input.onchange = () => resolve(input.files ? Array.from(input.files) : []);
+                        input.click();
+                      });
+                      document.body.removeChild(input);
+                      if (!picked.length) return;
+                      const files = [];
+                      for (const f of picked) {
+                        const rel = (f.webkitRelativePath || f.name).split('/').join('/');
+                        const text = await f.text();
+                        files.push({ path: rel, content: text });
+                      }
+                      const result = await call('skills.upload', { files, force: false });
+                      const n = result.count || (result.items || []).length;
+                      setNotice(`已上传 ${n} 个技能（${(result.items || []).map((i) => i.slug).join('、')}，安全扫描通过）`);
+                      await loadInstalled();
+                    } catch (e) {
+                      setError(`上传失败：${e.message || e}`);
+                    } finally {
+                      setBusy('');
+                    }
+                  },
+                }, '上传技能'),
               filterText
                 ? h('div', { style: S.row },
                     h('input', {
