@@ -674,26 +674,7 @@ window.__ModuleLoader__.load({
                       },
                         h('option', { value: 'default' }, '默认顺序'),
                         h('option', { value: 'name' }, '按名称')),
-                  tab === 'mcp' && mcpSource !== 'lobehub'
-                    ? null
-                    : h('button', {
-                        style: S.btn(),
-                        disabled: busy === 'skills.search' || busy === 'mcp.search' ||
-                          (tab === 'mcp' && mcpPage >= mcpTotalPages),
-                        onClick: () => {
-                          if (tab === 'mcp') {
-                            const next = mcpPage + 1;
-                            setMcpPage(next);
-                            searchMcps(query, { page: next, append: true });
-                            return;
-                          }
-                          const next = size + 24;
-                          setSize(next);
-                          searchSkills(query, { source, size: next });
-                        },
-                      }, tab === 'mcp'
-                        ? `加载更多（${mcpPage}/${mcpTotalPages}）`
-                        : '加载更多'))
+)
               : null,
             tab === 'mcp' && mcpSource === 'lobehub' && mcpCategories.length > 0
               ? h('div', { style: S.row },
@@ -796,6 +777,29 @@ window.__ModuleLoader__.load({
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,
+            // Paging belongs under the list: reaching the last row should be the last step,
+            // not a scroll back to the toolbar.
+            tab === 'skills' || (tab === 'mcp' && mcpSource === 'lobehub')
+              ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: '16px 0 6px' } },
+                  h('button', {
+                    style: S.btn(),
+                    disabled: busy === 'skills.search' || busy === 'mcp.search' ||
+                      (tab === 'mcp' && mcpPage >= mcpTotalPages),
+                    onClick: () => {
+                      if (tab === 'mcp') {
+                        const next = mcpPage + 1;
+                        setMcpPage(next);
+                        searchMcps(query, { page: next, append: true });
+                        return;
+                      }
+                      const next = size + 24;
+                      setSize(next);
+                      searchSkills(query, { source, size: next });
+                    },
+                  }, tab === 'mcp'
+                    ? (mcpPage >= mcpTotalPages ? `已到最后一页（${mcpPage}/${mcpTotalPages}）` : `加载更多（${mcpPage}/${mcpTotalPages}）`)
+                    : '加载更多'))
+              : null,
             tab === 'installed' ? h('div', null,
               h('div', { style: S.row },
                 h('input', {
@@ -823,9 +827,44 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, '导入')),
-              h('div', { style: { ...S.title, marginBottom: 6 } }, `已装技能（${installed.length}）`),
+              h('div', { style: { ...S.title, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 } },
+                `已装技能（${installed.length}）`,
+                h('button', {
+                  style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
+                  disabled: busy === 'openDir:skills',
+                  onClick: async () => {
+                    setBusy('openDir:skills');
+                    setError('');
+                    try {
+                      const r = await call('market.openDir', { kind: 'skills' });
+                      setNotice(`已在文件管理器中打开：${r.opened}`);
+                    } catch (e) {
+                      setError(`打开目录失败：${e.message || e}`);
+                    } finally {
+                      setBusy('');
+                    }
+                  },
+                }, '打开目录'),
+                h('span', { style: { ...S.status, fontSize: 12 } }, `（可在资源管理器中直接查看 / 编辑技能文件）`)),
               installedSkills,
-              h('div', { style: { ...S.title, margin: '14px 0 6px' } }, `已装 MCP（${mounted.length}）`),
+              h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8 } },
+                `已装 MCP（${mounted.length}）`,
+                h('button', {
+                  style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
+                  disabled: busy === 'openDir:mcp',
+                  onClick: async () => {
+                    setBusy('openDir:mcp');
+                    setError('');
+                    try {
+                      const r = await call('market.openDir', { kind: 'mcp' });
+                      setNotice(`已在文件管理器中打开：${r.opened}`);
+                    } catch (e) {
+                      setError(`打开目录失败：${e.message || e}`);
+                    } finally {
+                      setBusy('');
+                    }
+                  },
+                }, '打开目录')),
               installedMcps,
             ) : null,
             tab === 'settings' && settings

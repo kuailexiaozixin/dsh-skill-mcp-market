@@ -305,7 +305,7 @@ export async function searchSkills({ query, source = "all", pageSize = 24, cache
         const result = await searchSkillsMp({ query, pageSize, cache });
         items.push(...result.items);
       } else if (name === "trusttools") {
-        const result = await searchTrustTools({ query, pageSize });
+        const result = await searchTrustTools({ query, pageSize, cache });
         items.push(...result.items);
       } else if (name === "lobehub-agent") {
         const result = await searchLobeHubSkills({ query, pageSize, cache });

@@ -59,16 +59,39 @@ export async function searchClawHub({ query = "", pageSize = 24 }) {
 }
 
 // ---------------------------------------------------------------- trusttools
-export async function searchTrustTools({ query = "", pageSize = 24 }) {
-  // ai.trusttools.cn drops this process's TLS handshake (same class of failure as
-  // skillsmp), so the POST goes through python → curl → fetch instead of plain fetch.
-  const data = await postJsonEscalating(
-    "https://ai.trusttools.cn/api/skills/search",
-    { q: query, page: 1, pageSize },
-    { timeoutMs: 25000 },
-  );
-  const rows = Array.isArray(data.data) ? data.data : [];
-  const items = rows.map((raw) => {
+export async function searchTrustTools({ query = "", pageSize = 24, cache } = {}) {
+  // trusttools ignores `pageSize` and always answers with 10 rows per page, so a full grid
+  // needs several pages stitched together (pages are disjoint, verified).
+  const wanted = Math.max(1, Math.min(60, Number(pageSize) || 24));
+  const pagesNeeded = Math.min(6, Math.ceil(wanted / 10));
+  const perPage = 10;
+  const rows = [];
+  const seen = new Set();
+  let total = 0;
+  for (let page = 1; page <= pagesNeeded; page += 1) {
+    const key = `trusttools:${String(query).trim().toLowerCase()}:${page}`;
+    let data = cache ? await cache.get(key, 10 * 60 * 1000) : undefined;
+    if (!data) {
+      data = await postJsonEscalating(
+        "https://ai.trusttools.cn/api/skills/search",
+        { q: query, page, pageSize: perPage },
+        { timeoutMs: 25000 },
+      );
+      if (cache) await cache.put(key, data);
+    }
+    const batch = Array.isArray(data.data) ? data.data : [];
+    if (data.pagination && Number(data.pagination.total) > 0) total = Number(data.pagination.total);
+    let added = 0;
+    for (const raw of batch) {
+      const id = String(raw.id ?? raw.slug ?? raw.name ?? "");
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      rows.push(raw);
+      added += 1;
+    }
+    if (batch.length === 0 || added === 0) break; // catalogue exhausted or the page repeats
+  }
+  const items = rows.slice(0, wanted).map((raw) => {
     const repo = String(raw.repo_url || "").replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "");
     const path = String(raw.repo_path || "").replace(/\/SKILL\.md$/i, "");
     return {
@@ -91,7 +114,7 @@ export async function searchTrustTools({ query = "", pageSize = 24 }) {
       installable: Boolean(repo && path),
     };
   });
-  return { source: "trusttools", items, total: rows.length };
+  return { source: "trusttools", items, total: total || items.length };
 }
 
 // ---------------------------------------------------------------- LobeHub agents (skills)

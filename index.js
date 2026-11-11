@@ -8,6 +8,7 @@
 // * MCP servers are plain `<dir>/<serverName>.json` definitions. Each enabled definition is
 //   mounted as a live `@deepseek-ai/dsh-mcp-client` plugin instance, whose tools register on
 //   `ctx.tools` immediately — also without restarting DSH.
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
@@ -967,6 +968,20 @@ export async function apply(ctx, config = {}) {
             envWritten,
           }],
         };
+      }
+      case "market.openDir": {
+        // "Where are my installed skills?" is a real question: open the folder in the OS file
+        // manager so the user can inspect or edit SKILL.md / the MCP JSON in place.
+        const kind = String(body.kind || "skills") === "mcp" ? "mcp" : "skills";
+        const dirs = kind === "mcp" ? settings.mcpDirs : settings.skillDirs;
+        const target = (dirs || []).find(Boolean);
+        if (!target) throw new Error(kind === "mcp" ? "还没有配置 MCP 目录" : "还没有配置技能目录");
+        await ensureDir(target);
+        await new Promise((resolve) => {
+          const command = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
+          execFile(command, [target], { windowsHide: false }, () => resolve());
+        });
+        return { opened: target, kind };
       }
       case "mcp.list":
         return { mcpDirs: settings.mcpDirs, items: await mcp.list() };
