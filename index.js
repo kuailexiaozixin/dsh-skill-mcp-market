@@ -22,7 +22,7 @@ import { installSkill, listInstalledSkills, uninstallSkill, updateSkill } from "
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
 import { fallbackCards, registryDefinitionByName, searchMcpRegistry } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
-import { makeCache, searchSkills, warmMarketCache } from "./src/sources.js";
+import { makeCache, searchSkills, warmMarketCache, LOAD_MORE_CAPABLE } from "./src/sources.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
 
@@ -847,16 +847,23 @@ export async function apply(ctx, config = {}) {
       case "settings.set":
         return applyPaths(body);
       case "skills.search": {
+        const wantedSource = String(body.source || "all");
         const result = await searchSkills({
           query: body.query || "",
-          source: body.source || "all",
+          source: wantedSource,
           category: body.category || "",
           page: body.page || 1,
           pageSize: body.pageSize || 24,
         });
         const installedNow = await listInstalledSkills(settings.skillDirs);
         const taken = new Set(installedNow.map((item) => item.slug));
-        return { ...result, items: result.items.map((item) => ({ ...item, installed: taken.has(item.slug) })) };
+        // 只有 skillhub 的「加载更多」能取到新一批；其余源是单页/无分页，点了也不会变。
+        const canLoadMore = wantedSource === "all" || LOAD_MORE_CAPABLE.has(wantedSource);
+        return {
+          ...result,
+          canLoadMore,
+          items: result.items.map((item) => ({ ...item, installed: taken.has(item.slug) })),
+        };
       }
       case "skills.install": {
         const installed = await installSkill({

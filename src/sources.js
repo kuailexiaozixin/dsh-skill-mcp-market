@@ -293,6 +293,11 @@ const fallbackCache = makeCache(join(process.env.TEMP || process.env.TMPDIR || "
 
 export const ALL_SOURCES = ["skills.sh", "clawhub", "skillsmp", "trusttools", "browse.sh", "lobehub-agent", "skillhub"];
 
+// skillhub is the only source whose upstream honours a `page` parameter; every other
+// source returns a single fixed page, so「加载更多」(pageSize growing by 24) only
+// genuinely extends the list for skillhub. Expose that fact to the client.
+export const LOAD_MORE_CAPABLE = new Set(["skillhub"]);
+
 export async function searchSkills({ query, source = "all", pageSize = 24, cache = fallbackCache }) {
   const wanted = source === "all" ? ALL_SOURCES : [source];
   const items = [];
@@ -306,6 +311,7 @@ export async function searchSkills({ query, source = "all", pageSize = 24, cache
         items.push(...result.items);
       } else if (name === "clawhub") {
         const result = await searchClawHub({ query, pageSize });
+        if (result.hint) hints.push(`clawhub：${result.hint}`);
         items.push(...result.items);
       } else if (name === "skillsmp") {
         const result = await searchSkillsMp({ query, pageSize, cache });
@@ -320,7 +326,10 @@ export async function searchSkills({ query, source = "all", pageSize = 24, cache
         const result = await searchBrowseSh({ query, pageSize, cache });
         items.push(...result.items);
       } else if (name === "skillhub") {
-        const result = await searchSkillHub({ query, pageSize });
+        // skillhub is the only source with real page params, so「加载更多」(pageSize
+        // grows by 24) only genuinely extends the list for it; every other source's
+        // upstream is single-page (or un-paginated), so load-more re-fetches the same rows.
+        const result = await searchSkillHub({ query, page: 1, pageSize });
         items.push(...result.items);
       }
     } catch (error) {

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.9
+
+### 「加载更多」对各源真实可用 + 修复切换源反复重查/不可达误报
+- **加载更多**：此前点「加载更多」只是把 `size` 加 24 再查一次同一查询——
+  多数技能源（skills.sh / clawhub / skillsmp / trusttools / lobehub-agent）的上游是**单页/无分页**，
+  重新查只会拿到同一批，所以按钮「点了没反应」甚至把整页换掉。现在：
+  - 后端按源判定 `canLoadMore`（只有 `skillhub` 支持真实翻页；MCP 的 LobeHub 本就带 `page`），
+    非可翻页的源「加载更多」置灰并标注「（当前源已取完）」，避免误点；
+  - skillhub「加载更多」真正传 `page`，取到新一批；
+  - clawhub 浏览改用 `?limit=`（实测 limit=50 有效），搜索拼接两页，加载更多能取到更多；
+  - skills.sh 浏览/搜索的描述补齐加**负缓存**（404/403/451 才记），把 80s 级等待降到 ~10s。
+- **切源不再白屏重查**（0.5.8 已做的 stale-while-revalidate 结果缓存）保留；本次修复
+  clawhub「不可达：fetch failed」的间歇误报：clawhub 浏览/搜索现在对网络错误做 1 次重试，
+  且把「不可达」与「无结果」分开提示。
+- 其余源行为经测试集核实：skillsmp/lobehub-agent/trusttools/skillhub 浏览与搜索均正常返回、
+  描述完整；MCP registry/lobehub 搜索、分页、分类、排序正常。
+
 ## 0.5.8
 
 ### skills.sh 描述补齐 + 切源走缓存（不再白屏重查）

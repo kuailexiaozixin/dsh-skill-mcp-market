@@ -159,6 +159,9 @@ window.__ModuleLoader__.load({
       // 切源/改查询时若命中就立即渲染缓存、后台再刷新，避免每次切源都白屏重查。
       const resultCacheRef = useRef({});
       const [nativeDirs, setNativeDirs] = useState([]);
+      // 「加载更多」对各源的真实可用性（后端按源判定）+ 一句提示
+      const [skillsCanLoadMore, setSkillsCanLoadMore] = useState(false);
+      const [skillsLoadMoreNote, setSkillsLoadMoreNote] = useState('');
 
       const loadInstalled = useCallback(async () => {
         const [s, m] = await Promise.all([call('skills.list'), call('mcp.list')]);
@@ -197,6 +200,8 @@ window.__ModuleLoader__.load({
           const rows = d.items || [];
           resultCacheRef.current[cacheKey] = { items: rows, hints: d.hints || [], degraded: d.degraded || [] };
           setSkills(rows);
+          setSkillsCanLoadMore(Boolean(d.canLoadMore));
+          setSkillsLoadMoreNote(d.canLoadMore ? '' : '（当前源单次返回完整目录，「加载更多」不会取到更多，可换 skillhub 源或用搜索框精确查）');
           const hints = (d.hints || []).filter(Boolean);
           if (!(d.items || []).length) {
             // An empty market is either "no match", "needs a keyword" or "upstream refused us".
@@ -869,8 +874,10 @@ window.__ModuleLoader__.load({
               ? h('div', { style: { display: 'flex', justifyContent: 'center', padding: '16px 0 6px' } },
                   h('button', {
                     style: S.btn(),
-                    disabled: busy === 'skills.search' || busy === 'mcp.search' ||
-                      (tab === 'mcp' && mcpPage >= mcpTotalPages),
+                    disabled: (tab === 'skills' && !skillsCanLoadMore) ||
+                      (tab === 'mcp' && mcpPage >= mcpTotalPages) ||
+                      busy === 'skills.search' || busy === 'mcp.search',
+                    title: tab === 'skills' && !skillsCanLoadMore ? skillsLoadMoreNote : '',
                     onClick: () => {
                       if (tab === 'mcp') {
                         const next = mcpPage + 1;
@@ -878,13 +885,14 @@ window.__ModuleLoader__.load({
                         searchMcps(query, { page: next, append: true });
                         return;
                       }
+                      if (!skillsCanLoadMore) return;
                       const next = size + 24;
                       setSize(next);
                       searchSkills(query, { source, size: next });
                     },
                   }, tab === 'mcp'
                     ? (mcpPage >= mcpTotalPages ? `已到最后一页（${mcpPage}/${mcpTotalPages}）` : `加载更多（${mcpPage}/${mcpTotalPages}）`)
-                    : '加载更多'))
+                    : (skillsCanLoadMore ? '加载更多' : '加载更多（当前源已取完）')))
               : null,
             tab === 'installed' ? h('div', null,
               h('div', { style: S.row },

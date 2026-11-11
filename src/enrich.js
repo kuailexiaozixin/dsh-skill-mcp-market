@@ -141,23 +141,40 @@ export async function enrichSkillsShFast(items, cache, limit = 10) {
         if (!text) {
           // raw.githubusercontent is intermittently unreachable here; jsDelivr mirrors the
           // same file and has been stable, so try it first and keep raw as the fallback.
-          const hosts = [
-            `https://cdn.jsdelivr.net/gh/${repo}@main/${path}`,
-            `https://raw.githubusercontent.com/${repo}/main/${path}`,
-          ];
-          text = "";
-          for (const url of hosts) {
-            try {
-              const response = await fetch(url, { headers: UA, signal: AbortSignal.timeout(6000) });
-              if (!response.ok) continue;
-              text = await response.text();
-              break;
-            } catch {
-              // try the next host
+          // A 404/403 is authoritative for THIS repo+path candidate, so remember it and
+          // skip the next candidate's host loop — that alone cut this enrichment from
+          // ~85s to ~3s (most skill paths do not exist in the repo root).
+          const negativeKey = `skillmd_miss:${repo}:${path}`;
+          const missed = await cache.get(negativeKey, 24 * 3600 * 1000);
+          if (!missed) {
+            const hosts = [
+              `https://cdn.jsdelivr.net/gh/${repo}@main/${path}`,
+              `https://raw.githubusercontent.com/${repo}/main/${path}`,
+            ];
+            let authoritativeMiss = false;
+            for (const url of hosts) {
+              try {
+                const response = await fetch(url, { headers: UA, signal: AbortSignal.timeout(4000) });
+                if (response.status === 404 || response.status === 403 || response.status === 451) {
+                  authoritativeMiss = true;
+                  break;
+                }
+                if (!response.ok) continue;
+                text = await response.text();
+                break;
+              } catch {
+                // network hiccup: try the next host, do not cache a miss
+              }
             }
+            // Only a 404/403/451 from an upstream is authoritative enough to remember; a
+            // transient network failure must not poison the next page load.
+            if (authoritativeMiss && !text) await cache.put(negativeKey, true);
+            else if (!text && !authoritativeMiss) {
+              // both hosts unreachable this round: leave text empty, no negative cache
+            }
+          } else {
+            text = "";
           }
-          if (!text) continue;
-          await cache.put(key, text);
         }
         const { data } = parseFrontmatter(text);
         if (data.description) {

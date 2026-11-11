@@ -27,14 +27,55 @@ async function postJson(url, body, timeoutMs = 15000) {
 }
 
 // ---------------------------------------------------------------- clawhub
+// clawhub 的 fetch 在本机偶发瞬时中断（fetch failed），做一次网络重试，
+// 避免把一次抖动当成「不可达」误导用户。
+async function getJsonClawHub(url, attempt = 0) {
+  try {
+    return await getJson(url);
+  } catch (error) {
+    if (attempt < 1 && /fetch failed|ETIMEDOUT|ECONNRESET|socket|network|timeout/i.test(String((error && error.message) || error))) {
+      return getJsonClawHub(url, attempt + 1);
+    }
+    throw error;
+  }
+}
+
 export async function searchClawHub({ query = "", pageSize = 24 }) {
-  const data = query.trim()
-    ? await getJson(`https://clawhub.ai/api/v1/search?q=${encodeURIComponent(query)}`)
-    : await getJson("https://clawhub.ai/api/v1/skills");
-  const rows = Array.isArray(data.results) ? data.results : Array.isArray(data.items) ? data.items : [];
-  const items = rows.slice(0, pageSize).map((raw) => {
+  const wanted = Math.max(1, Math.min(50, Number(pageSize) || 24));
+  const q = String(query || "").trim();
+  let data;
+  if (q) {
+    // search 端点固定回 10 条（limit 参数无效），多取 2 页本地过滤拼接
+    const [first, second] = await Promise.all([
+      getJsonClawHub(`https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}&limit=10`).catch(() => null),
+      getJsonClawHub(`https://clawhub.ai/api/v1/search?q=${encodeURIComponent(q)}&page=2&limit=10`).catch(() => null),
+    ]);
+    if (!first) throw new Error("clawhub 搜索不可达（网络中断，已重试一次）");
+    const rows0 = Array.isArray(first?.results) ? first.results : Array.isArray(first?.items) ? first.items : [];
+    const rows1 = second ? (Array.isArray(second?.results) ? second.results : Array.isArray(second?.items) ? second.items : []) : [];
+    const seen = new Set();
+    const merged = [];
+    for (const raw of [...rows0, ...rows1]) {
+      const key = String(raw.id ?? raw.slug ?? raw.displayName ?? "");
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      merged.push(raw);
+    }
+    return mapClawHubRows(merged, q, "search");
+  }
+  // 浏览：首页列表支持 limit（实测 limit=50 有效），一次取够「加载更多」所需
+  data = await getJsonClawHub(`https://clawhub.ai/api/v1/skills?limit=${wanted}`);
+  const rows = Array.isArray(data.items) ? data.items : Array.isArray(data.results) ? data.results : [];
+  const out = mapClawHubRows(rows, q, "browse", wanted);
+  // 区分「上游可达但没有数据」与「不可达」：可达但空就给明确提示，免得误报 fetch failed
+  if (!rows.length) out.hint = "clawhub 当前没有返回条目（可达，但列表为空）";
+  return out;
+}
+
+function mapClawHubRows(rows, q, mode, limitOverride) {
+  const limit = limitOverride ?? 24;
+  const items = (Array.isArray(rows) ? rows : []).slice(0, limit).map((raw) => {
     const install = raw.install || {};
-    // Listing rows carry ownerHandle/slug instead of install.reference.
     const reference =
       String(install.reference || "").trim() ||
       (raw.ownerHandle && raw.slug ? `${raw.ownerHandle}/${raw.slug}` : "");
@@ -53,9 +94,11 @@ export async function searchClawHub({ query = "", pageSize = 24 }) {
       downloads: Number(raw.downloads || raw.metrics?.rolling60DayInstalls || 0) || 0,
       category: raw.category || "",
       installable: Boolean(reference),
+      // 搜索端点无分页；浏览端点支持 limit。让客户端据此决定「加载更多」是否可用
+      paged: mode === "browse",
     };
   });
-  return { source: "clawhub", items, total: rows.length };
+  return { source: "clawhub", items, total: items.length };
 }
 
 // ---------------------------------------------------------------- trusttools
