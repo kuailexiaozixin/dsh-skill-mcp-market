@@ -91,6 +91,7 @@ window.__ModuleLoader__.load({
         font: 'inherit',
       },
       card: {
+        minWidth: 220,
         border: '1px solid var(--dsh-border, #eaeef2)',
         borderRadius: 10,
         padding: '10px 12px',
@@ -1063,7 +1064,7 @@ window.__ModuleLoader__.load({
                   },
                 }, '打开目录'),
                 h('span', { style: { ...S.status, fontSize: 12 } }, `（可在资源管理器中直接查看 / 编辑技能文件）`)),
-              installedSkills,
+              h('div', { style: S.grid }, installedSkills),
               h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8 } },
                 `已装 MCP（${filteredMounted.length}）`,
                 h('button', {
@@ -1082,7 +1083,7 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, '打开目录')),
-              installedMcps,
+              h('div', { style: S.grid }, installedMcps),
             ) : null,
             tab === 'settings' && settings
               ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
