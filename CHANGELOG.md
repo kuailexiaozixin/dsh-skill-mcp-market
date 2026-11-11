@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.5
+
+### 安装技能后立即出现在对话框 / 浮窗里
+- 之前：`skill_market_install` 把技能装到 `settings.skillDirs[0]`，DSH 的"技能目录"扫描不会把这份技能列进
+  对话框输入 `/` 时弹出的浮窗里（要重启 DSH 才可见）。
+- 现在：安装成功后，插件往 DSH 原生扫描路径 `$AGENTS_HOME/skills/` 写一份 junction（Windows）/ symlink（其它平台），
+  指向技能实际安装位置；DSH 会把它列进"技能目录"，`/` 浮窗随之更新，**无需重启**。
+- 卸载不自动清理这份 junction（避免误删用户手工放置的），需要时手工 `rmdir "$AGENTS_HOME\skills\<slug>"`。
+- 插件代码无其他变化。
+
 ## 0.5.4
 
 ### 交互：「详情/编辑」改为全屏模态

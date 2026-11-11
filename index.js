@@ -137,6 +137,30 @@ async function loadLobeHubCatalog(cache, query = "", options = {}) {
   }
 }
 
+async function registerInstalledSkillToCatalog(installed, log) {
+  // 把已安装技能注册到 DSH 的"技能目录"（对话框 / 浮窗用的那份）：
+  // 往 $AGENTS_HOME/skills 写一份 junction（Windows）/ symlink（其它平台），指向技能实际安装位置。
+  // 这份 junction 是 DSH 原生扫描路径，DSH 会把它列进"技能目录"，/ 浮窗随之更新，无需重启。
+  if (!installed || !installed.dir) return;
+  const fs = await import("node:fs");
+  const { join: joinPath } = await import("node:path");
+  const { homedir } = await import("node:os");
+  const agentsHome = process.env.AGENTS_HOME || joinPath(homedir(), ".agents");
+  const skillsDir = joinPath(agentsHome, "skills");
+  fs.mkdirSync(skillsDir, { recursive: true });
+  const linkPath = joinPath(skillsDir, installed.slug);
+  if (fs.existsSync(linkPath)) return;
+  try {
+    await new Promise((resolve, reject) => {
+      fs.symlink(installed.dir, linkPath, process.platform === "win32" ? "junction" : "dir",
+        (err) => (err ? reject(err) : resolve()));
+    });
+    if (log) log("info", `dsh-market: 已注册技能 ${installed.slug} 到 $AGENTS_HOME/skills（/ 浮窗可见）`);
+  } catch (e) {
+    if (log) log("warn", `dsh-market: 注册 ${installed.slug} 到 / 浮窗失败：${e.message}`);
+  }
+}
+
 async function loadMcpCatalog(cache, query = "", source = "registry", options = {}) {
   if (source === "lobehub") return loadLobeHubCatalog(cache, query, options);
   const key = `registry:v2:${String(query || "").trim().toLowerCase() || "all"}:60`;
@@ -815,8 +839,8 @@ export async function apply(ctx, config = {}) {
         const taken = new Set(installedNow.map((item) => item.slug));
         return { ...result, items: result.items.map((item) => ({ ...item, installed: taken.has(item.slug) })) };
       }
-      case "skills.install":
-        return installSkill({
+      case "skills.install": {
+        const installed = await installSkill({
           source: body.source || "github",
           reference: body.reference,
           skillDir: body.skillDir || "",
@@ -826,6 +850,10 @@ export async function apply(ctx, config = {}) {
           force: Boolean(body.force),
           skillDirs: settings.skillDirs,
         });
+        // 让新装技能立即出现在对话框 / 浮窗里：往 DSH 原生扫描路径写一份 junction/symlink
+        await registerInstalledSkillToCatalog(installed, log);
+        return installed;
+      }
       case "skills.list":
         return { dirs: settings.skillDirs, items: await listInstalledSkills(settings.skillDirs) };
       case "skills.uninstall":
