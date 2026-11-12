@@ -9,7 +9,8 @@
 //   mounted as a live `@deepseek-ai/dsh-mcp-client` plugin instance, whose tools register on
 //   `ctx.tools` immediately — also without restarting DSH.
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -424,17 +425,104 @@ export async function apply(ctx, config = {}) {
   // 应用内置 skills/、插件包内 assets/**/SKILL.md。这里把这两套合并起来，让面板"已安装"
   // 能列出所有已安装的技能（不只是 market 装的那部分）。
   async function collectDshNativeSkillDirs() {
-    const { homedir } = await import("node:os");
-    const { join: joinPath, resolve: resolvePath } = await import("node:path");
     const dirs = [];
     // 1) $AGENTS_HOME/skills（DSH 原生扫描路径）
-    const agentsHome = process.env.AGENTS_HOME || joinPath(homedir(), ".agents");
-    dirs.push(joinPath(agentsHome, "skills"));
+    const agentsHome = process.env.AGENTS_HOME || join(homedir(), ".agents");
+    dirs.push(join(agentsHome, "skills"));
     // 2) market settings.skillDirs（用户自定义安装目录）
     for (const d of settings.skillDirs) dirs.push(d);
+    // 3) 宿主安装目录内的应用内置技能（resources/runtime/office-skills 等，
+    //    是 app.asar 解包后的真实目录，可直接读）
+    const resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : "";
+    if (resourcesPath) {
+      const runtimeDir = join(resourcesPath, "runtime");
+      if (existsSync(runtimeDir)) {
+        for (const d of findSkillDirs(runtimeDir)) dirs.push(d);
+      }
+    }
+    // 4) 插件包内携带的 SKILL.md（profile node_modules 下每个插件的 assets/**/SKILL.md）
+    //    app.asar 内部的 @deepseek-ai 技能由 DSH 原生 catalog 扫描处理（asar 不是真目录，
+    //    无法直接 readdir），这里只补 profile node_modules 里插件包自带的 SKILL.md
+    //    （如 @zseven-w/dsh-openpencil 的 openpencil-design）。
+    const profileNMDir = findProfileNodeModules();
+    if (profileNMDir && existsSync(profileNMDir)) {
+      for (const entry of readdirSync(profileNMDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const pluginPkgDir = join(profileNMDir, entry.name);
+        // scoped packages: @scope/name — look under the scope dir too
+        if (entry.name.startsWith("@")) {
+          let scoped = [];
+          try {
+            scoped = readdirSync(pluginPkgDir, { withFileTypes: true }).filter((s) => s.isDirectory());
+          } catch {
+            /* ignore */
+          }
+          for (const sub of scoped) {
+            for (const d of findSkillDirs(join(pluginPkgDir, sub.name))) dirs.push(d);
+          }
+        } else {
+          for (const d of findSkillDirs(pluginPkgDir)) dirs.push(d);
+        }
+      }
+    }
     // 去重 + 去空
     const seen = new Set();
     return dirs.filter((d) => d && !seen.has(d) && seen.add(d));
+  }
+
+  // 递归查找包目录内所有"含 SKILL.md 子目录"的父目录（深度上限 4，避免遍历过深）。
+  // 返回的是 listInstalledSkills 能直接扫描的目录——即"技能子目录的父目录"，
+  // 因为 listInstalledSkills(dirs) 对每个 dir 做 readdir 找子目录里的 SKILL.md。
+  function findSkillDirs(pkgDir, depth = 0) {
+    if (depth > 4) return [];
+    const out = [];
+    let entries = [];
+    try {
+      entries = readdirSync(pkgDir, { withFileTypes: true });
+    } catch {
+      return out;
+    }
+    // 检查 pkgDir 是否有子目录含 SKILL.md → pkgDir 本身就是一个可扫描的"技能根目录"
+    let hasSkillChild = false;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      if (existsSync(join(pkgDir, entry.name, "SKILL.md"))) {
+        hasSkillChild = true;
+        break;
+      }
+    }
+    if (hasSkillChild) out.push(pkgDir);
+    // 继续向下递归
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const name = entry.name;
+      if (name === "node_modules" || name.startsWith(".")) continue;
+      out.push(...findSkillDirs(join(pkgDir, name), depth + 1));
+    }
+    return out;
+  }
+
+  // 定位 profile 的 node_modules 目录（宿主内 process.env.DSH_PROFILE_DIR 优先，
+  // 否则扫描 $DSH_HOME/profiles/*/node_modules，取第一个存在的）
+  function findProfileNodeModules() {
+    const profileDir = process.env.DSH_PROFILE_DIR;
+    if (profileDir && existsSync(join(profileDir, "node_modules"))) {
+      return join(profileDir, "node_modules");
+    }
+    const profilesDir = join(homedir(), ".dsh", "profiles");
+    if (existsSync(profilesDir)) {
+      try {
+        for (const entry of readdirSync(profilesDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const nm = join(profilesDir, entry.name, "node_modules");
+          if (existsSync(nm)) return nm;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return "";
   }
 
   async function applyPaths(args) {

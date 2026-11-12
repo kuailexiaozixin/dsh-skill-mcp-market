@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.20
+
+- **「已安装」面板补全 DSH 内置与插件携带技能**（`collectDshNativeSkillDirs` 重写）：
+  - 原实现只收集 `$AGENTS_HOME/skills` + `settings.skillDirs`（market 安装目录 + .custom-skills），遗漏了两类技能：
+    1. **宿主安装目录内的应用内置技能**（`resources/runtime/office-skills/`，office/office-docx/office-pptx 等 7 个）；
+    2. **profile node_modules 里插件包自带的 SKILL.md**（如 `@zseven-w/dsh-openpencil` 的 openpencil-design）。
+  - 新实现追加两个扫描源：
+    - `process.resourcesPath`（Electron 宿主注入）→ `resources/runtime/` 下递归找含 SKILL.md 子目录的父目录；
+    - `findProfileNodeModules()`（优先 `DSH_PROFILE_DIR` 环境变量，否则扫 `~/.dsh/profiles/*/node_modules`）→ 遍历顶层包（scoped `@scope/name` 展开一层）递归找技能目录。
+  - `findSkillDirs` 返回"含 SKILL.md 子目录的父目录"（与 `listInstalledSkills` 的扫描语义一致——后者对每个 dir 做 readdir 找子目录里的 SKILL.md）。
+  - 验证：宿主上下文 dry-run 共 13 个技能（用户 5 + 内置 7 + 插件 1），`skills.list` RPC 返回全部四类来源。
+
 ## 0.5.19
 
 - **对话框底部按钮栏新增「技能」「MCP」两个快捷按钮**（composer 输入行左侧，`conversation.input.left` 槽位）：
