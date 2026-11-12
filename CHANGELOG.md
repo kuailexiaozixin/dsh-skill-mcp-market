@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.19
+
+- **对话框底部按钮栏新增「技能」「MCP」两个快捷按钮**（composer 输入行左侧，`conversation.input.left` 槽位）：
+  - 点「技能」弹出已安装技能列表（宿主 RPC `skills.list`）；点「MCP」弹出已安装 MCP 列表（宿主 RPC `mcp.list`）。
+  - 点击条目把一段调用提示**插入输入框草稿**（不覆盖已有内容、不直接发送）：技能插 `使用技能 /slug（简介）…`，MCP 插 `使用 MCP 连接器 name（transport/挂载状态/工具前 8 个）…`。
+  - 弹窗底部「去技能市场 / 去 MCP 市场」按钮经宿主 `layout.selectPanel('dsh-market')` 直接激活市场面板。
+  - 交互细节：外部点击 / Escape 关闭（quick-resume popover 范式），按钮 `onMouseDown` 阻止失焦，已加载列表在会话内缓存避免重复 RPC。
+  - `package.json` 的 `dsh.client` 补 `inject: ["@deepseek-ai/dsh-client-ui-conversation"]`，宿主先载入 conversation 包（提供 `inputActions` / `useInput`）再加载本插件浏览器半边。
+- **预览提速：github / skills.sh（裸 owner/repo 与页面 URL）走单文件快路径**（`skills.preview`）
+  - 原路径：整个技能目录 `listTree` + 逐文件下载 + 读回再删临时目录（本机直连 GitHub 不稳时极慢，用户反馈「预览和安装的速度都很慢，耗时很长」）。
+  - 快路径：只拉 `SKILL.md` 一个文件（raw → jsDelivr 兜底），用 `skillMetaFromText` 解析 frontmatter 即返回；单文件取失败（404/网络）才回退整目录路径。
+  - skills.sh 裸 `owner/repo` 直接走 github 快路径；页面 URL 用 `lookupSkillShRepo` 本地正则解析出 repo+skill 后同样只拉单文件，免掉原来「抓整页 → 正则解析 npx 命令」的 25 秒网络跳（`src/sources.js` 新增 `lookupSkillShRepo` 导出）。
+  - 安装（`skills.install`）保持全目录下载不变（预览只是看简介，快路径不能替代安装）；skills.sh 安装路径改走带缓存的 `resolveSkillsShInstall(url, cache)`（`src/skills.js` 签名加 `cache` 参数，`index.js` 三处调用点传 `marketCache`），首次抓页后 24h 内重复安装/预览免再抓。
+
 ## 0.5.18
 
 - 修「上传技能」对带 Python 虚拟环境 / 构建产物的技能目录误拒：前端 `<input type=file webkitdirectory>` 读出文件后、宿主 `uploadSkillFromFolder` 读盘时，都自动跳过 `.git`、`.venv`、`venv`、`node_modules`、`dist`、`build`、`__pycache__`、`.idea`、`.vscode`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、`.next`、`.nuxt`、`.svelte-kit` 等无关目录。

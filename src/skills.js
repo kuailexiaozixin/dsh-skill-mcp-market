@@ -93,7 +93,7 @@ async function existingSlugs(dirs) {
  * Install a skill into the first configured skill directory.
  * Supported sources: `github` (owner/repo[/sub/path]), `url` (a SKILL.md or raw file URL), `skillhub` (needs upstream_url), `local` (a directory on disk).
  */
-export async function installSkill({ source = "github", reference = "", skillDir = "", dir = "", name = "", ref = "", force = false, skillDirs }) {
+export async function installSkill({ source = "github", reference = "", skillDir = "", dir = "", name = "", ref = "", force = false, skillDirs, cache } = {}) {
   const roots = skillDirs && skillDirs.length > 0 ? skillDirs : [];
   if (roots.length === 0) throw new Error("no skill directories are configured");
   const targetRoot = dir ? expandPath(dir) : roots[0];
@@ -288,7 +288,9 @@ export async function installSkill({ source = "github", reference = "", skillDir
         skillDirs,
       });
     }
-    const { repo, skill } = await resolveSkillsShInstall(raw);
+    // The host market cache lets resolveSkillsShInstall skip the 25-second page fetch when
+    // it can parse the URL locally or read a previously resolved entry.
+    const { repo, skill } = await resolveSkillsShInstall(raw, cache);
     return installSkill({
       source: "github",
       reference: ref ? `${repo}@${ref}` : repo,

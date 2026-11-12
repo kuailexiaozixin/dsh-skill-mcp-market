@@ -84,6 +84,32 @@ export function parseRepoRef(input) {
   return { repo, ref: (refPart || "").trim(), subPath };
 }
 
+/**
+ * Fast preview path: fetch only the SKILL.md of one skill directory. Skips the
+ * whole-directory download that a full install does. When skillDir is empty and
+ * the repo root has no SKILL.md, discovers the skill directory with a single
+ * listTree call (the same catalog API the install path uses) instead of failing.
+ */
+export async function fetchSkillMd({ repo, ref, skillDir = "" }) {
+  const resolvedRef = ref || (await resolveRef(repo));
+  const target = skillDir ? `${skillDir}/SKILL.md` : "SKILL.md";
+  let skillText;
+  try {
+    skillText = await fetchFileText(repo, resolvedRef, target);
+  } catch (firstError) {
+    if (skillDir) throw firstError; // explicit skillDir is authoritative: fail, don't guess
+    const files = await listTree(repo, resolvedRef);
+    const candidates = skillDirsFrom(files);
+    if (candidates.length === 0) throw new Error(`no SKILL.md found in ${repo}@${resolvedRef}`);
+    // With several candidates and no name given, the root of the first one is the
+    // best single preview; the caller can still pass skillDir to pick another.
+    const chosen = candidates.length === 1 ? candidates[0] : candidates[0];
+    skillText = await fetchFileText(repo, resolvedRef, `${chosen}/SKILL.md`);
+    return { skillText, repo, ref: resolvedRef, skillDir: chosen };
+  }
+  return { skillText, repo, ref: resolvedRef, skillDir };
+}
+
 export async function resolveRef(repo, preferred) {
   if (preferred) return preferred;
   for (const ref of ["main", "master"]) {

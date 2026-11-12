@@ -325,7 +325,34 @@ async function lobehubSlugs(cache) {
 /** Resolve one skills.sh page into the exact install target it advertises.
  *  The page embeds `npx skills add <repo> --skill <name>`; the repo path inside the
  *  repository is resolved later against the repository tree. */
-export async function resolveSkillsShInstall(url) {
+const SKILLS_SH_INSTALL_RESOLVED_KEY = "skills_sh_install_resolved_v1";
+
+/**
+ * Parse a skills.sh page URL into its owner/repo + skill name without fetching the page.
+ * The page URL shape is `https://www.skills.sh/<owner>/<repo>/<slug>` (see SKILLS_SH_URL_RE).
+ * The install target is the `owner/repo` GitHub repo with skill dir `slug`, which matches
+ * what the page's `npx skills add <repo> --skill <slug>` command resolves to, so when the
+ * URL matches this shape we can skip the 25-second page fetch entirely. Returns null when
+ * the URL does not match (caller should fall back to resolveSkillsShInstall).
+ */
+export function lookupSkillShRepo(url) {
+  const match = SKILLS_SH_URL_RE.exec(String(url || ""));
+  if (!match) return null;
+  return { repo: `${match[1]}/${match[2]}`, skill: match[3] };
+}
+
+/**
+ * Fast-path install resolution for skills.sh: first try the local URL parse (zero network),
+ * then the on-disk resolved cache, and only fetch the page when both miss.
+ */
+export async function resolveSkillsShInstall(url, cache) {
+  const direct = lookupSkillShRepo(url);
+  if (direct) return direct;
+  const key = `skills_sh_resolve_${String(url).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 160)}`;
+  if (cache) {
+    const cached = await cache.get(key, SKILLS_SH_CATALOG_TTL);
+    if (cached && cached.repo && cached.skill !== undefined) return { repo: cached.repo, skill: cached.skill };
+  }
   const page = await fetchText(url, 25000);
   const command = page.match(/npx\s+skills\s+add\s+(\S+)(?:\s+--skill\s+(\S+))?/);
   if (!command) throw new Error("skills.sh 页面没有给出安装命令，可能页面结构已变化");
@@ -333,7 +360,9 @@ export async function resolveSkillsShInstall(url) {
   const skill = String(command[2] || "").split("<")[0].split(/[\s"']/)[0].trim();
   const repo = repoUrl.replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "").replace(/\/$/, "");
   if (!/^[^/]+\/[^/]+$/.test(repo)) throw new Error(`无法从安装命令解析仓库：${repoUrl}`);
-  return { repo, skill };
+  const result = { repo, skill };
+  if (cache) await cache.put(key, result);
+  return result;
 }
 
 export async function searchLobeHubMcp({ query = "", pageSize = 24, cache }) {

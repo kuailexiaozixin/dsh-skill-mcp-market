@@ -1143,6 +1143,184 @@ window.__ModuleLoader__.load({
               : null)));
     }
 
+    /**
+     * Composer toolbar entry: two 28px buttons ("技能" / "MCP") on the left of the
+     * composer input row. Each opens a popover listing installed items (via the host
+     * RPC) with a "go to market" footer that activates the dsh-market panel.
+     * Picking an item inserts a prompt snippet into the draft (does NOT submit).
+     */
+    function ComposerButtons(props) {
+      const inputActions = props.inputActions;
+      const draft = props.useInput ? props.useInput((state) => state.draft) : '';
+      const [open, setOpen] = useState(null); // 'skill' | 'mcp' | null
+      const [skills, setSkills] = useState(null);
+      const [mcps, setMcps] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState('');
+      const rootRef = useRef(null);
+      const timers = useRef([]);
+
+      const later = (fn, ms) => { const id = setTimeout(() => { timers.current = timers.current.filter((pending) => pending !== id); fn(); }, ms); timers.current.push(id); return id; };
+      useEffect(() => () => { for (const id of timers.current) clearTimeout(id); timers.current = []; }, []);
+
+      // Popover dismissal: outside click or Escape (quick-resume pattern).
+      useEffect(() => {
+        if (!open) return undefined;
+        if (rootRef.current) rootRef.current.scrollTop = 0;
+        const onPointerDown = (event) => {
+          const root = rootRef.current;
+          if (root !== null && event.target instanceof Node && root.contains(event.target)) return;
+          setOpen(null);
+        };
+        const onKeyDown = (event) => { if (event.key === 'Escape') setOpen(null); };
+        document.addEventListener('mousedown', onPointerDown, true);
+        document.addEventListener('keydown', onKeyDown);
+        return () => { document.removeEventListener('mousedown', onPointerDown, true); document.removeEventListener('keydown', onKeyDown); };
+      }, [open]);
+
+      const load = async (kind) => {
+        if (kind === 'skill') {
+          if (skills !== null) { setOpen(open === 'skill' ? null : 'skill'); return; }
+        } else {
+          if (mcps !== null) { setOpen(open === 'mcp' ? null : 'mcp'); return; }
+        }
+        setOpen(kind);
+        setLoading(true);
+        setError('');
+        try {
+          if (kind === 'skill') {
+            const data = await call('skills.list');
+            setSkills((data.items || []).map((item) => ({
+              slug: item.slug,
+              name: item.name || item.slug,
+              description: item.description || '',
+            })));
+          } else {
+            const data = await call('mcp.list');
+            setMcps((data.items || []).map((item) => ({
+              serverName: item.serverName,
+              title: item.title || item.serverName,
+              transport: item.transport || 'stdio',
+              mounted: item.mounted === true,
+              tools: item.tools || [],
+            })));
+          }
+        } catch (e) {
+          setError(String((e && e.message) || e));
+          setOpen(null);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      /** Insert a snippet into the draft (append a new line when draft is non-empty). Never submits. */
+      const insertSnippet = (text) => {
+        if (!inputActions || typeof inputActions.setDraft !== 'function') return;
+        const current = String(draft || '').trim();
+        inputActions.setDraft(current === '' ? text : `${draft}\n${text}`);
+        setOpen(null);
+      };
+
+      const skillItemText = (item) => {
+        const desc = item.description ? `（${item.description.slice(0, 80)}）` : '';
+        return `使用技能 /${item.slug}${desc}。请加载并按需使用它。`;
+      };
+      const mcpItemText = (item) => {
+        const tools = item.tools && item.tools.length > 0 ? `，可用工具：${item.tools.slice(0, 8).join('、')}${item.tools.length > 8 ? ' 等' : ''}` : '';
+        const state = item.mounted ? '已挂载' : '未挂载（可先调用 mcp_market_set_enabled 启用）';
+        return `使用 MCP 连接器 ${item.serverName}（${item.transport}，${state}${tools}）。需要时直接调用它的工具。`;
+      };
+
+      const marketPanel = () => {
+        try {
+          if (typeof props.openMarketPanel === 'function') props.openMarketPanel();
+        } catch { /* layout service unavailable; ignore */ }
+        setOpen(null);
+      };
+
+      const btnStyle = (active) => ({
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4,
+        height: 28,
+        padding: '0 10px',
+        borderRadius: 6,
+        border: '1px solid ' + (active ? 'var(--dsh-border-strong, #9aa4b2)' : 'var(--dsh-border, #d0d7de)'),
+        background: active ? 'var(--dsh-surface-raised, #eef1f5)' : 'var(--dsh-surface, #ffffff)',
+        color: 'var(--dsh-text-secondary, #57606a)',
+        cursor: 'pointer',
+        font: 'inherit',
+        fontSize: 12,
+        userSelect: 'none',
+      });
+
+      const popStyle = {
+        position: 'absolute',
+        left: 0,
+        bottom: 'calc(100% + 8px)',
+        zIndex: 60,
+        width: 360,
+        maxHeight: 420,
+        overflow: 'auto',
+        border: '1px solid var(--dsh-border, #d0d7de)',
+        borderRadius: 10,
+        background: 'var(--dsh-surface, #ffffff)',
+        color: 'var(--dsh-text-primary, #1f2328)',
+        boxShadow: '0 10px 30px rgba(0,0,0,.18)',
+        padding: 10,
+        font: '13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif',
+      };
+      const rowStyle = { display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 8px', borderRadius: 6, cursor: 'pointer' };
+      const rowHover = { background: 'var(--dsh-surface-hover, #f0f3f6)' };
+
+      const renderList = (kind, items, textOf, emptyText) => {
+        if (loading) return h('div', { style: { ...S.status, padding: 8 } }, '加载中…');
+        if (error && items === null) return h('div', { style: { ...S.status, padding: 8 } }, `加载失败：${error}`);
+        if (!items || items.length === 0) return h('div', { style: { ...S.status, padding: 8 } }, emptyText);
+        return items.map((item) => {
+          const key = kind === 'skill' ? item.slug : item.serverName;
+          const title = kind === 'skill' ? item.name : item.title;
+          const sub = kind === 'skill' ? (item.description || '').slice(0, 60) : `${item.transport} · ${item.mounted ? '已挂载' : '未挂载'} · ${item.tools.length} 工具`;
+          return h('div', {
+            key,
+            style: rowStyle,
+            onMouseEnter: (e) => { e.currentTarget.style.background = rowHover.background; },
+            onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
+            onClick: () => insertSnippet(textOf(item)),
+            title: textOf(item),
+          },
+            h('div', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
+            h('div', { style: { ...S.status, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, sub));
+        });
+      };
+
+      return h('div', { style: { position: 'relative', display: 'flex', alignItems: 'center', gap: 6, order: 1 } },
+        h('button', {
+          type: 'button',
+          style: btnStyle(open === 'skill'),
+          'aria-label': '技能',
+          onMouseDown: (e) => e.preventDefault(),
+          onClick: () => load('skill'),
+        }, h('span', { style: { fontSize: 13 } }, '⚡'), '技能'),
+        h('button', {
+          type: 'button',
+          style: btnStyle(open === 'mcp'),
+          'aria-label': 'MCP',
+          onMouseDown: (e) => e.preventDefault(),
+          onClick: () => load('mcp'),
+        }, h('span', { style: { fontSize: 13 } }, '⇄'), 'MCP'),
+        open ? h('div', { ref: rootRef, style: popStyle, role: 'dialog' },
+          h('div', { style: { ...S.status, fontSize: 11, padding: '0 8px 6px' } },
+            open === 'skill' ? `已安装技能（${skills ? skills.length : '…'}）` : `已安装 MCP（${mcps ? mcps.length : '…'}）`),
+          open === 'skill' ? renderList('skill', skills, skillItemText, '还没有已安装技能。点下方按钮去技能市场安装。')
+            : renderList('mcp', mcps, mcpItemText, '还没有已安装 MCP 连接器。点下方按钮去 MCP 市场安装。'),
+          h('div', { style: { borderTop: '1px solid var(--dsh-border, #eaeef2)', marginTop: 8, paddingTop: 8, display: 'flex', gap: 8, alignItems: 'center' } },
+            h('button', { type: 'button', style: { ...S.btn(), height: 26, fontSize: 12 }, onClick: marketPanel },
+              open === 'skill' ? '去技能市场' : '去 MCP 市场'),
+            h('span', { style: { ...S.status, fontSize: 11 } }, '点击条目把提示插入输入框（不会直接发送）'))) : null);
+    }
+
     /** Icon shown by the left sidebar's panel list (the sidebar owns the button chrome). */
     function MarketIcon(props) {
       const size = props && props.size ? props.size : 18;
@@ -1154,7 +1332,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots'],
+      inject: ['slots', 'layout'],
       apply(ctx) {
         // Left sidebar entry: the sidebar renders the button and reads the label from here.
         ctx.slots.inject('sidebar.panellist', () =>
@@ -1165,6 +1343,26 @@ window.__ModuleLoader__.load({
         // Central panel addressed by that same sidebar id.
         ctx.slots.inject('main', () =>
           ctx.slots.register({ name: 'main', key: 'dsh-market' }, Market));
+        // Composer toolbar: 技能 / MCP quick buttons on the input row (left group).
+        // inputActions + useInput are provided by the host to conversation.input.* entries;
+        // openMarketPanel is our inject face, closing over ctx for the layout service.
+        ctx.slots.inject('conversation.input.left', () =>
+          ctx.slots.register(
+            {
+              name: 'conversation.input.left',
+              id: 'dsh-market-composer',
+              order: 10,
+              inject: () => ({
+                openMarketPanel: () => {
+                  try {
+                    const layout = ctx.layout;
+                    if (layout && typeof layout.selectPanel === 'function') layout.selectPanel('dsh-market');
+                  } catch { /* layout service unavailable; ignore */ }
+                },
+              }),
+            },
+            ComposerButtons,
+          ));
       },
     };
   },

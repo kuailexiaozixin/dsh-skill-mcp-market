@@ -18,10 +18,12 @@ import { importShipped, pluginFrom, resolveShipped, SHIPPED } from "./src/shippe
 import { rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { installSkill, listInstalledSkills, uninstallSkill, updateSkill } from "./src/skills.js";
+import { fetchSkillMd, parseRepoRef } from "./src/github.js";
+import { skillMetaFromText, kebab } from "./src/frontmatter.js";
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
 import { REGISTRY_PAGE_SIZE, fallbackCards, registryCatalogueCacheKey, registryDefinitionByName, searchMcpRegistryPage } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
-import { makeCache, searchSkills, warmMarketCache } from "./src/sources.js";
+import { makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./src/sources.js";
 import { lobehubManifestDefinition, lobehubRegistered, searchLobeHubMarket } from "./src/lobehub-market.js";
 import { setUserEnvironmentVariable } from "./src/env.js";
 
@@ -444,15 +446,19 @@ export async function apply(ctx, config = {}) {
     if (next.mcpDirs.length === 0) throw new Error("mcpDirs cannot be empty");
     settings = await saveSettings(next);
     for (const dir of [...settings.skillDirs, ...settings.mcpDirs]) await ensureDir(dir);
-    await mountSkillProvider();
-    await rebuildMcp();
+    if (hostCtx) {
+      await mountSkillProvider();
+      await rebuildMcp();
+    }
     return {
       ok: true,
       skillDirs: settings.skillDirs,
       mcpDirs: settings.mcpDirs,
-      skillProviderMounted: Boolean(disposeProvider),
+      skillProviderMounted: hostCtx ? Boolean(disposeProvider) : false,
       skillProviderError: skillProviderError || undefined,
-      note: "Paths saved. Skills already on disk are live immediately; MCP definitions were remounted.",
+      note: hostCtx
+        ? "Paths saved. Skills already on disk are live immediately; MCP definitions were remounted."
+        : "Paths saved. (Headless run: no host to mount skill/MCP providers.)",
     };
   }
 
@@ -582,6 +588,7 @@ export async function apply(ctx, config = {}) {
         dir: args.dir || "",
         force: Boolean(args.force),
         skillDirs: settings.skillDirs,
+        cache: marketCache,
       });
       const mounted = Boolean(disposeProvider);
       return {
@@ -913,6 +920,7 @@ export async function apply(ctx, config = {}) {
           dir: body.dir || "",
           force: Boolean(body.force),
           skillDirs: settings.skillDirs,
+          cache: marketCache,
         });
         // 让新装技能立即出现在对话框 / 浮窗里：往 DSH 原生扫描路径写一份 junction/symlink
         await registerInstalledSkillToCatalog(installed, log);
@@ -983,6 +991,80 @@ export async function apply(ctx, config = {}) {
       }
       case "skills.preview": {
         const tmpRoot = join(tmpdir(), `dsh-market-preview-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+        // Fast path: for github references, fetch only SKILL.md instead of the whole skill
+        // directory. Falls back to the full-download path when the single-file fetch fails.
+        if ((body.source || "github") === "github") {
+          let parsed = null;
+          try {
+            const { repo, ref: refFromRef } = parseRepoRef(body.reference || "");
+            parsed = { repo, ref: refFromRef || body.ref || "" };
+          } catch { /* non-github-looking reference; fall through */ }
+          if (parsed) {
+            try {
+              const { skillText } = await fetchSkillMd({
+                repo: parsed.repo,
+                ref: parsed.ref,
+                skillDir: body.skillDir || "",
+              });
+              const meta = skillMetaFromText(skillText, body.name || "");
+              const repoName = parsed.repo.split("/")[1] || "skill";
+              return {
+                slug: kebab(meta.name || body.name || repoName),
+                name: meta.name || body.name || repoName,
+                description: meta.description || "",
+                files: ["SKILL.md"],
+                content: skillText.slice(0, 20000),
+                previewOnly: true,
+                fastPath: true,
+              };
+            } catch { /* single-file fetch failed; fall back to full download */ }
+          }
+        } else if ((body.source || "github") === "skills.sh" || (body.source || "github") === "skillssh") {
+          // Fast path for bare owner/repo references: skip the extra page-fetch hop
+          // (resolveSkillsShInstall) entirely — that is only needed for page URLs.
+          const raw = String(body.reference || "").trim();
+          if (!/^https?:\/\/\//i.test(raw) && /^[\w.-]+\/[\w.-]+/.test(raw)) {
+            try {
+              const { skillText } = await fetchSkillMd({
+                repo: raw,
+                ref: body.ref || "",
+                skillDir: body.skillDir || "",
+              });
+              const meta = skillMetaFromText(skillText, body.name || "");
+              const repoName = raw.split("/")[1] || "skill";
+              return {
+                slug: kebab(meta.name || body.name || repoName),
+                name: meta.name || body.name || repoName,
+                description: meta.description || "",
+                files: ["SKILL.md"],
+                content: skillText.slice(0, 20000),
+                previewOnly: true,
+                fastPath: true,
+              };
+            } catch { /* fall through to full download */ }
+          } else if (lookupSkillShRepo(raw)) {
+            // Fast path for skills.sh page URLs: parse the repo locally (zero network),
+            // then fetch only the single SKILL.md file.
+            const { repo, skill } = lookupSkillShRepo(raw);
+            try {
+              const { skillText } = await fetchSkillMd({
+                repo,
+                ref: body.ref || "",
+                skillDir: skill || "",
+              });
+              const meta = skillMetaFromText(skillText, skill || "");
+              return {
+                slug: kebab(meta.name || skill || body.name || repo.split("/")[1]),
+                name: meta.name || skill || body.name || repo.split("/")[1],
+                description: meta.description || "",
+                files: ["SKILL.md"],
+                content: skillText.slice(0, 20000),
+                previewOnly: true,
+                fastPath: true,
+              };
+            } catch { /* fall through to full download */ }
+          }
+        }
         try {
           const installed = await installSkill({
             source: body.source || "github",
@@ -993,6 +1075,7 @@ export async function apply(ctx, config = {}) {
             dir: tmpRoot,
             force: true,
             skillDirs: [tmpRoot],
+            cache: marketCache,
           });
           const detail = await readSkillBody([tmpRoot], installed.slug);
           return {
