@@ -1196,7 +1196,7 @@ window.__ModuleLoader__.load({
                   },
                 }, '打开目录')),
               h('div', { style: S.grid }, installedMcps),
-            ) : null,
+            )) : null,
             tab === 'settings' && settings
               ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
                   h('div', { style: S.status }, '每行一个目录；技能列表的第一个目录是安装目标。保存后立即重挂，无需重启。'),
