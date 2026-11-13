@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.27
+
+- **修复「已安装」tab 卡片网格右侧空白**（用户 m10903 反馈「页面右边仍然是大片空白，卡片区中一行并未填满」）：
+  - `client.js:92` `S.grid` 由 `repeat(auto-fill, minmax(240px, 1fr))` 改为 `repeat(3, 1fr)` 固定 3 列，填满面板宽度。
+  - `client.js:1253` 已安装 tab 包裹 div 加 `flex: 1, width: '100%', alignItems: 'stretch'`；`client.js:90` `S.body` 加 `alignItems: 'stretch'`。
+- **修复拖拽上传技能失败**（用户 m11116 反馈拖拽 agnes 文件夹报「A requested file or directory could not be found」）：
+  - `client.js` 拖拽处理改用 `DataTransferItem.webkitGetAsEntry()` 递归读取 `FileEntry` 树，拿到真实目录层级；读不到时回退 `dataTransfer.files`。
+  - 根目录前缀推断改为「所有文件 path 的公共第一段」，比原来只取 `dropped[0].name` 更可靠。
+
 ## 0.5.26
 
 - **详情面板：被拒嵌入站点不再显示破图**（用户 m10464 反馈 skills.sh 详情 iframe 渲染为「禁止嵌入」破图无退路）：

@@ -1326,17 +1326,45 @@ window.__ModuleLoader__.load({
                     setBusy('upload'); setError(''); setNotice('');
                     try {
                       const SKIP_DIRS = new Set(['.git', '.venv', 'venv', 'node_modules', '.idea', '.vscode', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', 'dist', 'build', '.next', '.nuxt', '.svelte-kit']);
-                      const dropped = e.dataTransfer ? Array.from(e.dataTransfer.files || []) : [];
-                      if (!dropped.length) return;
-                      // dataTransfer.files 没有 webkitRelativePath：用首个文件的 name（形如
-                      // "my-skill/SKILL.md"）推断根目录前缀。
-                      const rootPrefix = (dropped[0].name || '').split('/').filter(Boolean)[0] || '';
+                      const items = e.dataTransfer ? Array.from(e.dataTransfer.items || []) : [];
+                      const droppedFiles = [];
+                      // 优先走 DataTransferItem.webkitGetAsEntry() 递归读取 FileEntry，
+                      // 能拿到真实的目录层级；读不到的文件回退到 e.dataTransfer.files。
+                      const readEntry = async (entry, prefix, out) => {
+                        if (entry.isFile) {
+                          const file = await new Promise((resolve) => entry.file((f) => resolve(f), () => resolve(null)));
+                          if (file) out.push({ file, path: prefix + file.name });
+                        } else if (entry.isDirectory) {
+                          const reader = entry.createReader();
+                          const readBatch = () => new Promise((resolve) => reader.readEntries(resolve, () => resolve([])));
+                          let batch = await readBatch();
+                          while (batch.length) {
+                            for (const child of batch) await readEntry(child, prefix + entry.name + '/', out);
+                            batch = await readBatch();
+                          }
+                        }
+                      };
+                      const entryResults = [];
+                      for (const item of items) {
+                        const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+                        if (entry) entryResults.push(entry);
+                      }
+                      if (entryResults.length) {
+                        for (const entry of entryResults) await readEntry(entry, '', droppedFiles);
+                      }
+                      if (!droppedFiles.length) {
+                        for (const f of Array.from(e.dataTransfer.files || [])) droppedFiles.push({ file: f, path: f.name });
+                      }
+                      if (!droppedFiles.length) return;
+                      // 推断根目录前缀：所有 path 的公共第一段（拖入的是文件夹时形如 "agnes/SKILL.md"）。
+                      const firstSeg = droppedFiles.map(({ path }) => path.split('/').filter(Boolean)[0] || '').filter(Boolean);
+                      const rootPrefix = firstSeg.length && firstSeg.every((s) => s === firstSeg[0]) ? firstSeg[0] + '/' : '';
                       const files = [];
-                      for (const f of dropped) {
-                        const rel = rootPrefix ? f.name : f.name;
+                      for (const { file, path } of droppedFiles) {
+                        const rel = path.startsWith(rootPrefix) ? path : rootPrefix + path;
                         const parts = rel.split('/');
                         if (parts.some((p2, i) => i > 0 && SKIP_DIRS.has(p2))) continue;
-                        const text = await f.text();
+                        const text = await file.text();
                         files.push({ path: rel, content: text });
                       }
                       const result = await call('skills.upload', { files, force: false });
