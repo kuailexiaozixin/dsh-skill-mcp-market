@@ -87,9 +87,9 @@ window.__ModuleLoader__.load({
         cursor: 'pointer',
         color: 'inherit',
       }),
-      body: { flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 },
+      body: { flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'stretch' },
       row: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
-      grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 10, alignContent: 'start', alignItems: 'start' },
+      grid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignContent: 'start', alignItems: 'start' },
       chip: (active) => ({
         padding: '4px 10px',
         borderRadius: 999,
@@ -1250,7 +1250,7 @@ window.__ModuleLoader__.load({
                       tab === 'skills' ? skillsHasMore : mcpHasMore,
                       tab === 'skills' ? '共约' : (mcpSource === 'lobehub' ? '共约' : '')))))
               : null,
-            tab === 'installed' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'flex-start' } },
+            tab === 'installed' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, flex: 1, width: '100%', alignItems: 'stretch' } },
               // 上传技能：拖拽文件夹或点按钮选文件夹。宿主 @deepseek-ai 包没有 showOpenDialog
               // 暴露给插件，面板是 web 页面，用 <input type=file webkitdirectory>（Chromium
               // 弹原生文件夹对话框，效果与 workbuddy 相同）。拖拽事件里 dataTransfer.files
