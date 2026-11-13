@@ -509,14 +509,9 @@ window.__ModuleLoader__.load({
       };
 
       const detailUrlFor = (item) => {
-        if (item.source === 'clawhub' && item.installRef) {
-          return `https://clawhub.ai/${item.installRef}`;
-        }
-        if (item.source === 'skills.sh' && item.homepage) {
-          return item.homepage;
-        }
-        if (item.source === 'browse.sh' && item.homepage) {
-          return item.homepage;
+        // skills.sh / clawhub / browse.sh 详情页禁止嵌入，不设「详情」按钮
+        if (item.source === 'skills.sh' || item.source === 'clawhub' || item.source === 'browse.sh') {
+          return '';
         }
         if (item.homepage) return item.homepage;
         if (item.upstreamUrl) return item.upstreamUrl;

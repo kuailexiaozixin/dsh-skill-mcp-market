@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, settingsPath } from "./src/home.js";
+import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, settingsPath, agentsHome } from "./src/home.js";
 import { importShipped, pluginFrom, resolveShipped, SHIPPED } from "./src/shipped.js";
 import { rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -755,7 +755,7 @@ export async function apply(ctx, config = {}) {
     },
     handler: async (args) => {
       const dirs = args.dir ? [expandPath(args.dir)] : settings.skillDirs;
-      return uninstallSkill({ slug: args.slug, dirs, trashDir });
+      return uninstallSkill({ slug: args.slug, dirs, trashDir, agentsHomeSkillsDir: join(agentsHome(), "skills") });
     },
   });
 
@@ -1060,7 +1060,7 @@ export async function apply(ctx, config = {}) {
       case "skills.list":
         return { dirs: await collectDshNativeSkillDirs(), items: await listInstalledSkills(await collectDshNativeSkillDirs()) };
       case "skills.uninstall":
-        return uninstallSkill({ slug: body.slug, dirs: settings.skillDirs, trashDir });
+        return uninstallSkill({ slug: body.slug, dirs: settings.skillDirs, trashDir, agentsHomeSkillsDir: join(agentsHome(), "skills") });
       case "skills.import": {
         const target = expandPath(body.path || "");
         if (!target) throw new Error("请提供本地目录或 .zip 路径");

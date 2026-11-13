@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.28
+
+- **卸载回退到 `$AGENTS_HOME/skills/<slug>`**（用户 m11258 反馈「装在 SKILLS_HOME 下的技能无法卸载」）：
+  - `src/skills.js` `uninstallSkill` 新增 `agentsHomeSkillsDir` 参数，在 skillDirs 找不到时回退到 `$AGENTS_HOME/skills/` 删除。
+  - `index.js` 两处调用（`skill_market_uninstall` 工具 + `skills.uninstall` RPC）传入 `join(agentsHome(), "skills")`。
+- **skills.sh / clawhub / browse.sh 不显示「详情」按钮**（用户 m11258 要求这三个源不设详情功能）：
+  - `client.js` `detailUrlFor` 对 `skills.sh`、`clawhub`、`browse.sh` 源直接返回空字符串，卡片上不渲染「详情」按钮；其他源保留。
+
 ## 0.5.27
 
 - **修复「已安装」tab 卡片网格右侧空白**（用户 m10903 反馈「页面右边仍然是大片空白，卡片区中一行并未填满」）：

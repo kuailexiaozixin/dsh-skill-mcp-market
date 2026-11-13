@@ -393,10 +393,11 @@ export async function installSkill({ source = "github", reference = "", skillDir
 }
 
 /** Remove an installed skill by moving it into the market trash. */
-export async function uninstallSkill({ slug, dirs, trashDir }) {
+export async function uninstallSkill({ slug, dirs, trashDir, agentsHomeSkillsDir }) {
   const key = kebab(slug);
   const removed = [];
-  for (const dir of dirs) {
+  const allDirs = agentsHomeSkillsDir ? [...(dirs || []), agentsHomeSkillsDir] : (dirs || []);
+  for (const dir of allDirs) {
     const candidates = [join(dir, key), join(dir, `${key}.md`)];
     for (const candidate of candidates) {
       if (!existsSync(candidate)) continue;
