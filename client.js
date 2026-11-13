@@ -1250,7 +1250,7 @@ window.__ModuleLoader__.load({
                       tab === 'skills' ? skillsHasMore : mcpHasMore,
                       tab === 'skills' ? '共约' : (mcpSource === 'lobehub' ? '共约' : '')))))
               : null,
-            tab === 'installed' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+            tab === 'installed' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'flex-start' } },
               // 上传技能：拖拽文件夹或点按钮选文件夹。宿主 @deepseek-ai 包没有 showOpenDialog
               // 暴露给插件，面板是 web 页面，用 <input type=file webkitdirectory>（Chromium
               // 弹原生文件夹对话框，效果与 workbuddy 相同）。拖拽事件里 dataTransfer.files
@@ -1360,7 +1360,7 @@ window.__ModuleLoader__.load({
                     }),
                     h('button', { style: S.btn(), onClick: () => setInstalledFilter('') }, '清除'))
                 : null,
-              h('div', { style: { ...S.title, marginBottom: 6, display: 'inline-flex', alignItems: 'center', gap: 8, width: 'fit-content', maxWidth: '100%' } },
+              h('div', { style: { ...S.title, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
                 `已装技能（${filteredInstalled.length}）`,
                 nativeDirs.length > 0
                   ? h('span', { style: { fontSize: 11, opacity: 0.6 } }, `含 DSH 内置 ${nativeDirs.length} 个目录`)
@@ -1381,9 +1381,9 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, '打开目录'),
-                h('span', { style: { ...S.status, fontSize: 12 } }, `（可在资源管理器中直接查看 / 编辑技能文件）`)),
+                h('span', { style: { ...S.status, fontSize: 12, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `（可在资源管理器中直接查看 / 编辑技能文件）`)),
               h('div', { style: S.grid }, installedSkills),
-              h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'inline-flex', alignItems: 'center', gap: 8, width: 'fit-content', maxWidth: '100%' } },
+              h('div', { style: { ...S.title, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, width: '100%' } },
                 `已装 MCP（${filteredMounted.length}）`,
                 h('button', {
                   style: { ...S.btn(), padding: '2px 10px', height: 24, fontSize: 12 },
