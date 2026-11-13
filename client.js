@@ -8,6 +8,12 @@ window.__ModuleLoader__.load({
     const { useState, useEffect, useCallback, useRef } = React;
 
     const RPC = '/api/dsh-market/rpc';
+    const openExt = (url) => {
+      if (!url) return;
+      if (typeof window !== 'undefined' && window.open) {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+    };
 
     async function call(op, payload) {
       // A hung response must surface as an error instead of an endless spinner.
@@ -473,13 +479,33 @@ window.__ModuleLoader__.load({
             ref: item.ref || '',
             name: item.slug,
           });
-          setPreview({ slug: item.slug, name: d.name || item.slug, content: d.content || '', files: d.files });
+          setPreview({
+            slug: item.slug,
+            name: d.name || item.slug,
+            content: d.content || '',
+            files: d.files,
+            openUrl: d.openUrl || '',
+            previewError: d.previewError || '',
+          });
         } catch (e) {
           setError(`预览失败：${e.message || e}`);
         } finally {
           setBusy('');
         }
       };
+
+      const detailUrlFor = (item) => {
+        if (item.source === 'clawhub' && item.installRef) {
+          return `https://clawhub.ai/${item.installRef}`;
+        }
+        if (item.source === 'skills.sh' && item.homepage) {
+          return item.homepage;
+        }
+        if (item.upstreamUrl) return item.upstreamUrl;
+        return '';
+      };
+
+      const openDetail = (item) => openExt(detailUrlFor(item));
 
       const doInstallSkill = async (item) => {
         setBusy(`install:${item.slug}`);
@@ -619,6 +645,11 @@ window.__ModuleLoader__.load({
               disabled: busy === `preview:${item.slug}`,
               onClick: () => openPreview(item),
             }, busy === `preview:${item.slug}` ? '下载中…' : '预览'),
+            detailUrlFor(item) ? h('button', {
+              style: { ...S.btn(), padding: '0 6px' },
+              title: '在浏览器中打开详情页（快速查看）',
+              onClick: () => openDetail(item),
+            }, '详情') : null,
             installed.some((x) => x.slug === item.slug)
               ? h('span', { style: S.status }, '✓ 已安装')
               : item.installable === false
@@ -977,8 +1008,17 @@ window.__ModuleLoader__.load({
             preview
               ? h('div', { style: S.card },
                   h('div', { style: S.title }, `预览：${preview.name}（${preview.files} 个文件，未安装）`),
-                  h('pre', { style: { fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto', margin: 0 } }, preview.content || '(没有正文)'),
-                  h('div', { style: S.row }, h('button', { style: S.btn(), onClick: () => setPreview(null) }, '关闭预览')))
+                  preview.previewError
+                    ? h('div', { style: { ...S.status, color: '#b26a00' } }, `在线预览不可用：${preview.previewError}`)
+                    : null,
+                  h('pre', { style: { fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto', margin: 0 } }, preview.content || (preview.previewError ? '' : '(没有正文)')),
+                  h('div', { style: S.row },
+                    h('button', { style: S.btn(), onClick: () => setPreview(null) }, '关闭预览'),
+                    preview.openUrl ? h('button', {
+                      style: { ...S.btn('primary'), padding: '0 8px' },
+                      title: `在浏览器中打开 ${preview.openUrl}`,
+                      onClick: () => { openExt(preview.openUrl); setPreview(null); },
+                    }, '在浏览器中查看详情') : null))
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,

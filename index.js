@@ -1153,6 +1153,48 @@ export async function apply(ctx, config = {}) {
             } catch { /* fall through to full download */ }
           }
         }
+        // For clawhub: when the full-download path fails (e.g. no GitHub source found),
+        // return a structured "open in browser" response instead of throwing, so the
+        // client can show a useful fallback instead of a dead-end error.
+        if ((body.source || "github") === "clawhub") {
+          const detailUrl = `https://clawhub.ai/${String(body.reference || "").replace(/^clawhub:/, "")}`;
+          try {
+            const installed = await installSkill({
+              source: body.source,
+              reference: body.reference,
+              skillDir: body.skillDir || "",
+              name: body.name || "",
+              ref: body.ref || "",
+              dir: tmpRoot,
+              force: true,
+              skillDirs: [tmpRoot],
+              cache: marketCache,
+            });
+            const detail = await readSkillBody([tmpRoot], installed.slug);
+            return {
+              slug: installed.slug,
+              name: installed.name,
+              description: installed.description,
+              files: installed.files,
+              content: (detail && detail.content ? detail.content : "").slice(0, 20000),
+              previewOnly: true,
+            };
+          } catch (previewErr) {
+            const slugFromRef = String(body.name || "").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, "") || String(body.reference || "");
+            return {
+              slug: slugFromRef,
+              name: body.name || body.reference,
+              description: "",
+              files: [],
+              content: "",
+              previewOnly: true,
+              openUrl: detailUrl,
+              previewError: String(previewErr && previewErr.message || previewErr),
+            };
+          } finally {
+            await rm(tmpRoot, { recursive: true, force: true });
+          }
+        }
         try {
           const installed = await installSkill({
             source: body.source || "github",

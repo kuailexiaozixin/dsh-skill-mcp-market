@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.22
+
+- **卡片加「详情」按钮：秒开详情页，不再干等下载**（用户 m06943 反馈）：
+  - 每张技能卡片在「预览」旁新增「详情」小按钮，点击经 `window.open` 在系统浏览器打开对应详情页：
+    - skills.sh → `https://www.skills.sh/<owner>/<slug>`；
+    - clawhub → `https://clawhub.ai/<owner>/<slug>`；
+    - 其他源 → `upstreamUrl`。
+  - 详情页信息齐全（安装命令、示例、版本历史），加载 <1s，替代原来「下载整仓库 tarball + 解包 + 安全扫描」的数十秒预览等待。
+- **clawhub 预览失败回退：不再死胡同**：
+  - `clawhubResolve`（`src/extra-sources.js`）先走 HTML 正则提取 GitHub 源仓库（原路径），失败时回退到 `clawhub.ai/api/v1/search` 结构化 API，从结果的 `links.source` / `install.sourceUrl` / `sourceIdentity.repo` 字段定位仓库；两者皆无则抛错并附详情页 URL。
+  - `index.js skills.preview`：clawhub 源的全量下载路径失败时，不再向上抛错，改为返回 `{ openUrl, previewError }` 结构体；`client.js` 预览弹层收到 `openUrl` 后显示「在浏览器中查看详情」按钮，替代原来的 `预览失败：…` 死胡同错误。
+- **「已安装」面板：去掉顶部输入框+导入按钮，改为拖拽文件夹**（0.5.21 已实现，随本版合入）：
+  - 虚线拖拽区（`onDragOver`/`onDrop`）+「浏览文件夹」按钮（`<input type=file webkitdirectory>`），选中含 `SKILL.md` 的文件夹后批量上传。
+- **tdd 等 skills.sh 嵌套技能安装修复**（0.5.21 已实现，随本版合入）：
+  - `src/github.js` 新增 `findSkillDirFor`：探测 `skills/engineering/<slug>/SKILL.md`、`skills/<slug>/SKILL.md`、`.agents/skills/<slug>/SKILL.md` 三候选路径。
+  - `src/skills.js` skills.sh 分支在 `skillDir` 为空时自动探测嵌套路径，修复 `mattpocock/skills` 的 `tdd`（上游 `skills/engineering/tdd/`）安装后「未显示在已安装列表」的问题。
+
 ## 0.5.20
 
 - **「已安装」面板补全 DSH 内置与插件携带技能**（`collectDshNativeSkillDirs` 重写）：

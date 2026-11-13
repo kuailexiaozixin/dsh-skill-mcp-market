@@ -397,12 +397,77 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24 } =
   return { source: "modelscope", items, total: total || p * size + (rows.length >= size ? 1 : 0), hasMore: total ? p * size < total : rows.length >= size };
 }
 
-/** Resolve a clawhub reference (`owner/slug`) to its GitHub-backed skill directory. */
+/**
+ * Resolve a clawhub reference (`owner/slug`) to its GitHub-backed skill directory.
+ *
+ * Two strategies, tried in order:
+ *   1. HTML scrape — fetch the clawhub.ai detail page and regex-extract the GitHub
+ *      repo URL. Fast when the page structure still carries a bare github.com link.
+ *   2. Search API — fall back to `clawhub.ai/api/v1/search?q=<slug>` and read the
+ *      structured `links.source` field from the matching result.  Works even when
+ *      the HTML page no longer embeds a raw GitHub URL (the 2026-11 failure mode).
+ *
+ * Returns `{ repo, skillDir, apiFallback }` — `apiFallback` is true when the
+ * structured API supplied the repo instead of the HTML scrape.
+ * If neither strategy finds a GitHub source, throws an Error whose message
+ * includes the detail-page URL so the client can offer a "open in browser" fallback.
+ */
 export async function clawhubResolve(reference) {
   const [owner, slug] = String(reference || "").split("/");
   if (!owner || !slug) throw new Error("clawhub 引用格式应为 owner/slug");
-  const page = await (await fetch(`https://clawhub.ai/${owner}/skills/${slug}`, { headers: UA, signal: AbortSignal.timeout(20000) })).text();
-  const match = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)(?:\/tree\/[\w.-]+\/([\w./-]+))?/.exec(page);
-  if (!match) throw new Error("clawhub 页面里没有找到 GitHub 源仓库");
-  return { repo: match[1], skillDir: match[2] || "" };
+
+  // Strategy 1: HTML scrape (original path, may fail if page structure changed).
+  let htmlMatch = null;
+  try {
+    const page = await (await fetch(`https://clawhub.ai/${owner}/skills/${slug}`, {
+      headers: UA,
+      signal: AbortSignal.timeout(15000),
+    })).text();
+    htmlMatch = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)(?:\/tree\/[\w.-]+\/([\w./-]+))?/.exec(page);
+  } catch {
+    // Network hiccup — fall through to API.
+  }
+  if (htmlMatch) return { repo: htmlMatch[1], skillDir: htmlMatch[2] || "", apiFallback: false };
+
+  // Strategy 2: Search API (structured, resilient to HTML changes).
+  try {
+    const results = await getJsonClawHub(
+      `https://clawhub.ai/api/v1/search?q=${encodeURIComponent(slug)}&page=1&limit=20`,
+    );
+    const rows = Array.isArray(results) ? results : results?.results || [];
+    const hit = rows.find(
+      (r) => r?.ownerHandle === owner && r?.slug === slug,
+    ) || rows.find((r) => {
+      const ref = r?.install?.reference || "";
+      return ref === `${owner}/${slug}`;
+    });
+    if (hit) {
+      // links.source carries the GitHub repo URL when the skill has one.
+      const sourceUrl =
+        hit.links?.source ||
+        hit.install?.sourceUrl ||
+        hit.upstreamUrl ||
+        "";
+      if (sourceUrl) {
+        const m = /github\.com\/([\w.-]+\/[\w.-]+)(?:\/tree\/[\w.-]+\/([\w./-]+))?/.exec(sourceUrl);
+        if (m) return { repo: m[1], skillDir: m[2] || "", apiFallback: true };
+      }
+      // Some entries carry the repo under native.skill or sourceIdentity.
+      const repoField =
+        hit.native?.skill?.repoUrl ||
+        hit.sourceIdentity?.repo ||
+        hit.native?.repo ||
+        "";
+      if (repoField) {
+        return { repo: String(repoField).replace(/^github\.com\//, "").replace(/^https?:\/\/github\.com\//, ""), skillDir: "", apiFallback: true };
+      }
+    }
+  } catch {
+    // API also unreachable — fall through to the error below.
+  }
+
+  const detailUrl = `https://clawhub.ai/${owner}/skills/${slug}`;
+  throw new Error(
+    `clawhub 页面与 API 里都没有找到 GitHub 源仓库（${detailUrl}）——可直接在浏览器中打开该页查看详情`,
+  );
 }
