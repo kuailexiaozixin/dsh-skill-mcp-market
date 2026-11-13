@@ -153,7 +153,6 @@ window.__ModuleLoader__.load({
       const [mcpCategories, setMcpCategories] = useState([]);
       const [size, setSize] = useState(24);
       const [sort, setSort] = useState('default');
-      const [importPath, setImportPath] = useState('');
       const [category, setCategory] = useState('all');
       const [preview, setPreview] = useState(null);
       const [installedFilter, setInstalledFilter] = useState('');
@@ -1006,44 +1005,30 @@ window.__ModuleLoader__.load({
                       tab === 'skills' ? '共约' : (mcpSource === 'lobehub' ? '共约' : '')))))
               : null,
             tab === 'installed' ? h('div', null,
-              h('div', { style: S.row },
-                h('input', {
-                  style: S.input,
-                  placeholder: '本地技能目录或 .zip 路径（会走同一套安全扫描）',
-                  value: importPath,
-                  onChange: (e) => setImportPath(e.target.value),
-                }),
+              // 上传技能：拖拽文件夹或点按钮选文件夹。宿主 @deepseek-ai 包没有 showOpenDialog
+              // 暴露给插件，面板是 web 页面，用 <input type=file webkitdirectory>（Chromium
+              // 弹原生文件夹对话框，效果与 workbuddy 相同）。拖拽事件里 dataTransfer.files
+              // 是扁平文件列表，没有 webkitRelativePath，用首个文件的 name 前缀推断根目录。
+              h('div', {
+                style: {
+                  ...S.row,
+                  border: '1px dashed var(--dsh-border, #d0d7de)',
+                  borderRadius: 8,
+                  padding: '12px 16px',
+                  gap: 12,
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                },
+              },
+                h('div', { style: { fontSize: 12, opacity: 0.7 } }, '把技能文件夹拖到这里，或'),
                 h('button', {
                   style: S.btn('primary'),
-                  disabled: busy === 'import' || !importPath.trim(),
-                  onClick: async () => {
-                    setBusy('import');
-                    setError('');
-                    setNotice('');
-                    try {
-                      const result = await call('skills.import', { path: importPath.trim(), force: false });
-                      setNotice(`已导入 ${result.slug}（${result.files} 个文件，安全扫描通过）`);
-                      setImportPath('');
-                      await loadInstalled();
-                    } catch (e) {
-                      setError(`导入失败：${e.message || e}`);
-                    } finally {
-                      setBusy('');
-                    }
-                  },
-                }, '导入')),
-                h('button', {
-                  style: S.btn(),
                   disabled: busy === 'upload',
                   onClick: async () => {
                     setBusy('upload');
                     setError('');
                     setNotice('');
                     try {
-                      // 弹系统文件夹选择器：宿主 @deepseek-ai 包没有 showOpenDialog 暴露给插件，面板是 web 页面，
-                      // 改用 <input type=file webkitdirectory>（Chromium 弹原生文件夹对话框，效果与 workbuddy 相同）。
-                      // 用户选文件夹后前端 f.text() 读所有文件（相对路径 + 内容），POST 回宿主，宿主解包到临时目录再走 uploadSkillFromFolder。
-                      // 自动跳过 .git / .venv / node_modules 等无关目录，避免把整个 Python 环境读上来。
                       const SKIP_DIRS = new Set(['.git', '.venv', 'venv', 'node_modules', '.idea', '.vscode', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', 'dist', 'build', '.next', '.nuxt', '.svelte-kit']);
                       const input = document.createElement('input');
                       input.type = 'file';
@@ -1075,7 +1060,50 @@ window.__ModuleLoader__.load({
                       setBusy('');
                     }
                   },
-                }, '上传技能'),
+                }, '浏览文件夹'),
+                h('div', {
+                  style: {
+                    flex: 1,
+                    minHeight: 40,
+                    border: '2px dashed var(--dsh-border, #d0d7de)',
+                    borderRadius: 8,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'var(--dsh-text-secondary, #6a737d)',
+                    fontSize: 12,
+                    opacity: 0.7,
+                  },
+                  onDragOver: (e) => { e.preventDefault(); e.stopPropagation(); },
+                  onDrop: async (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    setBusy('upload'); setError(''); setNotice('');
+                    try {
+                      const SKIP_DIRS = new Set(['.git', '.venv', 'venv', 'node_modules', '.idea', '.vscode', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', 'dist', 'build', '.next', '.nuxt', '.svelte-kit']);
+                      const dropped = e.dataTransfer ? Array.from(e.dataTransfer.files || []) : [];
+                      if (!dropped.length) return;
+                      // dataTransfer.files 没有 webkitRelativePath：用首个文件的 name（形如
+                      // "my-skill/SKILL.md"）推断根目录前缀。
+                      const rootPrefix = (dropped[0].name || '').split('/').filter(Boolean)[0] || '';
+                      const files = [];
+                      for (const f of dropped) {
+                        const rel = rootPrefix ? f.name : f.name;
+                        const parts = rel.split('/');
+                        if (parts.some((p2, i) => i > 0 && SKIP_DIRS.has(p2))) continue;
+                        const text = await f.text();
+                        files.push({ path: rel, content: text });
+                      }
+                      const result = await call('skills.upload', { files, force: false });
+                      const n = result.count || (result.items || []).length;
+                      setNotice(`已上传 ${n} 个技能（${(result.items || []).map((i) => i.slug).join('、')}，安全扫描通过）`);
+                      await loadInstalled();
+                    } catch (err) {
+                      setError(`上传失败：${err.message || err}`);
+                    } finally {
+                      setBusy('');
+                    }
+                  },
+                }, '或拖拽技能文件夹到这里（根目录或一级子目录必须含 SKILL.md）'),
               filterText
                 ? h('div', { style: S.row },
                     h('input', {

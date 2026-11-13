@@ -295,3 +295,53 @@ export async function downloadSkillDir({ repo, ref, skillDir, destDir, limit = 4
 export async function readRepoFile(repo, ref, path) {
   return fetchFileText(repo, ref, path);
 }
+
+/**
+ * Locate the in-repo path of a skill by its basename slug. Many market catalogues
+ * (mattpocock/skills, designed-by-ai/skills, …) ship SKILL.md under a nested directory
+ * (`skills/engineering/tdd/`) whose basename equals the skill slug, but the repo root has
+ * no SKILL.md — so a bare `owner/repo` + empty skillDir install fails. This probes the
+ * nested candidate path directly (no listTree) and falls back to the basename match.
+ *
+ * Returns the skill directory (relative to repo root) or "" when the slug isn't found.
+ */
+export async function findSkillDirFor({ repo, ref, skill, cache }) {
+  const target = kebabSkill(skill);
+  if (!target) return "";
+  // 1) Direct probe of the nested candidate path: `skills/engineering/<skill>/SKILL.md`.
+  //    This is the layout mattpocock/skills and most engineering-skill repos use.
+  for (const probe of [
+    `skills/engineering/${target}/SKILL.md`,
+    `skills/${target}/SKILL.md`,
+    `.agents/skills/${target}/SKILL.md`,
+  ]) {
+    try {
+      await fetchFileText(repo, ref, probe);
+      return probe.slice(0, -"/SKILL.md".length);
+    } catch {
+      // not at this path, try the next probe
+    }
+  }
+  // 2) Fallback: list the tree and pick the candidate whose basename equals the slug.
+  try {
+    const files = await listTree(repo, ref);
+    const candidates = skillDirsFrom(files);
+    if (candidates.length === 0) return "";
+    const match =
+      candidates.find((p) => basename(p).toLowerCase() === target) ||
+      candidates.find((p) => p.toLowerCase().endsWith(`/${target}`)) ||
+      "";
+    if (match) return match;
+  } catch {
+    // tree listing failed; give up rather than throw
+  }
+  return "";
+}
+
+function kebabSkill(s) {
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}

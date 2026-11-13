@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { kebab, parseFrontmatter, skillMetaFromText } from "./frontmatter.js";
-import { downloadSkillDir, listTree, parseRepoRef, readRepoFile, resolveRef, skillDirsFrom } from "./github.js";
+import { downloadSkillDir, listTree, parseRepoRef, readRepoFile, resolveRef, skillDirsFrom, findSkillDirFor } from "./github.js";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { resolveSkillsShInstall } from "./sources.js";
 import { describeFindings, scanSkillBundle } from "./verify.js";
@@ -271,6 +271,7 @@ export async function installSkill({ source = "github", reference = "", skillDir
 
   if (source === "skills.sh" || source === "skillssh") {
     const raw = String(reference || "").trim();
+    let effectiveName = name || "";
     // Accept a bare `owner/repo` (what the tool interface and CLI users type) as well as a
     // skills.sh page URL. Only a URL needs the extra hop through the page to learn the repo
     // and the skill name; a bare repo is already the install target.
@@ -282,7 +283,7 @@ export async function installSkill({ source = "github", reference = "", skillDir
         source: "github",
         reference: raw,
         skillDir: skillDir || "",
-        name: name || "",
+        name: effectiveName,
         dir: targetRoot,
         force,
         skillDirs,
@@ -291,11 +292,21 @@ export async function installSkill({ source = "github", reference = "", skillDir
     // The host market cache lets resolveSkillsShInstall skip the 25-second page fetch when
     // it can parse the URL locally or read a previously resolved entry.
     const { repo, skill } = await resolveSkillsShInstall(raw, cache);
+    // skills.sh slugs are the skill's basename (e.g. "tdd"), but in many repos the SKILL.md
+    // lives at a nested path (e.g. mattpocock/skills ships it under `skills/engineering/tdd/`,
+    // not `tdd/`). Without this the bare `repo` + empty skillDir makes the installer look for
+    // SKILL.md at the repo root, fail, and throw — so the skill never reaches disk.
+    // Probe the nested candidate path directly (no listTree) and use it as skillDir.
+    let effectiveSkillDir = skillDir || "";
+    if (!effectiveSkillDir) {
+      const probe = await findSkillDirFor({ repo, ref, skill, cache });
+      if (probe) effectiveSkillDir = probe;
+    }
     return installSkill({
       source: "github",
       reference: ref ? `${repo}@${ref}` : repo,
-      skillDir: skillDir || "",
-      name: name || skill,
+      skillDir: effectiveSkillDir,
+      name: effectiveName || skill || "",
       dir: targetRoot,
       force,
       skillDirs,
