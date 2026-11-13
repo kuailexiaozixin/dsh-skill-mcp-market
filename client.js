@@ -532,7 +532,7 @@ window.__ModuleLoader__.load({
       //      a copy-URL button instead of falling back to an external browser.
       const detailIframeRef = { current: null };
 
-      const openDetail = (item) => {
+      const openDetail = async (item) => {
         const url = detailUrlFor(item);
         if (!url) return;
         const name = String((item && item.name) || url);
@@ -574,10 +574,25 @@ window.__ModuleLoader__.load({
         ]);
         let hostname = '';
         try { hostname = new URL(url).hostname; } catch { /* keep '' */ }
-        const cspBlocked = cspBlockedHosts.has(hostname);
+        let cspBlocked = cspBlockedHosts.has(hostname);
+        let blockReason = '';
+        if (!cspBlocked) {
+          // The static list is only a fast path for the well-known catalogues.
+          // Ask the host what the site's own headers say, so a newly added
+          // source (skills.sh was one) never ends up in a blank blocked frame.
+          try {
+            const verdict = await call('frame.check', { url });
+            if (verdict && verdict.embeddable === false) {
+              cspBlocked = true;
+              blockReason = String(verdict.reason || '');
+            }
+          } catch (e) {
+            console.warn('[dsh-skill-mcp-market] frame.check unavailable, using iframe:', e && e.message);
+          }
+        }
 
         if (cspBlocked) {
-          console.info('[dsh-skill-mcp-market] openDetail → inline detail panel (CSP-blocked host)', url);
+          console.info('[dsh-skill-mcp-market] openDetail → inline detail panel (not embeddable)', url, blockReason);
         } else {
           console.info('[dsh-skill-mcp-market] openDetail → inline iframe overlay', url);
         }
@@ -626,11 +641,45 @@ window.__ModuleLoader__.load({
             return notice;
           };
 
+          // Always-visible URL strip with copy/open actions. Some hosts frame
+          // the page successfully, others (skills.sh, clawhub.ai, ...) reject
+          // framing and render as an empty blocked frame; because a blocked
+          // frame fires no cross-origin error event, the strip is what keeps
+          // those cases usable instead of showing a blank panel.
+          const makeUrlStrip = () => {
+            const strip = document.createElement('div');
+            strip.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid #eaeef2;background:#fafbfc;flex:0 0 auto;';
+            const urlText = document.createElement('span');
+            urlText.textContent = url;
+            urlText.title = url;
+            urlText.style.cssText = 'flex:1;min-width:0;font-size:11px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+            const stripCopy = document.createElement('button');
+            stripCopy.textContent = '复制 URL';
+            stripCopy.style.cssText = 'flex:0 0 auto;padding:4px 10px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:12px;';
+            stripCopy.onclick = () => {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(url).then(
+                  () => { stripCopy.textContent = '已复制 ✓'; },
+                  () => {}
+                );
+              }
+            };
+            const stripOpen = document.createElement('button');
+            stripOpen.textContent = '在浏览器中打开';
+            stripOpen.style.cssText = 'flex:0 0 auto;padding:4px 10px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:12px;';
+            stripOpen.onclick = () => window.open(url, '_blank', 'noopener,noreferrer');
+            strip.append(urlText, stripCopy, stripOpen);
+            return strip;
+          };
+
           if (cspBlocked) {
-            // Known frame-ancestors 'none' host: show the detail panel now.
-            overlay.append(bar, makeDetailPanel());
+            // Not embeddable: show the detail panel with copy/open actions.
+            overlay.append(bar, makeDetailPanel(blockReason
+              ? `此页面禁止被嵌入（${blockReason}），无法在客户端内直接显示。详情地址：${url}`
+              : undefined));
           } else {
-            // Unknown host: try the iframe; fall back to the detail panel on error.
+            // Unknown host: try the iframe, but never leave the user without
+            // an escape hatch when the site refuses to be framed.
             const frame = document.createElement('iframe');
             frame.src = url;
             frame.style.cssText = 'flex:1;width:100%;border:0;';
@@ -643,7 +692,7 @@ window.__ModuleLoader__.load({
               frame.remove();
               overlay.appendChild(makeDetailPanel());
             };
-            overlay.append(bar, frame);
+            overlay.append(bar, makeUrlStrip(), frame);
           }
           host.style.position = host.style.position || 'relative';
           host.appendChild(overlay);
@@ -1201,7 +1250,7 @@ window.__ModuleLoader__.load({
                       tab === 'skills' ? skillsHasMore : mcpHasMore,
                       tab === 'skills' ? '共约' : (mcpSource === 'lobehub' ? '共约' : '')))))
               : null,
-            tab === 'installed' ? h('div', null,
+            tab === 'installed' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
               // 上传技能：拖拽文件夹或点按钮选文件夹。宿主 @deepseek-ai 包没有 showOpenDialog
               // 暴露给插件，面板是 web 页面，用 <input type=file webkitdirectory>（Chromium
               // 弹原生文件夹对话框，效果与 workbuddy 相同）。拖拽事件里 dataTransfer.files

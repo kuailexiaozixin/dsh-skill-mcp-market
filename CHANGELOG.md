@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.26
+
+- **详情面板：被拒嵌入站点不再显示破图**（用户 m10464 反馈 skills.sh 详情 iframe 渲染为「禁止嵌入」破图无退路）：
+  - `client.js` 详情浮层 iframe 路径新增**常显 URL 工具栏**（`makeUrlStrip`）：URL 单行省略 +「复制 URL」按钮（clipboard.writeText，成功改「已复制 ✓」）+「在浏览器中打开」按钮（window.open noopener）；CSP 黑名单分支（`makeDetailPanel`）同样保留。
+  - `index.js` 新增宿主 RPC `frame.check`：`checkFrameable(url)` 对目标 URL 发 `fetch({redirect:'follow'})`，读 `X-Frame-Options` 与 CSP `frame-ancestors` 响应头，返回 `{embeddable, reason, status}`；客户端 `openDetail` 在非黑名单命中时先 `await call('frame.check',{url})`，`embeddable===false` 直接走 `makeDetailPanel` 友好提示（附 `blockReason` 文案），不再等 iframe 破图。
+  - `package.json` 版本 0.5.25 → 0.5.26。
+- **修复「已安装」tab 布局错乱**（用户 m10495 反馈「已装技能/已装MCP 两个标题占据右侧整列、把内容挤到左边」）：
+  - `client.js:1253` 已安装 tab 包裹 div 由无样式 `h('div', null, ...)` 改为 `{ display:'flex', flexDirection:'column', gap:12 }`，拖拽区 / 已装技能标题+卡片网格 / 已装 MCP 标题+卡片网格 全部纵向全宽堆叠，不再横向并排。
+
 ## 0.5.25
 
 - **四个源全部走 CLI 快路径（clawhub / skills.sh / browse.sh / trusttools）**：新增 `src/cli-install.js`，`src/skills.js` 各源分支先试快路径、失败 `console.log(... falling back to GitHub)` 后回退原 GitHub 逻辑。

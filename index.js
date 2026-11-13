@@ -38,6 +38,49 @@ function textResult(value) {
   return [{ type: "text", text }];
 }
 
+/**
+ * Decide whether `url` may be embedded in an iframe of the DSH web UI.
+ *
+ * A blocked frame fires no error event in the embedding page, so the panel cannot
+ * detect the rejection from the browser side; it asks the host instead. The host
+ * reads `X-Frame-Options` and the CSP `frame-ancestors` directive, which is what
+ * the browser obeys. `frame-ancestors` is only satisfied for a cross-origin
+ * embedder by `*` (or by an explicit DSH origin, which no catalogue site lists),
+ * so any other directive means "render the detail panel instead of an iframe".
+ */
+async function checkFrameable(url) {
+  if (!/^https?:\/\//i.test(url)) return { embeddable: false, reason: "invalid url", status: 0 };
+  let response;
+  try {
+    response = await fetch(url, {
+      redirect: "follow",
+      headers: { "user-agent": "Mozilla/5.0 (compatible; dsh-market)" },
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (error) {
+    return { embeddable: false, reason: `fetch failed: ${String((error && error.message) || error)}`, status: 0 };
+  }
+  // Only the headers matter; never buffer the body of a catalogue page.
+  try {
+    if (response.body && typeof response.body.cancel === "function") await response.body.cancel();
+  } catch {
+    /* the body is already closed or not cancellable */
+  }
+  const xfo = String(response.headers.get("x-frame-options") || "").toLowerCase();
+  const csp = String(response.headers.get("content-security-policy") || "").toLowerCase();
+  let reason = "";
+  if (xfo.includes("deny")) reason = "X-Frame-Options: DENY";
+  else if (xfo.includes("sameorigin")) reason = "X-Frame-Options: SAMEORIGIN";
+  const ancestors = csp.match(/frame-ancestors([^;]*)/);
+  if (ancestors) {
+    const value = ancestors[1].trim();
+    if (value.includes("'none'")) reason = "CSP frame-ancestors 'none'";
+    else if (value !== "" && !value.split(/\s+/).includes("*")) reason = reason || `CSP frame-ancestors ${value}`;
+  }
+  return { embeddable: reason === "", reason, status: response.status };
+}
+
+
 /** Tool values must be lossless JSON: drop `undefined`, functions and other non-JSON members. */
 function lossless(value) {
   if (value === undefined) return null;
@@ -1374,6 +1417,8 @@ export async function apply(ctx, config = {}) {
         return mcp.setEnabled(body.serverName, body.enabled);
       case "mcp.uninstall":
         return mcp.uninstall(body.serverName);
+      case "frame.check":
+        return await checkFrameable(String(body.url || ""));
       default:
         throw new Error(`unknown operation "${op}"`);
     }
