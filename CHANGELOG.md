@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.25
+
+- **四个源全部走 CLI 快路径（clawhub / skills.sh / browse.sh / trusttools）**：新增 `src/cli-install.js`，`src/skills.js` 各源分支先试快路径、失败 `console.log(... falling back to GitHub)` 后回退原 GitHub 逻辑。
+  - `installViaClawHubApi`：直接 `https://clawhub.ai/api/v1/download?slug=<slug>` 拉 zip → 解包 → 校验 frontmatter → 落盘；不再依赖页面 HTML 抓取。
+  - `installViaSkillsShCli` / `installViaBrowseShCli` / `installViaTrustToolsCli`：分别对应各源的 CLI/API 直连下载。
+- **修复 clawhub 安装失败「找不到 GitHub 源仓库」**（用户 m09486 反馈）：`installViaClawHubApi` 收到的 `reference` 形如 `owner/slug`，直接拼进 `?slug=` 会 404（实测带 owner 前缀 404/15B，裸 slug 200/53KB zip）。新增 `bareSlug = slug.includes('/') ? slug.split('/').pop() : slug`，URL / 目标目录 / kebab / finalSlug 全部改用 `bareSlug`。
+- **详情页改为在 DSH 客户端内打开**：`client.js` 注入 `sidebarRight`，点击「详情」→ `sidebarRight.openTab('browser')` → 插件 pane tab → inline iframe overlay；`clawhub.ai` / `browse.sh` 因 CSP `frame-ancestors` 被列入黑名单，改为直接显示详情面板 + 复制 URL。预览按钮文案由「在浏览器中查看详情」改为「在 DSH 客户端内查看详情」。
+- **修复「已安装」面板位置错乱**（用户 m09737 反馈）：`grid` 增加 `alignItems: 'start'`；`title` / `meta` 改为单行省略（`overflow: hidden` + `textOverflow: ellipsis` + `whiteSpace: nowrap`，并移除 `meta` 的 `flexWrap: 'wrap'` + 加 `minWidth: 0`）。此前 `openpencil-design` 的长路径（`...\node_modules\@zseven-w\dsh-openpencil\lib\assets`）换行导致该卡片 131px、同行其他卡片 98px，网格行对齐被破坏；修复后 8 张卡片统一 98px。
+- `package.json`：`dsh.client.inject` 追加 `@deepseek-ai/dsh-client-ui-sidebar-right`。
+
 ## 0.5.22
 
 - **卡片加「详情」按钮：秒开详情页，不再干等下载**（用户 m06943 反馈）：

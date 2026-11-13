@@ -42,6 +42,7 @@ window.__ModuleLoader__.load({
         flexDirection: 'column',
         height: '100%',
         minHeight: 0,
+        position: 'relative',
         font: '13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif',
         color: 'var(--dsh-text-primary, #1f2328)',
       },
@@ -63,6 +64,19 @@ window.__ModuleLoader__.load({
         flexDirection: 'column',
         overflow: 'hidden',
       },
+      pane: {
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      },
+      dim: {
+        padding: 24,
+        color: '#888',
+        fontSize: 14,
+        textAlign: 'center',
+      },
       head: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: '1px solid var(--dsh-border, #eaeef2)' },
       tab: (active) => ({
         padding: '6px 12px',
@@ -75,7 +89,7 @@ window.__ModuleLoader__.load({
       }),
       body: { flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 },
       row: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
-      grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 10, alignContent: 'start' },
+      grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 10, alignContent: 'start', alignItems: 'start' },
       chip: (active) => ({
         padding: '4px 10px',
         borderRadius: 999,
@@ -105,9 +119,9 @@ window.__ModuleLoader__.load({
         flexDirection: 'column',
         gap: 6,
       },
-      title: { fontWeight: 700, fontSize: 13 },
+      title: { fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       desc: { opacity: 0.75, fontSize: 12, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
-      meta: { display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 11, opacity: 0.7 },
+      meta: { display: 'flex', gap: 6, fontSize: 11, opacity: 0.7, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 },
       btn: (kind) => ({
         height: 28,
         padding: '0 10px',
@@ -129,7 +143,7 @@ window.__ModuleLoader__.load({
         h('input', { style: S.input, value, onChange: (e) => onChange(e.target.value) }));
     }
 
-    function Market() {
+    function Market(props) {
       const [tab, setTab] = useState('skills');
       const [query, setQuery] = useState('');
       const [busy, setBusy] = useState('');
@@ -501,11 +515,154 @@ window.__ModuleLoader__.load({
         if (item.source === 'skills.sh' && item.homepage) {
           return item.homepage;
         }
+        if (item.source === 'browse.sh' && item.homepage) {
+          return item.homepage;
+        }
+        if (item.homepage) return item.homepage;
         if (item.upstreamUrl) return item.upstreamUrl;
         return '';
       };
 
-      const openDetail = (item) => openExt(detailUrlFor(item));
+      // Open detail inside the DSH client (never in an external browser).
+      // Strategy:
+      //   1) sidebarRight.openTab('browser') — works when a session surface is mounted
+      //   2) sidebarRight.openTab(plugin pane tab) — same gate
+      //   3) inline iframe overlay in the market panel — works for CSP-permissive sites;
+      //      for sites with frame-ancestors 'none' (e.g. clawhub.ai) show a notice with
+      //      a copy-URL button instead of falling back to an external browser.
+      const detailIframeRef = { current: null };
+
+      const openDetail = (item) => {
+        const url = detailUrlFor(item);
+        if (!url) return;
+        const name = String((item && item.name) || url);
+
+        // 1) Host browser tab (session surface required)
+        try {
+          const sr = props && props.sidebarRight;
+          if (sr && typeof sr.openTab === 'function') {
+            sr.openTab('browser', { params: { url } });
+            console.info('[dsh-skill-mcp-market] openDetail → sidebarRight browser tab', url);
+            return;
+          }
+        } catch (e) {
+          console.warn('[dsh-skill-mcp-market] openDetail browser tab threw:', e && e.message);
+        }
+
+        // 2) Plugin pane tab (session surface required)
+        try {
+          const sr = props && props.sidebarRight;
+          if (sr && typeof sr.openTab === 'function') {
+            sr.openTab('dsh-skill-mcp-market-detail', {
+              params: { detailUrl: url, detailTitle: name },
+              title: name,
+            });
+            console.info('[dsh-skill-mcp-market] openDetail → plugin pane tab', url);
+            return;
+          }
+        } catch { /* fall through */ }
+
+        // 3) Inline overlay (no session surface needed).
+        //    Known frame-ancestors 'none' sites get an inline detail panel
+        //    immediately (the iframe would just show the browser's built-in
+        //    CSP error page, which the user sees as a blank screen).
+        const cspBlockedHosts = new Set([
+          'clawhub.ai',
+          'www.clawhub.ai',
+          'browse.sh',
+          'www.browse.sh',
+        ]);
+        let hostname = '';
+        try { hostname = new URL(url).hostname; } catch { /* keep '' */ }
+        const cspBlocked = cspBlockedHosts.has(hostname);
+
+        if (cspBlocked) {
+          console.info('[dsh-skill-mcp-market] openDetail → inline detail panel (CSP-blocked host)', url);
+        } else {
+          console.info('[dsh-skill-mcp-market] openDetail → inline iframe overlay', url);
+        }
+        const host = document.querySelector('[data-dsh-market-root]');
+        if (host && typeof host === 'object' && 'appendChild' in host) {
+          // Remove any existing overlay
+          if (detailIframeRef.current) detailIframeRef.current.remove();
+
+          const overlay = document.createElement('div');
+          overlay.style.cssText = 'position:absolute;inset:0;z-index:10;background:#fff;display:flex;flex-direction:column;';
+          const bar = document.createElement('div');
+          bar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #eaeef2;';
+          const titleEl = document.createElement('span');
+          titleEl.textContent = name;
+          titleEl.style.cssText = 'flex:1;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+          const closeBtn = document.createElement('button');
+          closeBtn.textContent = '关闭';
+          closeBtn.style.cssText = 'padding:4px 10px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;font-size:12px;';
+          closeBtn.onclick = () => { overlay.remove(); detailIframeRef.current = null; };
+          bar.append(titleEl, closeBtn);
+
+          // Build the inline detail panel (used immediately for CSP-blocked
+          // hosts, and as a fallback when an unknown host's iframe fails).
+          const makeDetailPanel = (reason) => {
+            const notice = document.createElement('div');
+            notice.style.cssText = 'flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:32px;text-align:center;overflow:auto;';
+            const msg = document.createElement('div');
+            msg.textContent = reason || `此页面禁止被嵌入（CSP frame-ancestors 限制），无法在客户端内直接显示。详情地址：${url}`;
+            msg.style.cssText = 'font-size:14px;color:#555;max-width:440px;line-height:1.6;word-break:break-all;';
+            const copyBtn = document.createElement('button');
+            copyBtn.textContent = '复制 URL';
+            copyBtn.style.cssText = 'padding:8px 16px;border-radius:8px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer;font-size:13px;';
+            copyBtn.onclick = () => {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(url).then(
+                  () => { copyBtn.textContent = '已复制 ✓'; copyBtn.style.background = '#e8f5e9'; },
+                  () => {}
+                );
+              }
+            };
+            const openBtn = document.createElement('button');
+            openBtn.textContent = '在浏览器中打开';
+            openBtn.style.cssText = 'padding:8px 16px;border-radius:8px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer;font-size:13px;';
+            openBtn.onclick = () => window.open(url, '_blank', 'noopener,noreferrer');
+            notice.append(msg, copyBtn, openBtn);
+            return notice;
+          };
+
+          if (cspBlocked) {
+            // Known frame-ancestors 'none' host: show the detail panel now.
+            overlay.append(bar, makeDetailPanel());
+          } else {
+            // Unknown host: try the iframe; fall back to the detail panel on error.
+            const frame = document.createElement('iframe');
+            frame.src = url;
+            frame.style.cssText = 'flex:1;width:100%;border:0;';
+            frame.title = name;
+            frame.sandbox = 'allow-scripts allow-same-origin allow-popups allow-forms';
+            let settled = false;
+            frame.onerror = () => {
+              if (settled) return;
+              settled = true;
+              frame.remove();
+              overlay.appendChild(makeDetailPanel());
+            };
+            overlay.append(bar, frame);
+          }
+          host.style.position = host.style.position || 'relative';
+          host.appendChild(overlay);
+          detailIframeRef.current = overlay;
+          console.info('[dsh-skill-mcp-market] inline iframe overlay attached');
+          return;
+        }
+
+        // No host element found: show an inline notice in the panel body.
+        const panel = document.querySelector('[data-dsh-market-panel]');
+        if (panel) {
+          const note = document.createElement('div');
+          note.style.cssText = 'padding:24px;text-align:center;font-size:13px;color:#888;';
+          note.textContent = `无法在客户端内打开详情面板。URL: ${url}`;
+          panel.prepend(note);
+          setTimeout(() => note.remove(), 6000);
+        }
+      };
+
 
       const doInstallSkill = async (item) => {
         setBusy(`install:${item.slug}`);
@@ -647,7 +804,7 @@ window.__ModuleLoader__.load({
             }, busy === `preview:${item.slug}` ? '下载中…' : '预览'),
             detailUrlFor(item) ? h('button', {
               style: { ...S.btn(), padding: '0 6px' },
-              title: '在浏览器中打开详情页（快速查看）',
+              title: '在 DSH 客户端内查看详情',
               onClick: () => openDetail(item),
             }, '详情') : null,
             installed.some((x) => x.slug === item.slug)
@@ -811,7 +968,7 @@ window.__ModuleLoader__.load({
               },
             }, '卸载'))));
 
-      return h('div', { style: S.page },
+      return h('div', { style: S.page, 'data-dsh-market-root': '' },
         h('div', { style: S.panel },
           h('div', { style: S.head },
             h('button', { style: S.tab(tab === 'skills'), onClick: () => setTab('skills') }, 'SKILL 技能'),
@@ -1016,9 +1173,9 @@ window.__ModuleLoader__.load({
                     h('button', { style: S.btn(), onClick: () => setPreview(null) }, '关闭预览'),
                     preview.openUrl ? h('button', {
                       style: { ...S.btn('primary'), padding: '0 8px' },
-                      title: `在浏览器中打开 ${preview.openUrl}`,
-                      onClick: () => { openExt(preview.openUrl); setPreview(null); },
-                    }, '在浏览器中查看详情') : null))
+                      title: `在 DSH 客户端内查看详情 ${preview.openUrl}`,
+                      onClick: () => { openDetail({ homepage: preview.openUrl }); setPreview(null); },
+                    }, '在 DSH 客户端内查看详情') : null))
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,
@@ -1400,7 +1557,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'layout'],
+      inject: ['slots', 'layout', 'sidebarRight'],
       apply(ctx) {
         // Left sidebar entry: the sidebar renders the button and reads the label from here.
         ctx.slots.inject('sidebar.panellist', () =>
@@ -1410,7 +1567,10 @@ window.__ModuleLoader__.load({
           ));
         // Central panel addressed by that same sidebar id.
         ctx.slots.inject('main', () =>
-          ctx.slots.register({ name: 'main', key: 'dsh-market' }, Market));
+          ctx.slots.register(
+            { name: 'main', key: 'dsh-market', inject: () => ({ sidebarRight: ctx.sidebarRight }) },
+            Market,
+          ));
         // Composer toolbar: 技能 / MCP quick buttons on the input row (left group).
         // inputActions + useInput are provided by the host to conversation.input.* entries;
         // openMarketPanel is our inject face, closing over ctx for the layout service.

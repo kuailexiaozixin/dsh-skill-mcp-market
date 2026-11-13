@@ -12,6 +12,12 @@ import { writeJson } from "./home.js";
 import { locateSkillRoot, readZip, stripCommonPrefix } from "./zip.js";
 import { clawhubResolve, lobehubAgentSkill } from "./extra-sources.js";
 import { ensureDir, expandPath } from "./home.js";
+import {
+  installViaSkillsShCli,
+  installViaClawHubApi,
+  installViaBrowseShCli,
+  installViaTrustToolsCli,
+} from "./cli-install.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG_FILE = join(HERE, "..", "catalog", "skills.json");
@@ -235,6 +241,19 @@ export async function installSkill({ source = "github", reference = "", skillDir
   }
 
   if (source === "browse.sh") {
+    // Fast path: use the official `browse` CLI
+    try {
+      return await installViaBrowseShCli({
+        slug: String(reference || ""),
+        targetRoot,
+        dir,
+        name,
+        force,
+        skillDirs,
+      });
+    } catch (cliError) {
+      console.log(`[dsh-market] browse.sh CLI install failed, falling back to GitHub: ${cliError.message}`);
+    }
     return installSkill({
       source: "github",
       reference: reference || "browserbase/browse.sh",
@@ -292,6 +311,21 @@ export async function installSkill({ source = "github", reference = "", skillDir
     // The host market cache lets resolveSkillsShInstall skip the 25-second page fetch when
     // it can parse the URL locally or read a previously resolved entry.
     const { repo, skill } = await resolveSkillsShInstall(raw, cache);
+    // Fast path: use the official `skills` CLI to download the skill directly,
+    // avoiding the slow GitHub API + tarball path.
+    try {
+      return await installViaSkillsShCli({
+        repo,
+        slug: skill || skillDir || String(repo.split("/").pop() || ""),
+        targetRoot,
+        dir,
+        name: effectiveName || skill || "",
+        force,
+        skillDirs,
+      });
+    } catch (cliError) {
+      console.log(`[dsh-market] skills.sh CLI install failed, falling back to GitHub: ${cliError.message}`);
+    }
     // skills.sh slugs are the skill's basename (e.g. "tdd"), but in many repos the SKILL.md
     // lives at a nested path (e.g. mattpocock/skills ships it under `skills/engineering/tdd/`,
     // not `tdd/`). Without this the bare `repo` + empty skillDir makes the installer look for
@@ -316,11 +350,27 @@ export async function installSkill({ source = "github", reference = "", skillDir
   if (source === "trusttools") {
     const repo = String(reference || "");
     if (!repo) throw new Error("trusttools 条目缺少 repo_url");
+    // Fast path: use the official `trusttools` CLI
+    try {
+      return await installViaTrustToolsCli({ reference: repo, targetRoot, dir, name, force, skillDirs });
+    } catch (cliError) {
+      console.log(`[dsh-market] trusttools CLI install failed, falling back to GitHub: ${cliError.message}`);
+    }
     const target = ref ? `${repo}@${ref}` : repo;
     return installSkill({ source: "github", reference: target, skillDir: skillDir || "", name: name || "", dir: targetRoot, force, skillDirs });
   }
 
   if (source === "clawhub") {
+    // Fast path: download directly from clawhub's API zip endpoint,
+    // avoiding the slow GitHub API + tarball path.
+    const clawSlug = String(reference || "").trim();
+    if (clawSlug) {
+      try {
+        return await installViaClawHubApi({ slug: clawSlug, reference: clawSlug, targetRoot, dir, name, force, skillDirs });
+      } catch (apiError) {
+        console.log(`[dsh-market] clawhub API install failed, falling back to GitHub: ${apiError.message}`);
+      }
+    }
     const target = await clawhubResolve(reference);
     return installSkill({ source: "github", reference: target.repo, skillDir: target.skillDir, name: name || "", dir: targetRoot, force, skillDirs });
   }
