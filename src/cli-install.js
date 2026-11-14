@@ -191,44 +191,70 @@ export async function installViaClawHubApi({ slug, reference, targetRoot, dir, n
 
 /**
  * Install a skill from browse.sh via the official `browse` CLI.
- * `npx -y browse skills add <slug>` downloads into the global skills dir.
+ * `npx -y browse skills add <slug>` — npx auto-downloads the CLI if not installed.
+ * slug is the raw slug from the browse.sh catalogue (e.g. "alltrails.com" or
+ * "yelp.com/extract-reviews"). The CLI installs into ~/<agent>/skills/<slug>/
+ * where <agent> varies by detected harness.
  */
 export async function installViaBrowseShCli({ slug, targetRoot, dir, name, force, skillDirs }) {
   if (!slug) throw new Error("browse.sh install requires a slug");
   await npxRun("browse", ["skills", "add", slug], {
-    timeoutMs: 120000,
+    timeoutMs: 180000,
   });
-  // The browse CLI places the skill under its own global dir; search common locations
+  // The browse CLI places the skill under the detected agent's global skills dir.
+  // Search all known agent skill directories, same strategy as the skills CLI.
   const userHome = process.env.HOME || process.env.USERPROFILE || ".";
-  const homeDir = isWindows ? process.env.APPDATA || join(userHome, "AppData", "Roaming") : userHome;
-  const candidates = [
-    join(homeDir, "browse", "skills", slug),
-    join(homeDir, ".browse", "skills", slug),
-    join(userHome, ".browse", "skills", slug),
-  ];
-  for (const cliTarget of candidates) {
-    if (existsSync(cliTarget)) {
-      return copyInstalled(cliTarget, { targetRoot, dir, name, slug, force, skillDirs, originSource: "browse.sh", reference: slug });
+  const homeDir = isWindows
+    ? process.env.APPDATA || join(userHome, "AppData", "Roaming")
+    : userHome;
+  const agentDirs = isWindows
+    ? [
+        join(homeDir, "claude", "skills"),
+        join(userHome, ".claude", "skills"),
+        join(userHome, ".cursor", "skills"),
+        join(userHome, ".codex", "skills"),
+        join(userHome, ".windsurf", "skills"),
+        join(userHome, ".agents", "skills"),
+        join(userHome, ".browse", "skills"),
+      ]
+    : [
+        join(userHome, ".claude", "skills"),
+        join(userHome, ".cursor", "skills"),
+        join(userHome, ".codex", "skills"),
+        join(userHome, ".windsurf", "skills"),
+        join(userHome, ".agents", "skills"),
+        join(userHome, ".browse", "skills"),
+      ];
+  // The browse CLI may install under the slug's basename (last segment) or the full slug.
+  const baseSlug = slug.includes("/") ? slug.split("/").pop() : slug;
+  const kebabSlug = kebab(baseSlug) || baseSlug;
+  for (const baseDir of agentDirs) {
+    if (!existsSync(baseDir)) continue;
+    // Try exact slug first, then basename, then kebab variant.
+    for (const trySlug of [slug, baseSlug, kebabSlug]) {
+      const direct = join(baseDir, trySlug);
+      if (existsSync(direct)) {
+        return copyInstalled(direct, { targetRoot, dir, name, slug: trySlug, force, skillDirs, originSource: "browse.sh", reference: slug });
+      }
     }
-  }
-  // Last resort: scan .browse/skills or APPDATA/browse/skills for any dir with SKILL.md
-  const scanDirs = [join(homeDir, "browse", "skills"), join(homeDir, ".browse", "skills"), join(userHome, ".browse", "skills")];
-  for (const scanBase of scanDirs) {
-    if (!existsSync(scanBase)) continue;
+    // Last resort within this dir: scan for any subdirectory containing SKILL.md
     try {
-      const entries = await readdir(scanBase, { withFileTypes: true });
+      const entries = await readdir(baseDir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
-        const candidate = join(scanBase, entry.name);
-        if (existsSync(join(candidate, "SKILL.md"))) {
-          return copyInstalled(candidate, { targetRoot, dir, name, slug: entry.name, force, skillDirs, originSource: "browse.sh", reference: slug });
+        const candidateDir = join(baseDir, entry.name);
+        if (existsSync(join(candidateDir, "SKILL.md"))) {
+          return copyInstalled(candidateDir, { targetRoot, dir, name, slug: entry.name, force, skillDirs, originSource: "browse.sh", reference: slug });
         }
       }
     } catch {
-      // ignore unreadable
+      // ignore unreadable dirs
     }
   }
-  throw new Error(`browse CLI did not produce a skill directory for "${slug}" in any known path`);
+  throw new Error(
+    `browse CLI 未在任何已知 agent 目录中生成技能 "${slug}"。` +
+    "请手动运行 `npx browse skills add " + slug + "` 并检查输出。",
+  );
 }
 
 /**

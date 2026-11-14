@@ -438,8 +438,9 @@ export async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cach
       homepage: `https://browse.sh/skills/${raw.slug}`,
       upstreamUrl: "",
       skillDir: "",
-      installable: false,
-      note: "browse.sh 的技能源码仓库在 GitHub 上返回 404（私有或已迁走），只能浏览",
+      reference: raw.slug,
+      installable: true,
+      note: "通过官方 browse CLI 安装（npx browse skills add）",
     });
   }
   // browse.sh 一次返回整份目录（约 480 条），本地切片即可真正翻页。

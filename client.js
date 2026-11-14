@@ -726,7 +726,9 @@ window.__ModuleLoader__.load({
                   ? item.installRef
                   : item.source === 'lobehub-agent'
                     ? item.slug
-                    : item.upstreamUrl || item.id,
+                    : item.source === 'browse.sh'
+                      ? item.reference
+                      : item.upstreamUrl || item.id,
             skillDir: item.skillDir || '',
             ref: item.ref || '',
             name: item.slug,
@@ -843,7 +845,7 @@ window.__ModuleLoader__.load({
             item.category ? h('span', null, `· ${item.category}`) : null,
             item.installs ? h('span', null, `· ${item.installs.toLocaleString()} 次安装`) : null,
             item.describedBy === 'page-meta' ? null : null,
-            item.installable === false ? h('span', null, '· 无可用下载地址') : null),
+            item.installable === false ? h('span', null, '· 仅可浏览') : null),
           h('div', { style: S.row },
             item.installable === false ? null : h('button', {
               style: S.btn(),
@@ -858,7 +860,7 @@ window.__ModuleLoader__.load({
             installed.some((x) => x.slug === item.slug)
               ? h('span', { style: S.status }, '✓ 已安装')
               : item.installable === false
-                ? h('span', { style: S.status }, '该条目没有可用的下载源')
+                ? h('span', { style: S.status }, item.note || '该条目没有可用的下载源')
                 : h('button', {
                   style: S.btn('primary'),
                   disabled: busy === `install:${item.slug}` || item.installable === false,

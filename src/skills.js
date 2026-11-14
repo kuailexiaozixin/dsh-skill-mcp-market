@@ -241,7 +241,9 @@ export async function installSkill({ source = "github", reference = "", skillDir
   }
 
   if (source === "browse.sh") {
-    // Fast path: use the official `browse` CLI
+    // Use the official `browse` CLI: `browse skills add <slug>`
+    // (slug is the raw slug from the browse.sh catalogue, e.g. "alltrails.com"
+    //  or "yelp.com/extract-reviews").
     try {
       return await installViaBrowseShCli({
         slug: String(reference || ""),
@@ -252,17 +254,12 @@ export async function installSkill({ source = "github", reference = "", skillDir
         skillDirs,
       });
     } catch (cliError) {
-      console.log(`[dsh-market] browse.sh CLI install failed, falling back to GitHub: ${cliError.message}`);
+      throw new Error(
+        `browse.sh 技能安装失败：${cliError.message}。` +
+        "browse.sh 条目需要通过官方 browse CLI 安装（npm i -g browse），" +
+        "无法通过 GitHub 下载。请确保已安装 Node.js 22.18+ 并运行 npm i -g browse 后重试。",
+      );
     }
-    return installSkill({
-      source: "github",
-      reference: reference || "browserbase/browse.sh",
-      skillDir: skillDir || "",
-      name: name || "",
-      dir: targetRoot,
-      force,
-      skillDirs,
-    });
   }
 
   if (source === "zip") {

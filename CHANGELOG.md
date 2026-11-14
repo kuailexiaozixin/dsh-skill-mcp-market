@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.30
+
+- **browse.sh 安装路径修复**（用户反馈 browse.sh 条目显示「无可用下载地址」，但实际可通过官方 `browse` CLI 安装）：
+  - `src/sources.js` `searchBrowseSh` 条目 `installable` 由 `false` 改为 `true`，新增 `reference: raw.slug` 字段；`note` 改为「通过官方 browse CLI 安装（npx browse skills add）」。
+  - `client.js` `doInstallSkill` 对 `browse.sh` 源使用 `item.reference`（原始 slug）作为安装引用；非可安装条目 status 显示改为 `item.note`（有 note 时）或「该条目没有可用的下载源」。
+  - `src/skills.js` browse.sh 安装分支：CLI 失败时不再回退 GitHub（GitHub 上 browse.sh 技能仓库 404），改为抛出带指引的错误（提示安装 Node.js 22.18+ 并运行 `npm i -g browse`）。
+  - `src/cli-install.js` `installViaBrowseShCli`：`npx -y browse` 自动下载 CLI（无需预装），timeout 延长到 180s；搜索目录扩展到所有 agent skills 目录 + `.browse/skills`；支持 slug 含 `/`（取 basename 匹配）；错误信息带 `npx browse skills add <slug>` 手动指引。
+  - `client.js` `installable === false` 时 meta 行显示「· 仅可浏览」替代「· 无可用下载地址」。
+
 ## 0.5.29
 
 - **lawhub.ai 不显示「详情」按钮**（用户 m10721 指令：skills.sh、lawhub.ai、browse.sh 不设详情功能）：
