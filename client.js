@@ -509,8 +509,12 @@ window.__ModuleLoader__.load({
       };
 
       const detailUrlFor = (item) => {
-        // skills.sh / clawhub / browse.sh 详情页禁止嵌入，不设「详情」按钮
+        // skills.sh / clawhub / browse.sh 不设「详情」按钮
         if (item.source === 'skills.sh' || item.source === 'clawhub' || item.source === 'browse.sh') {
+          return '';
+        }
+        // lawhub.ai 不设「详情」按钮（通过 homepage 域名或 source 识别）
+        if (item.source === 'lawhub' || (item.homepage && /lawhub\.ai$/i.test(item.homepage))) {
           return '';
         }
         if (item.homepage) return item.homepage;
