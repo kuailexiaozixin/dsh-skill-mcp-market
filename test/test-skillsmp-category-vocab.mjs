@@ -399,12 +399,31 @@ check('面板不再无条件合并词表', countHits(clientSrc, 'mergeCategoryVo
 const localGate = lineIf('const visibleSkills = orderedSkills.filter', '本地分类过滤');
 check('切到服务端 facet 的分类时不再本地过滤',
     /serverFacet/.test(localGate) && /category === 'all'/.test(localGate), localGate.trim().slice(0, 170));
-const clickLine = lineIf('setCategory(cat); searchSkills(', 'chip onClick');
-check('词表 chip 发上游用的是 value（slug）而不是显示名',
-    /category: cat/.test(clickLine),
-    clickLine.trim().slice(0, 160));
+// 0.5.174：窗外筛选 chip 与窗内 chip 共用同一个 onClick 形状，「setCategory(cat); searchSkills(」
+// 在 client.js 里有两处命中——旧 lineIf 要求唯一命中，窗外分支落地后必然拿到空串（红）。
+// 正确口径是锁「全部命中行」：每行都必须把上游真 slug 放进 category，任何一处发显示名都算红；
+// 再加形状锁 >=2 处，删掉窗外分支会让命中退回 1，同样转红（不许靠删断言换绿灯）。
+const clickLines = clientSrc.split(/\r?\n/).filter((l) => l.includes('setCategory(cat); searchSkills('));
+check('chip onClick 形状锁：窗内 + 窗外共 2 处同一下发形状（少一处即红）',
+    clickLines.length >= 2, 'hits=' + clickLines.length);
+check('每处 chip onClick 都发上游真 slug（category: cat），无一处发显示名',
+    clickLines.length >= 2 && clickLines.every((l) => /category: cat\b/.test(l)) &&
+    clickLines.every((l) => !/category:\s*(chip|c)\.label/.test(l)),
+    JSON.stringify(clickLines.map((l) => l.trim().slice(0, 80))));
 
 
+// 0.5.174 判据（用户 m20051）：skillsmp tail=31 落在 CAT_TAIL_EXPAND_MAX=40 阈内 ⇒ 展开态保留，
+// 形态仍是限高纵向滚动（catsRow）+ 行尾收缩/展开哨兵。这里出源码锁，两态成员的真跑判据在
+// test-lobehub Test 8 的装配段与 63 类夹具（跑同一段生产码，不在这里复制实现）。
+check('展开态纵向滚动形态在场（catsRow 限高 + overflowY，行样式随 catsExpanded 切换）',
+    /catsRow: \{[^\n]*maxHeight: 116[^\n]*overflowY: 'auto'/.test(clientSrc) &&
+    /style: catsExpanded \? S\.catsRow : S\.chipRow/.test(clientSrc),
+    (clientSrc.split(/\r?\n/).find((l) => l.includes('catsRow:')) || '(none)').trim().slice(0, 150));
+check('小尾巴源两态入口的三道源码锁在场（阈值常量 / tailExpandable 门控 / 哨兵入集合）',
+    /const CAT_TAIL_EXPAND_MAX = 40;/.test(clientSrc) &&
+    /chipFold\.other && tailExpandable \? \[toggleChip\] : \[\]/.test(clientSrc) &&
+    /const toggleChip = tailExpandable \? \{ value: CATS_COLLAPSE/.test(clientSrc),
+    JSON.stringify({ th: /const CAT_TAIL_EXPAND_MAX = 40;/.test(clientSrc), gate: /tailExpandable \? \[toggleChip\]/.test(clientSrc), sen: /const toggleChip = tailExpandable/.test(clientSrc) }));
 // 缓存两条路都要带上 serverFacet：只在新返回里认、落缓存时丢掉，刷新一次这一页就退成「未筛」。
 // 实测把写入侧改成 serverFacet: false 时 43 条判据全绿，这条盲区用文案锁补上（口径同
 // test-ux-honesty.mjs 锁 hasMore：写侧一条、缓存命中回填一条）。

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.174
+
+- 渐进式加载（harvest）落地：服务端新增 `harvest.start` / `harvest.poll` 两个 op（`index.js:1867`、`:1886`），会话表 `makeHarvestStore({ ttlMs: 180000, maxSessions: 8 })`（`index.js:1139`），面板 250ms 轮询增量 upsert，收口包整表替换；未知或过期 id 回 `ok:false`，面板自动回落 `skills.search`（旧服务端兼容）。
+- 收口口径唯一：一次性搜索与 harvest 收口共用 `foldFanResults`（`src/sources.js:736`），聚合排序 / skills.sh 补描述 / installRef 全仓各一份（原第二份已删）；`harvestRun` 只推「到达序」增量，收口按 `picked` 序重排后走同一函数（`src/sources.js:1102`），超时未落地的源补一条 `ok:false` 进 degraded（`src/sources.js:1106`）。
+- 不设「到点就停」：harvest 不复用一次性搜索的 `DEFAULT_BUDGET_MS = 12000`，真撞预算的源不落地只记 degraded，`done` 照常置真；`HARVEST_BUDGET_MS = 3600000` 仅为挂死兜底（`src/sources.js:971`）。
+- `finalMeta` 补齐：收口包 meta 带上与一次性搜索同口径的 `total / pages / hasMore / serverFacet / categoryNote / filteredOut`（`src/sources.js:1117`），面板据此整表替换分页口径；中间包 meta 刻意不带这些字段，不得伪造。
+- 「窗外」由披露入口改为真筛选：点击只出一个分类态、结果 = 窗外全部分类的并集（谓词 = 条目分类 ∈ `chipFold.other.covers`），不再把 214 类逐个铺成 chip；上游自带杂项桶（lobehub `general`、modelscope `其他`）不参与并集，否则与「全部」重叠；`upstreamCat` 仍把 `CAT_OTHER` 降级为 `all`，本地过滤口径不变。
+- 展开/收起只在「确实多东西可看」时存在：窗外类数 ≤ `CAT_TAIL_EXPAND_MAX`(40) 才渲染哨兵，lobehub（214）/modelscope 这类大尾巴源两态同形、不再铺满整屏；展开态 `S.catsRow` 限高 116px 可上下滚动（`client.js:759`）。
+- 新增判据：`test/test-harvest.mjs`（59 条）锁住增量集合单调、收口有序、finalMeta 与一次性同值、未知 id 回落、以及「口径唯一」的源码级互斥锁；`test/test-panel-harvest.mjs`（70 条）锁面板消费。两条均有变异反证。
+- 文档：README 新增「渐进式加载（harvest）」与「窗外分类（真筛选）」两节；`docs/ARCHITECTURE.md` 的 sources.js 职责行补上 harvest 与 foldFanResults 同口径。
+- 发布卫生：删除本机被 gitignore 的 `.dsh-tmp/`（1156866B）、`test-results.json`、`test/test-results.json`。
+- 本批遗留（0.5.175）：`publish.yml` 无 `timeout-minutes`；`publish-0.5.19.ps1` 是手工 `npm publish` + 2FA 告警的死物且全仓无引用（现行是推 v* tag 走 Trusted Publishing）；`index.js:1415-1419` `skills.upload` 逐条重扫技能目录；harvest 首包同步扫 installed（本机 3630 个 SKILL.md ⇒ 冷 986ms / 热 49ms）；ModelScope 30 页上界改走 harvest 逐页推送。
+- 依赖面核对：本包 `dependencies/devDependencies/peerDependencies` 全空、`npm ls --all --depth=0` 为 `(empty)`，`client.js:6` 的 `require('react')` 由宿主 bundle 注入（`dsh.client.inject`）⇒ CI 无需 lockfile/`npm ci`。
+
 ## 0.5.173
 
 - test-warm-budget 判据缺陷修复（门内 420s TIMEOUT 的根因，非实现回归）：原 Test 1 与 Test 2 各用

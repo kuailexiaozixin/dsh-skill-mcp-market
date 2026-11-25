@@ -25,7 +25,7 @@ import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js"
 import { createToolFilter, replaceServerDeny } from "./src/tool-filter.js";
 import { REGISTRY_PAGE_SIZE, fallbackCards, registryCatalogueCacheKey, registryDefinitionByName, searchMcpRegistryPage } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
-import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCache } from "./src/sources.js";
+import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCache, makeHarvestStore } from "./src/sources.js";
 import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js";
 // 技能市场分类词表（skillsmp /zh/categories 实测抓取）只随 settings.get 走：读缓存 + 后台补取，
 // 面板首屏的 RPC 不等外网抓取。
@@ -1133,6 +1133,10 @@ export async function apply(ctx, config = {}) {
   // sessions.scan 节流状态（见 case "sessions.scan"）
   const scanCache = { at: 0, shallow: null };
   let scanInflight = null;
+  // harvest 会话表（见 case "harvest.start" / case "harvest.poll"）：面板渐进式取数用。
+  // TTL 与容量只是内存回收口径，与搜索的 12s 预算无关 —— 那一条限制住在 src/sources.js 的
+  // HARVEST_BUDGET_MS，harvest 不复用 DEFAULT_BUDGET_MS，所以慢源不会被砍掉。
+  const harvestStore = makeHarvestStore({ ttlMs: 180000, maxSessions: 8 });
 /**
  * 判定一次 patch 是否**真的**改变执行面（command/args）。纯函数，便于独立测试。
  *
@@ -1859,6 +1863,38 @@ function needsConfirmFor(patch, current) {
         if (!file) throw new Error("请提供会话日志路径");
         if (!existsSync(file)) throw new Error(`会话日志不存在：${file}`);
         return repairSessionLog(file, { dryRun: body.dryRun === true });
+      }
+      case "harvest.start": {
+        // 渐进式取数首包：已经落地的源立刻随行返回，慢源留给 harvest.poll。
+        // 出参与 skills.search 完全不同形（rows 而不是 items），互不串味：旧面板继续用 skills.search。
+        const firstPackage = await harvestStore.start({
+          query: body.query || "",
+          source: String(body.source || "all"),
+          category: body.category || "",
+          page: body.page || 1,
+          pageSize: body.pageSize || 24,
+          sort: body.sort || "",
+        });
+        const harvestedTaken = new Set((await listInstalledSkills(settings.skillDirs)).map((item) => item.slug));
+        // final 随 spread 原样透传（只有收口包才有这个键）：面板契约 —— 看到 final:true 就把
+        // 整表替换成 rows，没看到就按 source|slug 增量 upsert。中间包绝不带 final。
+        return {
+          ...firstPackage,
+          rows: firstPackage.rows.map((item) => ({ ...item, installed: harvestedTaken.has(item.slug) })),
+        };
+      }
+      case "harvest.poll": {
+        const nextPackage = harvestStore.poll(String(body.id || ""));
+        // 未知/过期 id：报 ok:false 而不是抛错，面板据此回落 skills.search（旧服务器没有这两个
+        // op 时走 default 的 unknown operation，同样是 ok:false，两条路径都不需要面板特判）。
+        if (!nextPackage) return { ok: false, error: "该 harvest 会话不存在或已过期，请改用 skills.search" };
+        const polledTaken = new Set((await listInstalledSkills(settings.skillDirs)).map((item) => item.slug));
+        // 同上：final:true 的那一次透传给面板做整表替换，其余包是增量。
+        return {
+          ok: true,
+          ...nextPackage,
+          rows: nextPackage.rows.map((item) => ({ ...item, installed: polledTaken.has(item.slug) })),
+        };
       }
       default:
         throw new Error(`unknown operation "${op}"`);

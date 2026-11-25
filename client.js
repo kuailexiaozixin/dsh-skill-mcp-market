@@ -139,6 +139,231 @@ window.__ModuleLoader__.load({
       const sort = o.sort === 'default' ? '' : (o.sort || '');
       return `mc|${o.source}|${cat}|${sort}|${o.query || ''}|${o.page}|${o.size}`;
     };
+    // ── 渐进式加载（harvest）消费者：服务端边到边返回，面板边到边渲染 ──────────
+    // harvest.start 的入参与 skills.search 完全一致，返回首批 rows；此后每
+    // HARVEST_POLL_MS 轮询 harvest.poll 取「到达序增量」，见到 final:true 的那包
+    // 再整表替换成服务端有序全量（否则顺序会随到达先后跳动）。
+    // 停止条件只有四个：final/done、被超车、会话被新搜索接管、卸载或手动取消。
+    // 面板侧没有「超过 N 秒就停止加载」这种预算 —— 服务端总预算是 1 小时，提前
+    // 截断会把还没到的真实结果说成「没有」。
+    const HARVEST_POLL_MS = 250;
+
+    // 会话控制格（组件里用 harvestCtlRef 持有）：timer 是唯一 harvest 定时器的句柄，
+    // 排它一处（harvestWaitTick）、清它一处（harvestClearTimer），停止条件都过
+    // harvestCancelSession / harvestDropSession，所以句柄不会泄漏，也不会同时跑两轮。
+    // wake 是等待者的即时唤醒：接管/取消时不许把在途 Promise 晾着不落地，否则那一轮
+    // 循环连同它的闭包会永远挂在内存里。
+    const harvestClearTimer = (ctl) => {
+      if (ctl && ctl.timer !== null && ctl.timer !== undefined) {
+        clearTimeout(ctl.timer);
+        ctl.timer = null;
+      }
+    };
+
+    const harvestReleaseWaiter = (ctl) => {
+      const w = ctl && ctl.wake;
+      if (ctl) ctl.wake = null;
+      if (w) w();
+    };
+
+    // 新会话接管：先清旧句柄并叫醒旧等待者，旧循环下一拍自检不过就自己退出。
+    const harvestBeginSession = (ctl, token) => {
+      harvestClearTimer(ctl);
+      harvestReleaseWaiter(ctl);
+      ctl.token = token;
+    };
+
+    const harvestCancelSession = (ctl) => {
+      ctl.token = null;
+      harvestClearTimer(ctl);
+      harvestReleaseWaiter(ctl);
+    };
+
+    // 只有仍然持有槽位的那一轮才准清场：接管之后旧循环的出口必须什么都不动，
+    // 否则它会把**新**会话的 token 抹掉，让新搜索的渐进加载莫名断流。
+    const harvestDropSession = (ctl, token) => {
+      if (ctl && ctl.token === token) harvestCancelSession(ctl);
+    };
+
+    const harvestIsOwner = (ctl, token) => !!(token && ctl && ctl.token === token);
+
+    // 这个会话还活着吗：既要没被新的 harvest 接管，也要没被任何一次更新的技能请求
+    // 超车（翻页/追加不接管 token，但同样该把上一包判成过期）。
+    const harvestIsLive = (ctl, env) => harvestIsOwner(ctl, env.token) && env.seq === env.seqRef.current;
+
+    // 等下一拍：面板里唯一排 harvest 定时器的地方。到点前被接管/取消会立刻醒来，
+    // 调用方自检 token 后退出，既不重复排队也不把旧数据写进新视图。
+    const harvestWaitTick = (ctl, token, ms) => new Promise((resolve) => {
+      if (!harvestIsOwner(ctl, token)) { resolve(); return; }
+      harvestClearTimer(ctl);
+      ctl.wake = resolve;
+      ctl.timer = setTimeout(() => {
+        ctl.timer = null;
+        ctl.wake = null;
+        resolve();
+      }, ms);
+    });
+
+    // 行 key：harvest 的行带 source+slug（与上游 rowKeyOf 同口径），一次性通路的行
+    // 带 id。取不到 key 的行不参与去重 —— 宁可直接展示，也不误当成另一条的更新。
+    const harvestRowKey = (x) => {
+      if (!x) return null;
+      if (x.id !== undefined && x.id !== null && x.id !== '') return String(x.id);
+      if (x.source !== undefined && x.source !== null) return String(x.source) + '|' + String(x.slug);
+      return null;
+    };
+
+    // 增量 upsert：同 key 覆盖、新 key 追加，返回新数组（不改入参）。列表长度因此
+    // 单调不减 —— 判据「有多少显示多少、持续增加」锁的就是这条性质。
+    const upsertHarvestRows = (rows, incoming) => {
+      const out = (rows || []).slice();
+      const at = new Map();
+      for (let i = 0; i < out.length; i++) {
+        const k = harvestRowKey(out[i]);
+        if (k !== null && !at.has(k)) at.set(k, i);
+      }
+      for (const x of incoming || []) {
+        const k = harvestRowKey(x);
+        if (k === null) { out.push(x); continue; }
+        if (at.has(k)) out[at.get(k)] = x;
+        else { at.set(k, out.length); out.push(x); }
+      }
+      return out;
+    };
+
+    // call() 对响应顶层 ok:false 是抛错（见 call），而「服务端不认识这个 op」（老
+    // 服务端）与「会话不存在或已过期」都必须走同一条回落，所以在这里归一成
+    // { ok: false }，由调用方决定回落 —— 不把 harvest 的失败当成搜索的失败。
+    const harvestCall = async (call, op, body) => {
+      try {
+        const d = await call(op, body);
+        if (!d || d.ok === false) return { ok: false, data: d || null };
+        return { ok: true, data: d };
+      } catch {
+        return { ok: false, data: null };
+      }
+    };
+
+    // 与一次性通路同口径的视图键：totalBaseRef 用它记首页报告的 total 基准。
+    const harvestViewKey = (env) => String(env.src) + '|' + String(env.q) + '|' + String(env.cat) + '|' + String(env.effSort) + '|' + String(env.pageSize);
+
+    // 「等待不焦虑」的写法：渐进期间不挂 busy（列表持续变长本身就是进度），notice
+    // 只在有 hints/降级/空表时披露原因；中间包最多说「陆续加载中」，绝不说完成；
+    // final 之后按一次性通路同一口径收尾（真空表才给「没有找到匹配的技能。」）。
+    const setHarvestNotice = (d, pkg, count, settled) => {
+      const m = (pkg && pkg.meta) || {};
+      const hints = (m.hints || []).filter(Boolean);
+      // 未收口（中间包）：无论已到达几条都只说「陆续加载中」。0 条时绝不能提前讲
+      // 「没有找到匹配的技能」—— 那是把还没到的结果说成不存在（诚实性红线）。
+      if (!settled) { d.setNotice(hints.length ? hints.join('；') : `（陆续加载中，已到达 ${count} 条）`); return; }
+      if (!count) {
+        const reasons = (m.sourceErrors || []).length
+          ? m.sourceErrors
+          : hints.length
+            ? hints
+            : (m.degraded || []).length
+              ? [`部分来源不可用：${m.degraded.map((x) => x.source).join(', ')}`]
+              : ['没有找到匹配的技能。'];
+        d.setNotice(reasons.join('；'));
+        return;
+      }
+      d.setNotice(hints.length ? hints.join('；') : '');
+    };
+
+    // final 包：整表替换为服务端有序全量（消除到达序造成的顺序跳动），并把
+    // meta.finalMeta 的 total/pages/hasMore/serverFacet 一并落到分页器与 resultCache
+    // （同一 cacheKey 口径）—— 数字与内容必须同步，不许沿用上一次搜索的旧值。
+    // 中间包的 meta 里没有 total：那时计数一律标成未知(0)，绝不伪造总数。
+    const applyHarvestFinal = (env, pkg) => {
+      const d = env.deps;
+      const rows = pkg.rows || [];
+      const m = pkg.meta || {};
+      if (env.cacheKey) {
+        d.resultCacheRef.current[env.cacheKey] = {
+          items: rows,
+          pages: m.pages,
+          total: m.total,
+          hasMore: m.hasMore,
+          serverFacet: Boolean(m.serverFacet),
+          hints: m.hints || [],
+          sourceErrors: m.sourceErrors || [],
+          degraded: m.degraded || [],
+        };
+      }
+      d.setSkills(rows);
+      d.setSkillsPage(env.pageNo);
+      d.setSkillsTotalPages(m.pages || 0);
+      const k = harvestViewKey(env);
+      d.setSkillsTotal(Number(trustedTotal(m.total, d.totalBaseRef.current[k], env.pageNo)) || 0);
+      if (env.pageNo <= 1) d.totalBaseRef.current[k] = Number(m.total) || 0;
+      d.setSkillsHasMore(Boolean(m.hasMore));
+      d.setServerFacet(Boolean(m.serverFacet));
+      setHarvestNotice(d, pkg, rows.length, true);
+    };
+
+    // 一个完整的渐进式会话：start → 首包立即渲染（不白屏、不等齐）→ 每 250ms 取增量
+    // upsert → final 整表替换。
+    // 返回 { settled: false } 表示「这包没法自己收尾，交回一次性通路」：调用方接手的
+    // 正是原来那段 skills.search，所以回落恰好一次、且完全按旧路径渲染。
+    const harvestFirstPage = async (ctl, env) => {
+      const d = env.deps;
+      harvestBeginSession(ctl, env.token);
+      const started = await harvestCall(d.call, 'harvest.start', {
+        query: env.text,
+        source: env.src,
+        // 同一次性通路：'all' 只是「不加分类过滤」的哨兵，绝不作为 category 下发
+        // （CAT_OTHER 在 upstreamCat 那一行已经变成 'all'，这里再变成空串）。
+        category: env.upstreamCat === 'all' ? '' : env.upstreamCat,
+        page: env.pageNo,
+        pageSize: env.pageSize,
+        sort: env.effSort,
+      });
+      if (!started.ok) { harvestDropSession(ctl, env.token); return { settled: false }; }
+      if (!harvestIsLive(ctl, env)) { harvestDropSession(ctl, env.token); return { settled: true }; }
+      let pkg = started.data || {};
+      const sessionId = pkg.id;
+      // 会话句柄只由 start 返回（poll 响应不回传 id）：先钉死再轮询，
+      // 否则第二轮起带 undefined 会被服务端判成「会话不存在」而中断。
+      let rows = upsertHarvestRows([], pkg.rows || []);
+      if (pkg.final === true) { applyHarvestFinal(env, pkg); harvestDropSession(ctl, env.token); return { settled: true }; }
+      d.setSkills(rows);
+      d.setSkillsPage(env.pageNo);
+      d.setSkillsTotalPages(0);
+      d.setSkillsTotal(0);
+      d.setSkillsHasMore(false);
+      d.setServerFacet(false);
+      // 首批上屏即摘 busy：此后靠列表持续增长与 notice 表达进度，不挂着「搜索中」。
+      d.setBusy('');
+      setHarvestNotice(d, pkg, rows.length, false);
+      while (true) {
+        // done 却没带 final:true = 服务端这包不是有序全量，不能拿增量当终态：
+        // 交回一次性通路取权威结果（仍恰好一次）。
+        if (pkg.done === true) { harvestDropSession(ctl, env.token); return { settled: false }; }
+        await harvestWaitTick(ctl, env.token, HARVEST_POLL_MS);
+        if (!harvestIsLive(ctl, env)) { harvestDropSession(ctl, env.token); return { settled: true }; }
+        const res = await harvestCall(d.call, 'harvest.poll', { id: sessionId });
+        if (!harvestIsLive(ctl, env)) { harvestDropSession(ctl, env.token); return { settled: true }; }
+        if (!res.ok) { harvestDropSession(ctl, env.token); return { settled: false }; }
+        pkg = res.data || {};
+        if (pkg.final === true) { applyHarvestFinal(env, pkg); harvestDropSession(ctl, env.token); return { settled: true }; }
+        rows = upsertHarvestRows(rows, pkg.rows || []);
+        d.setSkills(rows);
+        setHarvestNotice(d, pkg, rows.length, false);
+      }
+    };
+
+    // 门的入口：harvestCall 已把 ok:false 归一成返回值，这里兜的是「harvest 消费者
+    // 自己出异常」——那种情况也必须交回一次性通路，绝不能让 searchSkills 抛出去
+    // （多个调用点不 await 它，抛出去就是 unhandled rejection + 面板白屏）。
+    const harvestGate = async (ctl, env) => {
+      try {
+        const h = await harvestFirstPage(ctl, env);
+        if (h && h.settled) return { settled: true };
+      } catch {
+        harvestDropSession(ctl, env.token);
+      }
+      return { settled: false };
+    };
     const TOOL_BATCH = 60;
 // 分批阈值必须 ≥ 单页上限（下拉里最大 48）：否则「首批」会把用户明确要求
 // 的一页裁掉一半，那是拿性能名义偷内容。此前写 60 —— 大于任何可选页大小，
@@ -154,6 +379,12 @@ const CARD_BATCH = 48;
 // 「其他」合并是产品决策：窗口外的 214 类不再逐个铺开（展开态给 246 个按钮不是筛选，是倾倒），
 // 合并成一个「其他」chip 承接：条数=窗外合计（上游真数），点进去由已取到的集合本地过滤，
 // 上游没有可用的「其他」桶，这个 chip 是面板自造的合并入口，不代表任何一个上游分类。
+// 0.5.174（用户 m20051 两态入口 + m00001 单入口）：展开/收起哨兵只给「尾巴够小」的源——窗外类数
+// <= CAT_TAIL_EXPAND_MAX 时展开态才铺得下全部上游真类（依据：skillsmp 63 类 tail=31 落阈内，
+// 展开=真分类全集 + catsRow 限高纵向滚动）；lobehub 246 类 tail=214 落阈外，铺开既读不动也筛不动，
+// 两态成员就完全相同，「展开分类」退化成装饰假控件（0.5.165 假控件同判）⇒ 干脆不渲染这个入口。
+// 集合成员与哨兵在场性的判据：test-lobehub Test 8 装配段真跑 + 63 类小尾巴夹具。
+const CAT_TAIL_EXPAND_MAX = 40;
 const CAT_CHIP_FOLD = 32;
 // 分类词表 → chip 的三件纯函数，放在组件外同一座「可测岛」上：不碰 React 状态，
 // 测试用 new Function 直接执行函数体（与 capsFor/CARD_BATCH 同一口径）。
@@ -267,15 +498,16 @@ function foldChips(vocabChips, limit, otherLabel) {
   const chips = [];
   for (const c of (Array.isArray(vocabChips) ? vocabChips : [])) if (c && c.value && c.value !== CAT_OTHER) chips.push(c);
   const cap = Number(limit) > 0 ? Number(limit) : chips.length;
-  if (chips.length <= cap) return { window: chips, tail: [], other: null, otherCount: 0, otherTotal: 0 };
+  if (chips.length <= cap) return { window: chips, head: chips, tail: [], other: null, otherCount: 0, otherTotal: 0 };
   const head = chips.slice(0, cap);
   const tail = chips.slice(cap);
   let otherTotal = 0;
   const covers = [];
   for (const c of tail) { otherTotal += Number(c.totalAll) || 0; covers.push(c.value); }
   const other = { value: CAT_OTHER, label: String(otherLabel || CAT_TAIL_LABEL), totalAll: otherTotal, fixed: true, covers };
-  // tail 外露：窗外类不是取不回的桶，每个都是上游真 slug，展开后逐个可点、真出结果。
-  return { window: head.concat([other]), tail: tail, other: other, otherCount: tail.length, otherTotal: otherTotal };
+  // tail/head 外露：窗外类确实是上游真 slug，但 0.5.172（用户 m00001「不要每个类别单独显示」）起
+  // 不再逐个成 chip：head 供展开态铺窗内全集，tail 只是窗外筛选 chip 的 covers 来源。
+  return { window: head.concat([other]), head: head, tail: tail, other: other, otherCount: tail.length, otherTotal: otherTotal };
 }
 // 本地过滤空分类的出路（用户 m18814「部分类型标签的搜索结果为空」）：把分类名当关键词走全文搜索。
 // 括号里/斜杠后的限定语要丢掉——「文档处理 (PDF/PPTX/DOCX)」整串去搜实测 0 条。
@@ -853,6 +1085,13 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const [skillsTotalPages, setSkillsTotalPages] = useState(0);
       const [skillsTotal, setSkillsTotal] = useState(0);
       const [skillsHasMore, setSkillsHasMore] = useState(false);
+      // 渐进式加载会话槽：定时器句柄 / 等待者 / token 三态都在这一个 ref 里，卸载时
+      // 统一清掉（助手在 factory 作用域，见 trustedTotal 附近），否则被超车或卸载后
+      // 那个 250ms 定时器会一直转，把旧搜索的增量写进新视图。
+      const harvestCtlRef = useRef({ timer: null, wake: null, token: null });
+      useEffect(() => () => {
+        if (typeof harvestCancelSession === 'function') harvestCancelSession(harvestCtlRef.current);
+      }, []);
 
       const gotoPage = (p) => {
         p = Math.max(1, Math.min(p, 1 << 30));
@@ -1004,6 +1243,35 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
           setBusy('skills.search');
         }
         setError('');
+        // 渐进式加载门（首屏、非追加）：harvest.start / harvest.poll 任何一次返回
+        // ok:false —— 含老服务端不认识该 op（响应顶层 ok:false，call() 抛错）——
+        // 都原样交回下面这段一次性 skills.search：恰好回落一次、完全按旧路径渲染。
+        // 多个调用点并不 await searchSkills，所以这扇门自己兜异常，永不 reject。
+        // 测试桩只摘录本函数体、拿不到 factory 作用域的 harvest 助手，入口因此走
+        // typeof 防御（同 probeOpPresent 的用法）：解不了就回落旧通路，不判红。
+        if (pageNo <= 1 && !append && typeof harvestGate === 'function' && harvestCtlRef && harvestCtlRef.current) {
+          const hres = await harvestGate(harvestCtlRef.current, {
+            deps: { call, resultCacheRef, totalBaseRef, setSkills, setSkillsPage, setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setBusy },
+            seqRef: reqSeqRef,
+            seq,
+            text,
+            src,
+            q,
+            cat,
+            upstreamCat,
+            pageNo,
+            pageSize,
+            effSort,
+            cacheKey,
+            token: {},
+          });
+          if (hres && hres.settled) {
+            // 与下方 finally 同口径收尾：结束即让位，busy 只由最后一次请求收口。
+            if (cacheKey) inflightRef.current.delete(cacheKey);
+            if (seq === reqSeqRef.current) setBusy('');
+            return;
+          }
+        }
         try {
           const d = await call('skills.search', {
             query: text,
@@ -1943,7 +2211,10 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       // 从面板上静默消失（用户没法取消筛选）。0.5.164 的中间量 chipBySlug/chipSlugs 在折叠改造后
       // 没有任何消费方——留着就是死量，判据（lobehub Test 8）直接锁这两行不再出现。
       // 展开/收起只换渲染集合，绝不换筛选值：category 里永远只出现上游真 slug 或 'all'。
-      // 展开态铺「窗内 + 窗外」全集：窗外类也是上游真 slug，逐个可点、真出结果（m18787 的口径）。
+      // 0.5.174（用户 m00001 + m20051）：展开态只在尾巴够小（tail<=CAT_TAIL_EXPAND_MAX=40，skillsmp 31）时
+      // 才铺全部上游真类；大尾巴源（lobehub 214）两态同窗、连展开入口都不给（装饰假控件）。
+      // 窗外类永远只走一个筛选入口，成员身份只活在 covers 谓词里（D 防线：CAT_OTHER 仍在 upstreamCat 那一行
+      // 由 upstreamCat 降级为 'all' 才下发，面板自造 slug 绝不进上游）。
       // 上游自造的杂项桶（其他/Other/general）沉到末尾，与面板自造的窗外入口分开放，不互相冒充（m18814）。
       const realChip = (chip) => chip && chip.value && chip.value !== CAT_OTHER && chip.value !== CATS_COLLAPSE;
       const genericBucket = (chip) => {
@@ -1958,14 +2229,19 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         return kept.concat(sunk);
       };
       const expandedChips = splitBuckets(vocabChips.filter(realChip));
-      const allRealChips = expandedChips;
-      const collapseChip = { value: CATS_COLLAPSE, label: '收起分类', totalAll: 0, fixed: true };
+      // 0.5.174：旧 allRealChips（窗内全集那一路）删除。展开集合改由下面的 tailExpandable 门控：
+      // 小尾巴源用 expandedChips（全部上游真类，桶沉底），大尾巴源两态同用 chipFold.window。
+      // 收缩/展开两态共用行尾同一个哨兵：label 与 next 都写在 chip 上，渲染块不需要新的自由
+      // 变量；它是展示态，永远不进 category，与窗外筛选态（catsExpanded 的邻居，不是它本身）互不顶替。
+      const tailExpandable = !!chipFold.other && chipFold.otherCount <= CAT_TAIL_EXPAND_MAX;
+      const toggleChip = tailExpandable ? { value: CATS_COLLAPSE, label: catsExpanded ? '收起分类' : '展开分类', next: !catsExpanded, totalAll: 0, fixed: true } : null;
       // 展开态只活在本次面板（重挂载/刷新/重启回到收起态），不再落 localStorage。
       const toggleCats = (next) => {
         setCatsExpanded(next === true);
       };
       const chipEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }]
-        .concat(catsExpanded ? allRealChips.concat(chipFold.other ? [collapseChip] : []) : chipFold.window);
+        .concat(catsExpanded && tailExpandable ? expandedChips.concat(chipFold.other ? [chipFold.other] : []) : chipFold.window)
+        .concat(chipFold.other && tailExpandable ? [toggleChip] : []);
       // 上游已按分类筛过（serverFacet=true）时不再二次本地过滤：facet 页只有当前窗口的
       // 卡片，再按本地标签筛一遍会把未标注分类的条目无谓筛掉，还与分页器总数对不上。
       // 0.5.164：分类态本地过滤必须与聚合层同口径。src/sources.js:848 对「该源未标注分类」的行按
@@ -1973,15 +2249,26 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       // 删掉 ⇒ 渲染比聚合层承诺少（实测：聚合 items=3/filteredOut=0，面板只剩 1 条）。少掉的条目不会
       // 出现在任何文案里，用户看不见这个丢失——正是 0.5.101 起反复判死的静默偷内容。无分类行放行，
       // 异类行仍严格剔除（判据在 test-category-info-declaration Test 6，真跑本行函数体）。
-      // 「其他」不是可点入口（渲染块已把它降级为披露 span）：窗外集合只报条数，不参与过滤，
-      // 所以这里绝不能有 CAT_OTHER 分支——面板自造的伪分类不许混进真实分类口径。
+      // 0.5.172（用户 m00001）：CAT_OTHER 是真筛选态——按下窗外，可见集合就是 covers（窗外全部 slug）的并集。
+      // serverFacet 不许绕过它：CAT_OTHER 在 upstreamCat 处已降级为 'all' 下发，拿回的是未按窗外筛的整页，
+      // 若让 facet 短路就会把整页都说成窗外（文案与结果不符，正是设计 B 要挡的谎报）。
+      // 条目无分类字段 ⇒ 不算窗外：unknown 不是杂项桶，宁缺毋滥，也不吃 !item.category 那条放行。
       // 空分类的出路只在「本市场确实一条都没筛出来」时给：上游 facet 说的 0（serverFacet）、取数失败
       // （sourceErrors/error）、正在加载（busy）都不算——那三种给「近似搜索」按钮是转移视线。
       const nearbyChip = (category === 'all' || serverFacet || busy || error || skills.length > 0)
         ? null
         : vocabChips.find((chip) => chip && chip.value === category);
       const nearbyNeedle = nearbyChip ? nearbySearchNeedle(nearbyChip) : '';
-      const visibleSkills = orderedSkills.filter((item) => serverFacet || category === 'all' || !item.category || item.category === category);
+      const visibleSkills = orderedSkills.filter((item) => category === CAT_OTHER ? (chipFold.other && Array.isArray(chipFold.other.covers) && !!item.category && chipFold.other.covers.indexOf(item.category) >= 0) : serverFacet || category === 'all' || !item.category || item.category === category);
+      // 诚实口径（设计 B）：并集只能作用在**已取回**的条目上——本次搜索取回多少就只筛多少，
+      // 所以这里报「已取回 X / 属于这些类 Y」，绝不说成整个窗外集合都已经在页面上。
+      const tailNote = (category !== CAT_OTHER || !chipFold.other)
+        ? ''
+        : '窗外并集：窗内之外还有 ' + chipFold.otherCount + ' 类，上游合计 ' + Number(chipFold.other.totalAll || 0).toLocaleString() + ' 条。'
+          + '本次已取回 ' + skills.length + ' 条，其中属于这些类的 ' + visibleSkills.length + ' 条就是上面这些'
+          + (serverFacet ? '（上游这一页没有按窗外筛：CAT_OTHER 不下发，靠本地并集筛出）' : '')
+          + '；窗外类没有逐个列成标签，翻页才会取回更多。'
+          + '分页器里的「共约」是整个来源的总数，不是窗外条数；窗外集合以本行为准。';
       const skillCards = shownCards(visibleSkills, cardBatch).map((item) =>
         h('div', { key: item.id, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
@@ -2479,14 +2766,19 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                       ? chipFold.other.label + ' ' + chipFold.otherCount + ' 类合计 ' + Number(chip.totalAll || 0).toLocaleString() + ' 条'
                       : categoryLabelLite(chip);
                     if (collapseHere) {
-                      // 收起态与展开态共用一个哨兵：它只是把渲染集合换回窗口，不参与任何筛选。
-                      return h('button', { key: 'cat_collapse', style: { ...S.chip(false), whiteSpace: 'nowrap' }, onClick: () => toggleCats(false) }, '收起分类');
+                      // 哨兵只把渲染集合在两态之间换，不参与任何筛选（与窗外筛选态互不顶替）。
+                      return h('button', { key: 'cat_collapse', style: { ...S.chip(false), whiteSpace: 'nowrap' }, onClick: () => toggleCats(chip.next === true) }, chip.label);
                     }
                     if (foldChip) {
-                      // 窗外入口是展开入口，不是筛选值：窗外每一类都是上游真 slug，
-                      // 铺开后可点、真出结果。按下它只换渲染集合，绝不下发 CAT_OTHER
-                      // （:918 upstreamCat 映射与 visibleSkills 无 CAT_OTHER 分支两道防线保留）。
-                      return h('button', { key: 'cat_tail_toggle', style: { ...S.chip(false), whiteSpace: 'nowrap' }, onClick: () => toggleCats(true) }, chipText);
+                      // 窗外入口不再兼任展开：收缩/展开由行尾哨兵负责（m20051）。
+                      // 窗外入口 = 真筛选态（0.5.172 用户 m00001）：按下把 CAT_OTHER 放进 category，
+                      // 可见集合换成 covers 并集。防线没退：CAT_OTHER 仍由 upstreamCat 降级为
+                      // 'all' 才下发（面板自造 slug 绝不进上游），key 是字面量、不含 CAT_OTHER 子串。
+                      return h('button', {
+                        key: 'cat_tail',
+                        style: S.chip(category === cat),
+                        onClick: () => { setCategory(cat); searchSkills(query, { source, size, category: cat, page: 1, sort }); window.scrollTo({ top: 0, behavior: 'smooth' }); },
+                      }, chipText);
                     }
                     return h('button', {
                       key: cat,
@@ -2538,6 +2830,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                     onClick: () => { setQuery(nearbyNeedle); setCategory('all'); searchSkills(nearbyNeedle, { source, size, category: 'all', page: 1, sort }); window.scrollTo({ top: 0, behavior: 'smooth' }); },
                   }, '近似搜索「' + nearbyNeedle + '」'))
               : null,
+            tailNote ? h('div', { style: { ...S.status, marginTop: 8 } }, tailNote) : null,
             installProgress
               ? h('div', { style: { ...S.row, gap: 10, alignItems: 'center' } },
                   h('span', { style: { fontSize: 12, whiteSpace: 'nowrap' } },

@@ -120,14 +120,27 @@ console.log('Test 6: 面板的本地过滤必须兑现聚合层的「无分类�
     check('真函数：无分类行在分类态被放行', f({ slug: 'x' }, false, '市场推广', CAT_OTHER, chipFold) === true, 'got=' + f({ slug: 'x' }, false, '市场推广', CAT_OTHER, chipFold));
     check('真函数：异类仍被筛掉（自证探针有效）', f({ category: '开发工具' }, false, '市场推广', CAT_OTHER, chipFold) === false, '');
     check('真函数：facet 态全放行', f({ category: '开发工具' }, true, '市场推广', CAT_OTHER, chipFold) === true, '');
-  // 0.5.165：「其他」已从可点 chip 降级为披露 span（窗外集合面板取不回，可点=假控件），
-  // 所以面板过滤集合里根本不该再出现自造分类：CAT_OTHER 进谓词就等于承认它是合法过滤态。
-  check('面板谓词不再引用 CAT_OTHER（自造 slug 不是合法过滤态）',
-    vline.indexOf('CAT_OTHER') < 0, vline.trim());
-  check('真函数：万一残留 CAT_OTHER 态，带分类的行一律筛掉（不会把整个目录当「其他」）',
+  // 0.5.174（用户 m20058「只要一个其他按钮，呈现 214 类的全部结果，不要每个类别单独显示」）：
+  // CAT_OTHER 升级为真筛选态——谓词首分支就是 covers 并集。旧 0.5.165 口径锁（谓词不得引用
+  // CAT_OTHER）随「降级为披露 span」一起退役；两道防线改由新锁接住：首分支必须是 covers 并集
+  // （不许 return 短路把整页说成窗外），且 CAT_OTHER 永不作为 value 直接下发 searchSkills。
+  const tailAt = vline.indexOf('category === CAT_OTHER ?');
+  const tailBranch = tailAt >= 0 ? vline.slice(tailAt, vline.indexOf(' : ', tailAt)) : '';
+  check('CAT_OTHER 是真筛选态：谓词首分支是 covers 并集，分支内无 return 短路（防线不许退）',
+    tailAt >= 0 && tailBranch.indexOf('covers.indexOf') >= 0 && tailBranch.indexOf('return') < 0,
+    tailBranch.trim().slice(0, 200));
+  check('CAT_OTHER 不作为 value 直接下发 searchSkills（下发只走 upstreamCat 映射）',
+    clines.filter((l) => l.indexOf('searchSkills(') >= 0 && /category:\s*(CAT_OTHER|'__cat_other')/.test(l)).length === 0,
+    JSON.stringify(clines.filter((l) => /category:\s*(CAT_OTHER|'__cat_other')/.test(l)).map((l) => l.trim().slice(0, 90))));
+  check('真函数：CAT_OTHER 态下异类行筛掉（covers 之外的分类不是窗外成员）',
     f({ category: '开发工具' }, false, CAT_OTHER, CAT_OTHER, chipFold) === false, '');
-  check('真函数：CAT_OTHER 残留态下无分类行仍按「无分类不过滤」放行',
-    f({ slug: 'x' }, false, CAT_OTHER, CAT_OTHER, chipFold) === true, '');
+  // 用户 m20058 口径：窗外=「这些类的全部结果」，无分类字段不等于杂项桶，宁缺毋滥。
+  check('真函数：CAT_OTHER 态下无分类行不算窗外成员（!item.category 不许混进并集放行）',
+    f({ slug: 'x' }, false, CAT_OTHER, CAT_OTHER, chipFold) === false,
+    'got=' + f({ slug: 'x' }, false, CAT_OTHER, CAT_OTHER, chipFold));
+  check('真函数：CAT_OTHER 态下 covers 内的分类行保留（并集真跑，不是恒空集合）',
+    f({ category: '市场推广' }, false, CAT_OTHER, CAT_OTHER, chipFold) === true,
+    'got=' + f({ category: '市场推广' }, false, CAT_OTHER, CAT_OTHER, chipFold));
   const reqLine = clines.find((l) => /category: upstreamCat === 'all' \? '' : upstreamCat,/.test(l)) || '';
   const mapLine = clines.find((l) => /const upstreamCat = cat === CAT_OTHER \? 'all' : cat;/.test(l)) || '';
   check('下发上游的 category 读的是映射后的值，不是原始 cat', reqLine.length > 0, '未找到 upstreamCat 下发行');

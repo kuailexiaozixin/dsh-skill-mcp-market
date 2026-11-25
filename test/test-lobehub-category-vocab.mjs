@@ -593,7 +593,7 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     const collapseSlug = (client.match(/const CATS_COLLAPSE = '([^']+)';/) || [])[1] || '';
     check('收起哨兵 slug 存在且不是上游分类名', collapseSlug !== '' && collapseSlug.indexOf('其他') < 0, 'CATS_COLLAPSE=' + collapseSlug);
     // 两套渲染集合都真跑：收起态=窗口+「其他」，展开态=全部上游类+「收起分类」哨兵。
-    const runRenderFor = (entries) => {
+const runRenderFor = (entries, fold) => {
         if (renderSrc === null || labelBody === null || runFold.err) return { err: 'unavailable' };
         const clickCalls = [];
         const toggleCalls = [];
@@ -604,29 +604,31 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
         try {
             const nodesRun = new Function('chipEntries', 'chipFold', 'categoryLabelLite', 'h', 'S', 'category', 'setCategory',
                 'searchSkills', 'query', 'source', 'size', 'sort', 'window', 'CATS_COLLAPSE', 'CAT_OTHER', 'bucketSlug', 'toggleCats',
-                'return (' + renderSrc + NL + ');')(entries, runFold, lite, hh, SS, 'all',
+                'return (' + renderSrc + NL + ');')(entries, fold || runFold, lite, hh, SS, 'all',
                 (v) => clickCalls.push({ kind: 'setCategory', v }), (q, o) => clickCalls.push({ kind: 'searchSkills', o }),
                 '天气 预报', 'lobehub', 24, 'installCount', winStub, collapseSlug, otherSlug, bucketSlug, (v) => toggleCalls.push(v));
             return { nodes: nodesRun, calls: clickCalls, toggles: toggleCalls };
         } catch (e) { return { err: String((e && e.message) || e) }; }
     };
-    // 渲染集合按 client.js 的口径自己算一遍：收起态=窗口+窗外入口；
-    // 展开态=上游真类逐个铺开（杂项桶沉尾，窗外入口与收起哨兵不露身份）。
+// 渲染集合按 0.5.174 的口径自己算一遍：lobehub tail=214 > CAT_TAIL_EXPAND_MAX=40 属大尾巴源，
+// 收起态与展开态成员相同（全部分类 + 窗内 + 1 个窗外筛选 chip），因此不渲染展开/收起哨兵：
+// 成员不变的切换就是装饰假控件（0.5.165 假控件同判，m00282 B1）。小尾巴源（tail<=40，skillsmp
+// 63 类 tail=31）才保留两态哨兵，其成员差异由下面的装配段真跑 + 63 类夹具证明（跑同一段生产码）。
+    // bucketSlug 仍是渲染块的绑定量（下游杂项桶的身份判定），realChips 是它的来源。
     const realChips = winChips.filter((c) => c && c.value && c.value !== otherSlug);
     const bucketSlug = realChips.map((c) => String(c.value)).filter(isBucketSlug)[0] || 'general';
-    const collapsedEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }].concat(runFold.window);
-    const expandedEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }]
-        .concat(realChips.filter((c) => !isBucketChip(c)))
-        .concat(realChips.filter(isBucketChip))
-        .concat([{ value: collapseSlug, label: '收起分类', totalAll: 0, fixed: true }]);
-    const runCollapsed = runRenderFor(collapsedEntries);
-    const runExpanded = runRenderFor(expandedEntries);
+    // 大尾巴源（本夹具 246 类，tail=214）：tailExpandable=false ⇒ 两个 catsExpanded 取值拿到
+    // 完全相同的渲染集合，且哨兵不在场——所以只造一套 entries，跑两遍自证两态同集。
+    const bigEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }]
+        .concat(runFold.window);
+    const runCollapsed = runRenderFor(bigEntries);
+    const runExpanded = runRenderFor(bigEntries.slice());
     const nodes = Array.isArray(runCollapsed.nodes) ? runCollapsed.nodes : [];
     const texts = nodes.map((n) => String(n.kids[0]));
     check('收起态渲染块真跑（不抛、返回节点数组）', !runCollapsed.err && nodes.length > 0, JSON.stringify({ err: runCollapsed.err, n: nodes.length }));
     check('「全部分类」仍是首个 chip（渲染集合自带 all 入口，不靠折叠窗口）',
         nodes.length > 0 && nodes[0].props.key === 'all' && texts[0] === '全部分类', texts.slice(0, 2).join(' | '));
-    check('chip 数量 = 全部分类 + 前 foldN 类 + 1 个「其他」（收起态不铺开 246 类）',
+    check('chip 数量 = 全部分类 + 前 foldN 类 + 窗外筛选（大尾巴源两态同窗，无展开哨兵）',
         nodes.length === foldN + 2, 'nodes=' + nodes.length + ' 期望=' + (foldN + 2));
     check('没有任何 chip 文案塌成 [object Object]',
         texts.every((t) => t !== '' && t.indexOf('[object Object]') < 0), JSON.stringify(texts.slice(0, 3)));
@@ -641,8 +643,8 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     const pdfIdx = nodes.findIndex((n) => n.props.key === 'pdf-documents');
     check('窗内分类 chip 带上游真条数（categoryLabelLite 真接到渲染层）',
         pdfIdx > 0 && /[\d,]{4,}/.test(texts[pdfIdx]), JSON.stringify({ pdfIdx, text: texts[pdfIdx] }));
-    // 0.5.168 用户报障（m18209）：「其他」只有文字没有按钮，无法点击查看。它现在是展开入口，
-    // 但只换渲染集合、绝不进筛选链路：按下后 setCategory / searchSkills 一次都不许被调用。
+// 0.5.168 用户报障（m18209）前半仍成立：窗外入口必须是真 button。0.5.172 用户 m00001 把后半
+// 翻了面：它不再只是展开入口，而是真筛选态——按下得到窗外 N 类的并集集合（并集口径见 visibleSkills）。
     check('「其他」是可点按钮（只有文字无法点=假控件，正是用户报的那一半）',
         !!otherNode && String(otherNode.tag) === 'button' && typeof otherNode.props.onClick === 'function',
         JSON.stringify({ tag: otherNode && otherNode.tag, hasClick: !!(otherNode && otherNode.props.onClick) }));
@@ -651,19 +653,23 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     if (otherNode && otherNode.props.onClick) otherNode.props.onClick();
     const otherToggles = runCollapsed.toggles.slice(otherBaseT);
     const otherClicks = runCollapsed.calls.slice(otherBaseC);
-    check('按下「其他」只展开集合，不产生任何筛选下发（自造 slug 绝不进 category）',
-        otherToggles.length === 1 && otherToggles[0] === true && otherClicks.length === 0,
-        JSON.stringify({ toggles: otherToggles, clicks: otherClicks.map((c) => c.kind) }));
+    // CAT_OTHER 进 category 是 0.5.172 的新口径（面板内的合法筛选值）；它进上游前由 client.js:959
+    // upstreamCat 映射回 'all'，那条映射的源码锁在 test-category-info-declaration Test 6，这里不重复实现。
+    check('按下「窗外」= 进窗外筛选态：setCategory 与渲染层下发的 category 都是 CAT_OTHER，且不再顺手展开集合',
+        otherClicks.length === 2 && otherClicks[0].v === otherSlug && !!otherClicks[1].o &&
+        otherClicks[1].o.category === otherSlug && otherClicks[1].o.page === 1 && otherToggles.length === 0,
+        JSON.stringify({ kinds: otherClicks.map((c) => c.kind), toggles: otherToggles, sent: otherClicks[1] && otherClicks[1].o && otherClicks[1].o.category }));
     check('「其他」按钮的 key 不是上游 slug 也不是 CAT_OTHER（面板自造值不进下发链路）',
         !!otherNode && String(otherNode.props.key).indexOf('__cat_other') < 0 && String(otherNode.props.key) !== otherSlug,
         'key=' + (otherNode && otherNode.props.key));
     const buttonKeys = nodes.filter((n) => n.tag === 'button').map((n) => String(n.props.key));
     check('上游杂项桶（other/General/其他）不进可点 chip（点了没货=假控件，m19018 后半）',
         buttonKeys.filter((k) => isBucketSlug(k)).length === 0, JSON.stringify(buttonKeys.filter((k) => isBucketSlug(k))));
-    check('收起态可点 chip = all + 前 foldN 真 slug + 1 个展开入口（不掺派生值）',
+    check('收起态可点 chip = all + 前 foldN 真 slug + 窗外筛选，行尾无哨兵（不掺派生值）',
         buttonKeys.length === foldN + 2 && buttonKeys[0] === 'all' &&
-        buttonKeys.slice(1, foldN + 1).every((k) => winValsAsSlugs.indexOf(k) >= 0),
-        JSON.stringify({ n: buttonKeys.length, keys: buttonKeys.slice(0, 3) }));
+        buttonKeys.slice(1, foldN + 1).every((k) => winValsAsSlugs.indexOf(k) >= 0) &&
+        buttonKeys[foldN + 1] === 'cat_tail' && buttonKeys.indexOf('cat_collapse') < 0,
+        JSON.stringify({ n: buttonKeys.length, keys: buttonKeys.slice(foldN) }));
     const clickBase = (runCollapsed.calls || []).length;
     if (nodes.length > 1) nodes[1].props.onClick();
     const clicks = runCollapsed.calls.slice(clickBase);
@@ -676,34 +682,121 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
         clicks.length === 2 && !!clicks[1].o && clicks[1].o.page === 1 && clicks[1].o.source === 'lobehub' && !!clicks[1].o.sort,
         JSON.stringify(clicks[1] && clicks[1].o));
     const xnodes = Array.isArray(runExpanded.nodes) ? runExpanded.nodes : [];
-    check('展开态渲染块真跑：全部上游类都铺开（窗外类不是取不回的桶）',
-        !runExpanded.err && xnodes.length === winChips.length + 2,
-        JSON.stringify({ err: runExpanded.err, n: xnodes.length, want: winChips.length + 2 }));
+    check('展开态渲染块真跑：大尾巴源展开=收起成员（all + 窗口 + 窗外筛选，246 类绝不逐个铺开）',
+        !runExpanded.err && xnodes.length === foldN + 2,
+        JSON.stringify({ err: runExpanded.err, n: xnodes.length, want: foldN + 2 }));
     const xkeys = xnodes.map((n) => String(n.props.key));
     const tailSlugs = winValsAsSlugs.slice(foldN).filter((s) => !isBucketSlug(s));
-    check('展开态里窗外 slug 逐个成点（用户要的是能点，不是能看）',
-        tailSlugs.length > 0 && tailSlugs.every((s) => xkeys.indexOf(s) >= 0),
-        JSON.stringify({ tail: tailSlugs.length, miss: tailSlugs.filter((s) => xkeys.indexOf(s) < 0).slice(0, 3) }));
-    const tailIdx = xnodes.findIndex((n) => n.props.key === tailSlugs[0]);
+    check('窗外 slug 在两态都不逐个成点（用户 m00001：只要一个「其他」按钮，不要每类单独显示）',
+        tailSlugs.length > 0 && tailSlugs.every((s) => xkeys.indexOf(s) < 0 && buttonKeys.indexOf(s) < 0),
+        JSON.stringify({ tail: tailSlugs.length, leaked: tailSlugs.filter((s) => xkeys.indexOf(s) >= 0).slice(0, 3) }));
+    // m00282 B1：展开态与收起态成员相同 ⇒ 「展开分类」是装饰按钮。判据从「两态文案不同」翻成
+    // 「大尾巴源两态都没有哨兵」，两态哨兵本身改由下方 tail<=40 装配夹具真跑（同一段生产码）。
+    check('大尾巴源两态都不渲染展开/收起哨兵（无意义控件=假控件，0.5.174 口径）',
+        buttonKeys.indexOf('cat_collapse') < 0 && xkeys.indexOf('cat_collapse') < 0 &&
+        String(nodes[nodes.length - 1].props.key) === 'cat_tail' && String(xnodes[xnodes.length - 1].props.key) === 'cat_tail',
+        JSON.stringify({ c: String(nodes[nodes.length - 1].props.key), x: String(xnodes[xnodes.length - 1].props.key) }));
+    const winLastSlug = String(winValsAsSlugs[foldN - 1]);
+    const winLastIdx = xnodes.findIndex((n) => String(n.props.key) === winLastSlug);
     const xBase = (runExpanded.calls || []).length;
-    if (tailIdx >= 0) xnodes[tailIdx].props.onClick();
+    if (winLastIdx >= 0) xnodes[winLastIdx].props.onClick();
     const xclicks = runExpanded.calls.slice(xBase);
-    check('按下窗外 chip 下发该窗外真 slug（真出结果，不写 CAT_OTHER）',
-        xclicks.length === 2 && xclicks[0].v === tailSlugs[0] && !!xclicks[1].o && xclicks[1].o.category === tailSlugs[0],
+    check('展开态点窗内 chip 仍下发窗内真 slug（收缩/展开与筛选互不顶替）',
+        winLastIdx >= 0 && xclicks.length === 2 && xclicks[0].v === winLastSlug &&
+        !!xclicks[1].o && xclicks[1].o.category === winLastSlug,
         JSON.stringify(xclicks.map((c) => c.kind + '=' + JSON.stringify(c.v !== undefined ? c.v : c.o && c.o.category)).slice(0, 2)));
-    const collapseNode = xnodes[xnodes.length - 1];
-    const cBase = (runExpanded.calls || []).length;
-    const cBaseT = (runExpanded.toggles || []).length;
-    if (collapseNode && collapseNode.props.onClick) collapseNode.props.onClick();
-    const ctoggles = runExpanded.toggles.slice(cBaseT);
-    check('展开态行尾「收起分类」按下只收起，不产生筛选下发',
-        !!collapseNode && String(collapseNode.props.key) === 'cat_collapse' && ctoggles.length === 1 && ctoggles[0] === false &&
-        (runExpanded.calls || []).length === cBase,
-        JSON.stringify({ key: collapseNode && collapseNode.props.key, toggles: ctoggles }));
-    // 源码锁：展开偏好必须真进渲染集合与持久化，否则上面两次跑的是同一套集合（假绿）。
-    check('渲染集合随 catsExpanded 切换（不是恒按窗口铺开）',
-        /catsExpanded \? allRealChips/.test(client) && /const allRealChips = expandedChips;/.test(client),
-        (client.split(NL).find((l) => l.includes('catsExpanded ?')) || '(none)').trim().slice(0, 160));
+    // 装配段真跑（判据从字符串锁升级为执行生产码）：从 client.js 切 realChip→chipEntries 整段，
+    // 绑 vocabChips/chipFold/catsExpanded 后执行。tailExpandable 门控的任何改动都会翻转成员集合，
+    // 所以「大尾巴无哨兵、小尾巴有两态」两条都是真跑判据，不依赖任何被复制的实现。
+    const asmStart = clientLines.findIndex((l) => l.includes('const realChip = (chip) =>'));
+    const asmEnd = clientLines.findIndex((l) => l.includes('.concat(chipFold.other && tailExpandable ? [toggleChip] : []);'));
+    const asmBody = (asmStart >= 0 && asmEnd > asmStart) ? clientLines.slice(asmStart, asmEnd + 1).join(NL) : '';
+    const expandMax = Number((client.match(/const CAT_TAIL_EXPAND_MAX = (\d+);/) || [])[1]) || 0;
+    const runChipEntries = (expanded, chips, fold) => {
+        if (!asmBody) return { err: 'unavailable' };
+        try {
+            return { v: new Function('CAT_OTHER', 'CATS_COLLAPSE', 'CAT_TAIL_EXPAND_MAX', 'vocabChips', 'chipFold',
+                'catsExpanded', 'setCatsExpanded',
+                asmBody + NL + 'return chipEntries;')(otherSlug, collapseSlug, expandMax, chips, fold, expanded, () => {})
+            };
+        } catch (e) { return { err: String((e && e.message) || e) }; }
+    };
+    const hasChip = (list, v) => list.some((c) => c && c.value === v);
+    const lastVal = (list) => (list.length ? String(list[list.length - 1].value) : '(empty)');
+    check('装配段可从 client.js 整段真跑（realChip→tailExpandable→toggleChip→chipEntries）',
+        asmBody.split(NL).length >= 10 && asmBody.includes('const chipEntries ='),
+        'lines=' + asmBody.split(NL).length + ' expandMax=' + expandMax);
+    const bigAsmC = runChipEntries(false, winChips, runFold);
+    const bigAsmX = runChipEntries(true, winChips, runFold);
+    const bigCv = Array.isArray(bigAsmC.v) ? bigAsmC.v : [];
+    const bigXv = Array.isArray(bigAsmX.v) ? bigAsmX.v : [];
+    check('大尾巴源装配真跑：两态成员逐项相同且哨兵不在场（tail=214 > 阈值=40）',
+        !bigAsmC.err && !bigAsmX.err && bigCv.length === foldN + 2 && bigCv.length === bigXv.length &&
+        bigCv.every((c, i) => c && bigXv[i] && c.value === bigXv[i].value) &&
+        !hasChip(bigCv, collapseSlug) && !hasChip(bigXv, collapseSlug) && hasChip(bigCv, otherSlug),
+        JSON.stringify({ c: bigCv.length, x: bigXv.length, err: bigAsmC.err || bigAsmX.err }));
+    // skillsmp 形状的 63 类夹具（tail=31 <= 40）：小尾巴源才给两态入口（用户 m20051）。
+    const smChips = Array.from({ length: 63 }, (_, i) => ({ value: 'c-' + i, label: 'c-' + i, totalAll: 5000 - i }));
+    const smFold = foldBody === null ? { err: 'no foldBody' }
+        : new Function('CAT_OTHER', 'CAT_TAIL_LABEL', foldBody + NL + 'return foldChips;')(otherSlug, tailLabel)(smChips, foldN, tailLabel);
+    check('小尾巴夹具成立：63 类 → head 32 + tail 31，tail 31 落在阈值 40 内',
+        !smFold.err && !!smFold.other && smFold.otherCount === 31 && smFold.otherCount <= expandMax,
+        JSON.stringify({ otherCount: smFold && smFold.otherCount, expandMax, err: smFold.err }));
+    const smAsmC = runChipEntries(false, smChips, smFold);
+    const smAsmX = runChipEntries(true, smChips, smFold);
+    const smCv = Array.isArray(smAsmC.v) ? smAsmC.v : [];
+    const smXv = Array.isArray(smAsmX.v) ? smAsmX.v : [];
+    check('小尾巴收起态 = 全部分类 + 前 foldN 类 + 窗外筛选 + 展开哨兵（窗外类不逐个在场）',
+        !smAsmC.err && smCv.length === foldN + 3 && lastVal(smCv) === collapseSlug &&
+        ['c-32', 'c-40', 'c-62'].every((v) => !hasChip(smCv, v)),
+        JSON.stringify({ n: smCv.length, last: lastVal(smCv), err: smAsmC.err }));
+    check('小尾巴展开态 = 全部 63 个上游真类 + 窗外筛选 + 收起哨兵（展开是真集合变化，不是装饰）',
+        !smAsmX.err && smXv.length === 66 && hasChip(smXv, 'c-62') && hasChip(smXv, otherSlug) &&
+        lastVal(smXv) === collapseSlug,
+        JSON.stringify({ n: smXv.length, last: lastVal(smXv), err: smAsmX.err }));
+    const smRunC = runRenderFor(smCv, smFold);
+    const smRunX = runRenderFor(smXv, smFold);
+    const smNodes = Array.isArray(smRunC.nodes) ? smRunC.nodes : [];
+    const smXNodes = Array.isArray(smRunX.nodes) ? smRunX.nodes : [];
+    const lastKeyOf = (a) => (a.length ? String(a[a.length - 1].props.key) : '(empty)');
+    const lastKidOf = (a) => (a.length ? String(a[a.length - 1].kids[0]) : '(empty)');
+    check('小尾巴渲染真跑：收起态行尾「展开分类」、展开态行尾「收起分类」（m20051 两态入口可用）',
+        smNodes.length === smCv.length && smXNodes.length === smXv.length &&
+        lastKeyOf(smNodes) === 'cat_collapse' && lastKidOf(smNodes) === '展开分类' &&
+        lastKeyOf(smXNodes) === 'cat_collapse' && lastKidOf(smXNodes) === '收起分类',
+        JSON.stringify({ c: smNodes.length, x: smXNodes.length, err: smRunC.err || smRunX.err }));
+    const xBaseT = (smRunX.toggles || []).length;
+    const xBaseC = (smRunX.calls || []).length;
+    if (smXNodes.length && smXNodes[smXNodes.length - 1].props.onClick) smXNodes[smXNodes.length - 1].props.onClick();
+    check('小尾巴展开态行尾「收起分类」按下只收起，不产生筛选下发（展示态与筛选态互不顶替）',
+        (smRunX.toggles || []).length === xBaseT + 1 && smRunX.toggles[xBaseT] === false && (smRunX.calls || []).length === xBaseC,
+        JSON.stringify({ toggles: smRunX.toggles, calls: (smRunX.calls || []).length - xBaseC }));
+    check('大尾巴源渲染集合里既没有哨兵也没有 CAT_OTHER 之外的派生值（两态同集 = 窗内 + 窗外入口）',
+        bigCv.length === foldN + 2 && bigCv[bigCv.length - 1].value === otherSlug &&
+        bigCv.filter((c) => c && c.value === collapseSlug).length === 0,
+        JSON.stringify({ n: bigCv.length, last: lastVal(bigCv) }));
+    // 源码锁：阈值常量必须存在且是两位数——真跑装配吃的就是这个值，常量删掉装配就抛。
+    check('展开阈值常量 CAT_TAIL_EXPAND_MAX=40 在场（依据：skillsmp tail=31 阈内 / lobehub tail=214 阈外）',
+        /const CAT_TAIL_EXPAND_MAX = (\d+);/.test(client) && expandMax >= 10 && expandMax <= 99,
+        'expandMax=' + expandMax);
+    check('旧 allRealChips 双态集合已删除（展开集合由 tailExpandable 门控表达）',
+        !/const allRealChips *=/.test(client) && /catsExpanded && tailExpandable \? expandedChips/.test(client) &&
+        /const tailExpandable = !!chipFold\.other && chipFold\.otherCount <= CAT_TAIL_EXPAND_MAX;/.test(client),
+        (client.split(NL).find((l) => l.includes('tailExpandable')) || '(none)').trim().slice(0, 160));
+    // B3 诚实口径（m00282）：CAT_OTHER 态的两句文案必须同锁——窗外类没逐个列、翻页才取回更多；
+    // 分页器「共约」是整源总数不是窗外条数。分页器实参两行原样不动（test-search-fanout-latency
+    // :442/:446 在边界外锁死 skillsTotal : mcpTotal 与「共约」label），所以说实话的通道只有 tailNote。
+    check('tailNote 两句诚实文案在场（窗外非逐个 + 共约是整源总数），两态渲染都走同一行',
+        /窗外类没有逐个列成标签，翻页才会取回更多。'/.test(client) &&
+        /不是窗外条数；窗外集合以本行为准。'/.test(client) &&
+        /tailNote \? h\('div', \{ style: \{ \.\.\.S\.status, marginTop: 8 \} \}, tailNote\) : null,/.test(client),
+        (client.split(NL).find((l) => l.includes('不是窗外条数')) || '(none)').trim().slice(0, 170));
+    check('分页器实参两行未被顺手改动（边界外判据 test-search-fanout-latency :442/:446 依赖）',
+        /tab === 'skills' \? '共约' : ''/.test(client) && /tab === 'skills' \? skillsTotal : mcpTotal/.test(client), '');
+    // 展开态纵向滚动形态（用户 m20051「保持展开后可上下拖动的形态」）源码锁。
+    check('展开态限高纵向滚动样式仍在场（catsRow 是展开态唯一行样式）',
+        /catsRow: \{[^\n]*maxHeight: 116[^\n]*overflowY: 'auto'/.test(client) &&
+        /style: catsExpanded \? S\.catsRow : S\.chipRow/.test(client), '');
     // 重启路径判据（用户 m19770①）：展开态曾经落 localStorage ⇒ 宿主重启后每次开面板都全量展开，
     // 只剩 catsRow 的 maxHeight:116 兜底——「默认就该是一行」这个报障口径被持久化吃掉了。
     // 口径：展开是本次浏览的临时动作，不是偏好；重挂载 / 刷新 / 重启一律默认收起。

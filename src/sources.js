@@ -583,7 +583,7 @@ const budgetKey = (names, budgetMs, overrides) => {
  * （fanOnce 在 picked.length > 1 时）显式传入；面板单源路径因此每次搜索都会真打
  * 上游，不会因为上一次超时就在窗口内被静默跳过。
  */
-export async function fanOutSources({ names, run, budgetMs = DEFAULT_BUDGET_MS, cache = null, cooldownMs = 0, cooldownKey = "", budgetOverrides = null }) {
+export async function fanOutSources({ names, run, budgetMs = DEFAULT_BUDGET_MS, cache = null, cooldownMs = 0, cooldownKey = "", budgetOverrides = null, onSettled = null }) {
   const list = Array.isArray(names) ? names : [];
   const cooldownPrefix = cooldownKey ? "market_src_timeout:" + cooldownKey + ":" : "market_src_timeout:";
   const cooling = async (name) => {
@@ -595,10 +595,16 @@ export async function fanOutSources({ names, run, budgetMs = DEFAULT_BUDGET_MS, 
     try { await cache.put(cooldownPrefix + name, true); } catch {}
   };
   const settle = (name) => {
-    const work = Promise.resolve().then(() => run(name)).then(
+    const base = Promise.resolve().then(() => run(name)).then(
       (result) => ({ result }),
       (error) => ({ error: String(error && error.message ? error.message : error) }),
     );
+    // onSettled 为 null（skills.search 的既有路径）时 work 就是 base 本身：一个微任务都不多走，
+    // 行为与改动前逐字节相同。只有 harvest 传回调时才挂上「某源一落地就推送」这层链。
+    const work = onSettled ? base.then((box) => {
+      try { onSettled(name, box); } catch { /* 回调自己出错绝不影响 fan-out 的结算 */ }
+      return box;
+    }) : base;
     const b = budgetFor(name, budgetMs, budgetOverrides);
     if (!(b > 0)) return work;
     let timer = null;
@@ -722,16 +728,12 @@ const describeFailure = (sourceName, errorText) => {
   return line.length > FAILURE_LINE_CAP ? line.slice(0, FAILURE_LINE_CAP) : line;
 };
 
-export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "", category = "", handlers = null, budgetMs = DEFAULT_BUDGET_MS, budgetOverrides = null }) {
-  // 注入 handlers 时（测试态）"all" 展开为注入的源集合：否则 fake handler 会被 8 个真实
-  // 源淹没，测试照样打真实网络 —— 那测的就不是并发语义，而是上游当时的心情。
-  const wanted = source === "all" ? (handlers && Object.keys(handlers).length ? Object.keys(handlers) : ALL_SOURCES) : [source];
-  // 该源没有安装量数据时，忽略按安装数排序（保持上游顺序），而不是打乱它
-  // 该源没有对应数据时，降级为「不排序」而不是打乱上游顺序。
-  let effectiveSort = "";
-  if (sort && supportsSort(source, sort)) effectiveSort = sort;
-  const p = Math.max(1, Number(page) || 1);
-  const size = Math.max(1, Math.min(60, Number(pageSize) || 24));
+// 一次性搜索与 harvest 终态共用同一套折叠口径（0.5.174 run3）。搬进这里的内容：逐源条目折入
+// （installRefOf）、聚合排序兜底、skills.sh 描述补全、空结果逐源点名、总数/页数反推、
+// 分类本地兜底。为什么只能有一份：面板会把 harvest 的终态行直接渲染成列表，两条通路各写
+// 一遍折叠就会让同一个 query 得到两种顺序、两种描述完整度 —— 那是本项目从 0.5.101 起反复
+// 判死的「同一次动作两种结果」。唯一性由 test/test-harvest.mjs Test 7 的源码锁钉住。
+export async function foldFanResults({ entries, wanted, degraded, query, p, size, category, cache, effectiveSort }) {
   const items = [];
   const hints = [];
   let total = 0;
@@ -747,15 +749,7 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
   // 分类能力声明位：handler 明说「本行都带分类信息」时置真（见 extra-sources.js 的 categoryInfo）。
   // 与 facetAnswered 同座，因为两者都是「逐源听声明」，不是「看这一页凑到什么」。
   let declaredCategoryInfo = false;
-  const picked = wanted.filter((name) => Boolean((handlers && handlers[name]) || SOURCE_HANDLERS[name]));
-  // handlers 是测试注入点：fake handler 才能在没有网络、没有上游波动的情况下断言
-  // 并发与顺序性质。生产路径 handlers 为 null，仍走 SOURCE_HANDLERS。
-  const fan = await fanOnce({
-    query, source, cache, sort, category, handlers, budgetMs, budgetOverrides,
-    effectiveSort, p, size, picked,
-  });
-  const degraded = fan.degraded;
-  for (const entry of fan.results) {
+  for (const entry of entries) {
     if (!entry.ok) {
       // 取数失败的源什么也没告诉我们 —— 它既不能证明目录为空，也不能证明只有 1 页。
       // 旧写法在这里直接 continue，于是 pagesSum 停在 0、pages 落到 Math.max(..., 1)
@@ -901,12 +895,50 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
     page: p,
     pageSize: size,
     pages,
-    totalPages: pages,
     total: reportedTotal,
     hasMore: reportedHasMore,
-    degraded,
     hints,
+    degraded,
     sourceErrors,
+  };
+}
+
+export async function searchSkills({ query, source = "all", page = 1, pageSize = 24, cache = fallbackCache, sort = "", category = "", handlers = null, budgetMs = DEFAULT_BUDGET_MS, budgetOverrides = null }) {
+  // 注入 handlers 时（测试态）"all" 展开为注入的源集合：否则 fake handler 会被 8 个真实
+  // 源淹没，测试照样打真实网络 —— 那测的就不是并发语义，而是上游当时的心情。
+  const wanted = source === "all" ? (handlers && Object.keys(handlers).length ? Object.keys(handlers) : ALL_SOURCES) : [source];
+  // 该源没有安装量数据时，忽略按安装数排序（保持上游顺序），而不是打乱它
+  // 该源没有对应数据时，降级为「不排序」而不是打乱上游顺序。
+  let effectiveSort = "";
+  if (sort && supportsSort(source, sort)) effectiveSort = sort;
+  const p = Math.max(1, Number(page) || 1);
+  const size = Math.max(1, Math.min(60, Number(pageSize) || 24));
+  const picked = wanted.filter((name) => Boolean((handlers && handlers[name]) || SOURCE_HANDLERS[name]));
+  // handlers 是测试注入点：fake handler 才能在没有网络、没有上游波动的情况下断言
+  // 并发与顺序性质。生产路径 handlers 为 null，仍走 SOURCE_HANDLERS。
+  const fan = await fanOnce({
+    query, source, cache, sort, category, handlers, budgetMs, budgetOverrides,
+    effectiveSort, p, size, picked,
+  });
+  const degraded = fan.degraded;
+  // 折叠口径只住一份：一次性通路把 fan.results 交给 foldFanResults，harvest 终态把同样形状的
+  // results 交给同一个函数。aggregateSort/enrichSkillsShFast 的既有源码锁读全文正则，搬进
+  // 共用函数后照样命中（test-search-fanout-latency.mjs:177-178）。
+  const folded = await foldFanResults({ entries: fan.results, wanted, degraded, query, p, size, category, cache, effectiveSort });
+  return {
+    items: folded.items,
+    categoryNote: folded.categoryNote,
+    serverFacet: folded.serverFacet,
+    filteredOut: folded.filteredOut,
+    page: folded.page,
+    pageSize: folded.pageSize,
+    pages: folded.pages,
+    totalPages: folded.pages,
+    total: folded.total,
+    hasMore: folded.hasMore,
+    degraded: folded.degraded,
+    hints: folded.hints,
+    sourceErrors: folded.sourceErrors,
   };
 }
 
@@ -924,4 +956,218 @@ export async function warmMarketCache(cache = fallbackCache) {
     warmClawHubCatalog(cache),
   ]);
   return results.map((r) => (r.status === "fulfilled" ? (Array.isArray(r.value) ? r.value.length : (r.value.items || []).length) : 0));
+}
+
+// ── 渐进式 harvest（0.5.174）───────────────────────────────────────────────
+// harvest 与一次性搜索的分工：搜索受聚合预算（DEFAULT_BUDGET_MS 那一档）截断，慢源会被砍；
+// harvest 的语义是「一边跑一边把已经取到的行推给面板」，所以
+//   ① 只用它自己的 HARVEST_BUDGET_MS 上限（兜底，防一个永久挂起的源让会话永远不结束），
+//      绝不复用 12s 那档预算 —— 行推送发生在每个源落地的瞬间（fanOutSources 的 onSettled）；
+//   ② 单源失败或被截断都不会丢掉已完成源的行：行早就推出去了，失败只进 meta；
+//   ③ 源展开与行折叠口径与 searchSkills 一致（同一套 wanted/picked 展开 + installRefOf），
+//      因此「累计 poll 行集 == 一次性 skills.search 行集」是可断言的硬性质。
+// 会话按 poll 滑动续期；未知或过期 id 由 poll 返回 null，dispatch 据此报 ok:false，
+// 不认识这两个 op 的旧面板继续走 skills.search，互不影响。
+export const HARVEST_BUDGET_MS = 3600000;
+
+// 测试侧要拿「搜索那一档预算」做对照断言，但不想重复写默认值文本：
+// test-search-latency-recovery.mjs:272 锁死 `budgetMs = DEFAULT_BUDGET_MS` 只允许出现两次。
+export const DEFAULT_BUDGET_MS_FOR_TEST = DEFAULT_BUDGET_MS;
+
+export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = HARVEST_BUDGET_MS } = {}) {
+  const sessions = new Map();
+  let seq = 0;
+  const rowKeyOf = (item) => String(item && item.source) + "|" + String(item && item.slug);
+  const sweep = () => {
+    const now = Date.now();
+    for (const entry of sessions) {
+      if (entry[1].expiresAt <= now) sessions.delete(entry[0]);
+    }
+  };
+  const metaOf = (s) => ({
+    // finalMeta 只在收口时落（折叠口径的分页字段）；中间包没有它，meta 形状不变。
+    ...(s.finalMeta || {}),
+    degraded: s.degraded.slice(),
+    sourceErrors: s.sourceErrors.slice(),
+    hints: s.hints.slice(),
+    page: s.page,
+    pageSize: s.pageSize,
+    sources: s.sources.slice(),
+    rowCount: s.rows.length,
+    settled: s.settled,
+    totalSources: s.sources.length,
+    budgetMs: s.budgetMs,
+  });
+
+  const start = async (opts) => {
+    const o = opts || {};
+    const query = o.query == null ? "" : String(o.query);
+    const source = String(o.source || "all");
+    const sort = String(o.sort || "");
+    const category = String(o.category || "");
+    const cache = o.cache === undefined ? fallbackCache : o.cache;
+    const handlers = o.handlers || null;
+    const p = Math.max(1, Number(o.page) || 1);
+    const size = Math.max(1, Math.min(60, Number(o.pageSize) || 24));
+    const ttl = Number.isFinite(Number(o.ttlMs)) ? Math.max(0, Number(o.ttlMs)) : ttlMs;
+    const budget = Number(o.budgetMs) > 0 ? Number(o.budgetMs) : budgetMs;
+    // 与 searchSkills 同口径：注入 handlers 时 "all" 展开为注入集合，测试态绝不打真实上游。
+    const wanted = source === "all"
+      ? (handlers && Object.keys(handlers).length ? Object.keys(handlers) : ALL_SOURCES)
+      : [source];
+    const picked = wanted.filter((name) => Boolean((handlers && handlers[name]) || SOURCE_HANDLERS[name]));
+    const effectiveSort = sort && supportsSort(source, sort) ? sort : "";
+    sweep();
+    while (sessions.size >= maxSessions) sessions.delete(sessions.keys().next().value);
+    seq += 1;
+    const s = {
+      id: "hv" + Date.now().toString(36) + "-" + seq.toString(36),
+      rows: [],
+      sent: 0,
+      seen: new Set(),
+      degraded: [],
+      hints: [],
+      sourceErrors: [],
+      settled: 0,
+      done: false,
+      stage: "starting",
+      page: p,
+      pageSize: size,
+      sources: picked.slice(),
+      budgetMs: budget,
+      ttlMs: ttl,
+      expiresAt: Date.now() + ttl,
+      waiters: [],
+      boxes: new Map(),
+      finalMeta: null,
+    };
+    sessions.set(s.id, s);
+    const signal = () => {
+      while (s.waiters.length) s.waiters.shift()();
+    };
+    // 每个源落地的第一时间把它的行推入会话 —— 这就是「不等别人」的那一半语义。
+    const onSettled = (name, box) => {
+      s.boxes.set(name, box);
+      s.settled += 1;
+      if (box && box.error) {
+        s.degraded.push({ source: name, error: box.error });
+        s.sourceErrors.push(describeFailure(name, box.error));
+      } else {
+        const result = box ? box.result : null;
+        if (result && result.hint) s.hints.push(name + "：" + result.hint);
+        const srcItems = result && Array.isArray(result.items) ? result.items : [];
+        for (const it of srcItems) {
+          const row = Object.assign({}, it, { installRef: installRefOf(it) });
+          const key = rowKeyOf(row);
+          if (s.seen.has(key)) continue;
+          s.seen.add(key);
+          s.rows.push(row);
+        }
+      }
+      if (!s.done) s.stage = "collected " + s.rows.length + " rows from " + s.settled + "/" + picked.length + " sources";
+      signal();
+    };
+    const fan = fanOutSources({
+      names: picked,
+      budgetMs: budget,
+      cache,
+      // harvest 不写冷却记忆：一次搜索的超时不该让后续 harvest 静默少一个源。
+      cooldownMs: 0,
+      cooldownKey: query.trim().toLowerCase(),
+      onSettled,
+      run: (name) => {
+        const handler = (handlers && handlers[name]) || SOURCE_HANDLERS[name];
+        return handler({ query, page: p, pageSize: size, cache, sort: effectiveSort, category });
+      },
+    });
+    const finish = async () => {
+      let res = null;
+      try {
+        res = await fan;
+      } catch {
+        res = { degraded: [] };
+      }
+      // 撞预算这类截断由 fanOutSources 自己记账、走不到 onSettled（慢源的 promise 还在飞），
+      // 在这里补进 meta —— 但它只影响它自己那一源，已经推出去的行一条不会少。
+      for (const d of (res && res.degraded) || []) {
+        if (!s.degraded.some((x) => x.source === d.source)) s.degraded.push({ source: d.source, error: d.error });
+        const line = describeFailure(d.source, d.error);
+        if (!s.sourceErrors.some((x) => x === line)) s.sourceErrors.push(line);
+      }
+      // 终态全量（R2）：各源落地 box 按 picked 顺序重排成 fan.results 的同形 entries，交给与
+      // searchSkills 共用的 foldFanResults 折叠 —— installRef、source|slug 去重、聚合排序、
+      // skills.sh 描述补全全走同一份口径，终态列表与一次性搜索逐位同序。被预算砍掉的源在这里
+      // 只有 timeout 盒子，折不进行、只进 degraded，与一次性同语义。
+      const entries = [];
+      for (const name of picked) {
+        const box = s.boxes.get(name);
+        // 没有盒子＝这一源被 harvest 自己的兜底预算砍在途中（box.timeout 同理）：按失败记账，
+        // 绝不把 undefined 当成「成功但空目录」—— 与一次性通路 entry.ok:false 同语义。
+        if (!box || box.timeout) {
+          entries.push({ name, ok: false, result: null, error: "来源响应超时（预算 " + Math.round(s.budgetMs / 1000) + "s），已跳过" });
+        } else if (box.error) entries.push({ name, ok: false, result: null, error: box.error });
+        else entries.push({ name, ok: true, result: box.result });
+      }
+      try {
+        const folded = await foldFanResults({ entries, wanted, degraded: s.degraded, query, p, size, category, cache, effectiveSort });
+        s.final = folded.items.slice();
+        s.finalHints = folded.hints.slice();
+        // 分页/口径字段随收口包 meta 下发（与一次性 skills.search 同源同值）：面板 final
+        // 整表替换时才有 total/pages/hasMore/serverFacet 可写缓存，分页器不必瞎猜。
+        s.finalMeta = {
+          total: folded.total,
+          pages: folded.pages,
+          hasMore: folded.hasMore,
+          serverFacet: folded.serverFacet,
+          categoryNote: folded.categoryNote,
+          filteredOut: folded.filteredOut,
+        };
+      } catch {
+        // 折叠兜底失败也不能让会话悬死：终态退化为到达序全量（仍然一行不丢）。
+        s.final = s.rows.slice();
+        s.finalHints = s.hints.slice();
+      }
+      s.done = true;
+      s.stage = "done";
+      signal();
+    };
+    const running = finish();
+    running.catch(() => {});
+    // 首包：第一个有行的源落地就返回，面板不必等最慢的那个源。若启动瞬间就跑完（picked 为空
+    // 或全部源同步落地），这第一个返回包就是收口包：直接带 final:true 与完整折叠列表
+    // （R3：done=true 必须 final；面板收到 final ⇒ 整表替换，否则增量 upsert）。
+    for (;;) {
+      if (s.done || s.rows.length > 0) break;
+      await new Promise((resolve) => s.waiters.push(resolve));
+    }
+    if (s.done && !s.finalSent) {
+      s.finalSent = true;
+      return { id: s.id, rows: (s.final || []).slice(), meta: metaOf(s), done: true, final: true, stage: s.stage };
+    }
+    const rows = s.rows.slice(s.sent);
+    s.sent = s.rows.length;
+    return { id: s.id, rows, meta: metaOf(s), done: s.done, stage: s.stage };
+  };
+
+  const poll = (id) => {
+    if (!id) return null;
+    const s = sessions.get(String(id));
+    if (!s) return null;
+    if (s.expiresAt <= Date.now()) {
+      sessions.delete(s.id);
+      return null;
+    }
+    const rows = s.rows.slice(s.sent);
+    s.sent = s.rows.length;
+    s.expiresAt = Date.now() + s.ttlMs;
+    if (s.done && !s.finalSent) {
+      // 收口包（R2/R3）：done 翻真的这一次必须带 final:true 与完整折叠后的全量列表；
+      // 发出之后不再重复 final，后续 poll 回到空增量（面板契约 final ⇒ 整表替换一次）。
+      s.finalSent = true;
+      return { rows: (s.final || []).slice(), meta: metaOf(s), done: true, final: true, hints: (s.finalHints || s.hints).slice() };
+    }
+    return { rows, meta: metaOf(s), done: s.done, hints: s.hints.slice() };
+  };
+
+  return { start, poll, size: () => sessions.size };
 }

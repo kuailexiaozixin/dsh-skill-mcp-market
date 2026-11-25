@@ -36,7 +36,7 @@
 | `src/shipped.js` | 定位 `app.asar` 并 import 官方插件包 |
 | `src/http.js` | 取数三级通道：python → curl → fetch（绕 TLS 指纹与系统代理限制） |
 | `src/github.js` | jsDelivr 列树 + raw 取文件，失败回退 GitHub contents API / codeload tarball |
-| `src/sources.js` | 各技能源的聚合、排序与缓存 |
+| `src/sources.js` | 各技能源的聚合、排序与缓存；渐进式取数（startHarvest / pollHarvest），收口与一次性搜索共用 foldFanResults 同一口径 |
 | `src/skills.js` | 搜索 / 安装 / 列出 / 卸载 / 启停 |
 | `src/skillhub.js` | SkillHub 公共 API 适配 |
 | `src/extra-sources.js` | skillsmp 等需要特殊传输的源 |
