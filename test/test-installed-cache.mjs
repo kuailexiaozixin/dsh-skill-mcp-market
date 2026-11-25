@@ -17,7 +17,6 @@ const check = (name, cond, detail = '') => {
   else { failed += 1; console.log('  FAIL ' + name + (detail ? '  [' + String(detail).slice(0, 200) + ']' : '')); }
 };
 const lf = (p) => fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
-const loneLf = (s) => (s.match(/\r?\n/g) || []).filter((x) => x === '\n').length;
 const countHits = (src, needle) => {
   if (!needle) throw new Error('空 needle');
   return src.split(needle).length - 1;
@@ -33,13 +32,15 @@ const scopeOf = (t, start, end, label, sink) => {
 };
 
 console.log('== Test0 行尾 ==');
+// 平台中立不变量：不许混用（同文件同时出现 CRLF 与孤立 LF）。仓库 blob 是 i/lf，
+// core.autocrlf=true 的 Windows 工作副本全 CRLF、Linux CI 检出全 LF——「必须 CRLF」
+// 在任何 Linux 上必红（test-search-fanout-latency.mjs Test12 已钉死该教训）。
+const mixedEol = (s) => /\r\n/.test(s) && (s.replace(/\r\n/g, '').indexOf('\n') >= 0);
 const indexRaw = fs.readFileSync(INDEX, 'utf8');
 const skillsRaw = fs.readFileSync(SKILLS, 'utf8');
 const selfRaw = fs.readFileSync(SELF, 'utf8');
-check('index.js loneLF=0', loneLf(indexRaw) === 0, 'loneLF=' + loneLf(indexRaw));
-check('src/skills.js loneLF=0', loneLf(skillsRaw) === 0, 'loneLF=' + loneLf(skillsRaw));
-check('index.js 仍为 CRLF 盘', indexRaw.indexOf('\r\n') >= 0);
-check('src/skills.js 仍为 CRLF 盘', skillsRaw.indexOf('\r\n') >= 0);
+check('index.js 无混合行尾', !mixedEol(indexRaw), JSON.stringify(mixedEol(indexRaw)));
+check('src/skills.js 无混合行尾', !mixedEol(skillsRaw), JSON.stringify(mixedEol(skillsRaw)));
 check('新建测试文件纯 LF', selfRaw.indexOf('\r') === -1, 'CR=' + (selfRaw.match(/\r/g) || []).length);
 
 const indexText = lf(INDEX);
