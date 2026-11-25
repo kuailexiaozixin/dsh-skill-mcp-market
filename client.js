@@ -5,6 +5,27 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
+    // 宿主令牌 -> 插件自用 --dsh-* 变量（暗色自动换肤）
+    (() => {
+      if (typeof document === 'undefined' || document.getElementById('dsh-market-theme-vars')) return;
+      const el = document.createElement('style');
+      el.id = 'dsh-market-theme-vars';
+      el.textContent = 'body{' +
+        '--dsh-text-primary:var(--dsw-alias-label-primary,#1f2328);' +
+        '--dsh-text-secondary:var(--dsw-alias-label-secondary,#57606a);' +
+        '--dsh-text-tertiary:var(--dsw-alias-label-tertiary,#888);' +
+        '--dsh-border:var(--dsw-alias-border-l2,#d0d7de);' +
+        '--dsh-border-strong:var(--dsw-alias-border-l3,#b6c0cc);' +
+        '--dsh-surface:var(--dsw-alias-bg-layer-1,#ffffff);' +
+        '--dsh-surface-raised:var(--dsw-alias-bg-layer-2,#f0f3f6);' +
+        '--dsh-surface-hover:var(--dsw-alias-interactive-bg-hover,#f3f4f6);' +
+        '--dsh-card:var(--dsw-alias-card-fill,#ffffff);' +
+        '--dsh-input-bg:var(--dsw-alias-bg-layer-2,#ffffff);' +
+        '--dsh-accent:var(--dsw-alias-state-business-primary,#3b82f6);' +
+        '--dsh-danger:var(--dsw-alias-state-error-primary,#b42318);' +
+      '}';
+      (document.head || document.documentElement).appendChild(el);
+    })();
     const { useState, useEffect, useCallback, useRef } = React;
     // 排序键中文标签。能力表本身来自服务端 settings.get 的 sortCapabilities —— 面板不再内联 CAPS 副本。
     // LABEL 刻意留在面板侧：test-sort-options Test 5 锁 '按星级'/'最新'/'最近更新' 字面量。
@@ -436,6 +457,17 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         position: 'relative',
         font: '13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif',
         color: 'var(--dsh-text-primary, #1f2328)',
+        '--dsh-text-primary': 'var(--dsw-alias-label-primary, #1f2328)',
+        '--dsh-text-secondary': 'var(--dsw-alias-label-secondary, #57606a)',
+        '--dsh-text-tertiary': 'var(--dsw-alias-label-tertiary, #888)',
+        '--dsh-border': 'var(--dsw-alias-border-l2, #d0d7de)',
+        '--dsh-border-strong': 'var(--dsw-alias-border-l3, #b6c0cc)',
+        '--dsh-surface': 'var(--dsw-alias-bg-layer-1, #ffffff)',
+        '--dsh-surface-raised': 'var(--dsw-alias-bg-layer-2, #f0f3f6)',
+        '--dsh-card': 'var(--dsw-alias-card-fill, #ffffff)',
+        '--dsh-input-bg': 'var(--dsw-alias-bg-layer-2, #ffffff)',
+        '--dsh-accent': 'var(--dsw-alias-state-business-primary, #3b82f6)',
+        '--dsh-danger': 'var(--dsw-alias-state-error-primary, #b42318)',
       },
       launcher: {
         height: 40,
@@ -463,7 +495,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       },
       dim: {
         padding: 24,
-        color: '#888',
+        color: 'var(--dsh-text-tertiary, #888)',
         fontSize: 14,
         textAlign: 'center',
       },
@@ -509,15 +541,15 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         alignItems: 'stretch',
         // 更粗、更深的竖直滚动条（WebKit）
         scrollbarWidth: 'thin',
-        scrollbarColor: '#5a636e #eef1f4',
+        scrollbarColor: 'var(--dsw-alias-scrollbar-bg-l2, #5a636e) var(--dsw-alias-scrollbar-bg-l1, #eef1f4)',
         '&::-webkit-scrollbar': { width: '12px' },
-        '&::-webkit-scrollbar-track': { background: '#f0f2f4' },
+        '&::-webkit-scrollbar-track': { background: 'var(--dsw-alias-scrollbar-bg-l1, #f0f2f4)' },
         '&::-webkit-scrollbar-thumb': {
-          background: '#5a636e',
+          background: 'var(--dsw-alias-scrollbar-bg-l2, #5a636e)',
           borderRadius: 6,
-          border: '2px solid #f0f2f4',
+          border: '2px solid var(--dsw-alias-scrollbar-bg-l1, #f0f2f4)',
         },
-        '&::-webkit-scrollbar-thumb:hover': { background: '#3d444d' },
+        '&::-webkit-scrollbar-thumb:hover': { background: 'var(--dsw-alias-scrollbar-hover-l2, #3d444d)' },
       },
       row: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
       // 用户报障（m18209）：分类 chip 铺开 6 行，卡片只剩 3 行没法浏览。默认收成一行横向滚动，
@@ -562,7 +594,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         fontSize: 12,
         border: '1px solid var(--dsh-border, #d0d7de)',
         background: active ? 'var(--dsh-accent, #2f6feb)' : 'transparent',
-        color: active ? '#fff' : 'inherit',
+        color: active ? 'var(--dsw-alias-label-on-color, #fff)' : 'inherit',
       }),
       input: {
         flex: 1,
@@ -595,11 +627,11 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         fontSize: 12,
         border: '1px solid var(--dsh-border, #d0d7de)',
         background: kind === 'primary' ? 'var(--dsh-accent, #2f6feb)' : 'transparent',
-        color: kind === 'primary' ? '#fff' : 'inherit',
+        color: kind === 'primary' ? 'var(--dsw-alias-label-on-color, #fff)' : 'inherit',
       }),
       status: { fontSize: 12, opacity: 0.75 },
-      err: { fontSize: 12, color: '#c62828' },
-    danger: { color: '#c62828', borderColor: 'rgba(198, 40, 40, 0.45)' },
+      err: { fontSize: 12, color: 'var(--dsw-alias-state-error-primary, #c62828)' },
+    danger: { color: 'var(--dsw-alias-state-error-primary, #c62828)', borderColor: 'color-mix(in srgb, var(--dsw-alias-state-error-primary, #c62828) 45%, transparent)' },
     btnRow: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'nowrap', width: '100%' },
     };
 
@@ -2178,14 +2210,14 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
               }) : null,
               h('span', { style: { ...S.title, minWidth: 0 }, title: item.name || item.slug }, item.name || item.slug)),
             h('span', {
-              style: { fontSize: 11, whiteSpace: 'nowrap', color: off ? '#b26a00' : 'var(--dsh-text-secondary, #57606a)' },
+              style: { fontSize: 11, whiteSpace: 'nowrap', color: off ? 'var(--dsw-alias-state-warn-primary, #b26a00)' : 'var(--dsh-text-secondary, #57606a)' },
               title: off ? '模型不会调用该技能' : '模型可调用',
             }, off ? '● 已停用' : '● 已启用')),
           // 描述优先于来源（来源已在分组头说过，卡片再写一遍是重复）
           h('div', { style: S.desc, title: item.description || '' }, item.description || '（SKILL.md 未提供 description）'),
           h('div', { style: { ...S.meta, fontSize: 11 } },
             h('span', { style: { opacity: 0.65, minWidth: 0 }, title: item.dir }, shortPath(item.dir, homeDir)),
-            item.shadowedBy ? h('span', { style: { color: '#b26a00', whiteSpace: 'nowrap' }, title: `同名技能由 ${item.shadowedBy} 提供，层级更高` }, '被覆盖') : null),
+            item.shadowedBy ? h('span', { style: { color: 'var(--dsw-alias-state-warn-primary, #b26a00)', whiteSpace: 'nowrap' }, title: `同名技能由 ${item.shadowedBy} 提供，层级更高` }, '被覆盖') : null),
           // 次要动作靠左、危险动作靠右；nowrap 保证窄面板不折行
           h('div', { style: S.btnRow },
             h('button', {
@@ -2271,7 +2303,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
             h('span', { style: { fontSize: 13, fontWeight: 600 } }, group.label),
             // rank 是实现细节（同名技能谁优先），不该出现在界面上；降级为悬浮提示。
             h('span', { style: { ...S.status, fontSize: 11 }, title: `层级 ${group.rank}：数字越小，同名技能越优先` }, `${group.items.length} 个`),
-            shadowed > 0 ? h('span', { style: { ...S.status, fontSize: 11, color: '#b26a00' } }, `${shadowed} 个被更高层覆盖`) : null),
+            shadowed > 0 ? h('span', { style: { ...S.status, fontSize: 11, color: 'var(--dsw-alias-state-warn-primary, #b26a00)' } }, `${shadowed} 个被更高层覆盖`) : null),
           collapsed ? null : h('div', { style: S.grid }, group.items.map(renderInstalledCard)));
       });
 
@@ -2503,10 +2535,10 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         // 全局滚动条样式（粗 12px、深色 #444 拇指、#1e1e1e 轨道）
         h('style', null,
           '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar { width: 12px; }' +
-          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-track { background: #f3f4f6; }' +
-          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb { background: #444; border-radius: 6px; border: 2px solid #f3f4f6; }' +
-          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb:hover { background: #222; }' +
-          '[data-dsh-market-root] [data-dsh-market-body] { scrollbar-width: thin; scrollbar-color: #444 #f3f4f6; }'),
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-track { background: var(--dsh-surface-raised, #f3f4f6); }' +
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb { background: var(--dsw-alias-scrollbar-bg-l2, #444); border-radius: 6px; border: 2px solid var(--dsh-surface-raised, #f3f4f6); }' +
+          '[data-dsh-market-root] [data-dsh-market-body]::-webkit-scrollbar-thumb:hover { background: var(--dsw-alias-scrollbar-hover-l2, #222); }' +
+          '[data-dsh-market-root] [data-dsh-market-body] { scrollbar-width: thin; scrollbar-color: var(--dsw-alias-scrollbar-bg-l2, #444) var(--dsh-surface-raised, #f3f4f6); }'),
         h('div', { ref: panelRef, style: S.panel },
           h('div', { style: S.head },
             h('button', { style: S.tab(tab === 'skills'), onClick: () => setTab('skills') }, 'SKILL 技能'),
@@ -2694,7 +2726,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                               ? h('div', { style: { ...S.err, wordBreak: 'break-word' } }, mcpRaw.error)
                               : h('div', null,
                                   mcpRaw.hasSecrets
-                                    ? h('div', { style: { ...S.status, fontSize: 11, color: '#b26a00', marginBottom: 6 } },
+                                    ? h('div', { style: { ...S.status, fontSize: 11, color: 'var(--dsw-alias-state-warn-primary, #b26a00)', marginBottom: 6 } },
                                         '注意：原文视图会显示环境变量明文（detail 的掩码在这里失效），保存前请确认这台机器可信。')
                                     : null,
                                   h('textarea', {
@@ -3051,7 +3083,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                   },
                 }, h('option', { value: 'default' }, '默认顺序'), h('option', { value: 'name' }, '按名称'),
                   h('option', { value: 'on' }, '启用优先'), h('option', { value: 'off' }, '停用优先')),
-                sortOrderUnchanged ? h('span', { style: { ...S.status, fontSize: 11, color: '#b26a00' } }, '排序没有改变可见顺序（每个来源组内只有一项）') : null,
+                sortOrderUnchanged ? h('span', { style: { ...S.status, fontSize: 11, color: 'var(--dsw-alias-state-warn-primary, #b26a00)' } }, '排序没有改变可见顺序（每个来源组内只有一项）') : null,
                 nativeDirs.length > 0
                   ? h('span', { style: { fontSize: 11, opacity: 0.6, fontWeight: 400 } }, `含 DSH 内置 ${nativeDirs.length} 个目录`)
                   : null,
@@ -3293,7 +3325,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                   sessionScan && sessionScan.items
                     ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 260, overflow: 'auto' } },
                         sessionScan.items.map((item) => h('div', { key: item.file, style: { ...S.row, fontSize: 11, gap: 6, opacity: item.corrupt ? 1 : 0.75 } },
-                          h('span', { style: { fontWeight: 600, color: item.corrupt ? '#c62828' : undefined } }, item.corrupt ? '损坏' : (item.scanned ? '正常' : '—')),
+                          h('span', { style: { fontWeight: 600, color: item.corrupt ? 'var(--dsw-alias-state-error-primary, #c62828)' : undefined } }, item.corrupt ? '损坏' : (item.scanned ? '正常' : '—')),
                           h('span', { style: { flex: '1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.sessionId),
                           item.corrupt
                             ? h('span', null, `seq ${item.corruption.seq}：${item.corruption.reason}`)
