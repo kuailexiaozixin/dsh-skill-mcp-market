@@ -4,6 +4,10 @@
 // test-nocache 直打真实上游，SKIP/重试分支没法靠上游恰好坏一次来验证 —— 那等于
 // 没有锁。判定抽成纯函数后每条边界都能钉死，尤其「放宽绝不放行真回归」。
 import { overlapVerdict, emptyPageAction, emptyWithoutEvidence, pagePairVerdict } from './paging-verdict.mjs';
+import * as PV from './paging-verdict.mjs';
+// countOverlap 走命名空间取：缺 export 时 ESM 具名 import 会在链接期 SyntaxError，
+// 整个套件崩掉 = 拿不到「哪条红」的读数。这里取到 undefined，Test 10 逐条如实判红。
+const countOverlap = PV.countOverlap;
 import fs from 'node:fs';
 
 let passed = 0, failed = 0;
@@ -124,6 +128,34 @@ console.log('Test 9: 部分重叠按「同页自稳证据」判定，且 FAIL �
   // 削弱自证：把「未测」也当放行，第三条会绿；这里要求两者结论不同，证明判据有效。
   const weakened = { source: 'lobehub', overlap: 5, pageCount: 12 };
   check('未测与自稳都必须 fail（不接受静默放行）', w(weakened).verdict === 'fail' && w({ ...weakened, firstPageStable: true }).verdict === 'fail');
+}
+
+console.log('');
+console.log('Test 10: countOverlap —— 两个套件共用一份集合比较（不得各写一遍）');
+{
+  // 缺 export 时必须逐条报 FAIL，不能让 TypeError 掀掉整个套件（掀了就读不到「哪条红」）。
+  const co = (...a) => (typeof countOverlap === 'function' ? countOverlap(...a) : 'MISSING');
+  check('helper 导出 countOverlap', typeof countOverlap === 'function', 'typeof=' + typeof countOverlap);
+  const A = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  const B = [{ id: 'c' }, { id: 'd' }];
+  check('重叠数按 id 集合算', co(A, B) === 1, 'got=' + co(A, B));
+  check('顺序无关（只问共现）', co([{ id: 'x' }, { id: 'y' }], [{ id: 'y' }, { id: 'x' }]) === 2, 'got=' + co([{ id: 'x' }, { id: 'y' }], [{ id: 'y' }, { id: 'x' }]));
+  check('完全不相交 → 0', co([{ id: 'a' }], [{ id: 'b' }]) === 0, 'got=' + co([{ id: 'a' }], [{ id: 'b' }]));
+  check('整页重复 → next.length（page 被忽略的形状）', co(A, A) === A.length, 'got=' + co(A, A));
+  check('缺 items / null 一侧不炸且判 0', co(null, B) === 0 && co(A, undefined) === 0 && co(undefined, undefined) === 0, 'got=' + [co(null, B), co(A, undefined), co(undefined, undefined)].join('/'));
+  check('同 id 重复出现只算一次（按集合不按配对）', co([{ id: 'a' }, { id: 'a' }], [{ id: 'a' }, { id: 'a' }]) === 1, 'got=' + co([{ id: 'a' }, { id: 'a' }], [{ id: 'a' }, { id: 'a' }]));
+  check('非对象条目退化成按值比较', co(['a', 'b'], ['b', 'c']) === 1, 'got=' + co(['a', 'b'], ['b', 'c']));
+  // 缺 id 的条目保守计入（与两个套件此前逐字相同的行为）：判成不重叠是静默放行——
+  // 整页重复也能读成 ok，比 flake 更坏。
+  check('两侧都缺 id 时保守计入（不得静默放行整页重复）', co([{ id: undefined }, { id: 'b' }], [{ id: undefined }, { id: 'b' }]) === 2, 'got=' + co([{ id: undefined }, { id: 'b' }], [{ id: undefined }, { id: 'b' }]));
+  check('单边缺 id 不计入（另一侧有真 id 时不构成证据）', co([{ id: 'a' }], [{ id: undefined }]) === 0, 'got=' + co([{ id: 'a' }], [{ id: undefined }]));
+  check('items 包裹形态也吃（{items:[…]} 或直接数组）', co({ items: A }, { items: B }) === 1, 'got=' + co({ items: A }, { items: B }));
+  // 真正的「不得各写一遍」锁：调用点必须用 helper，不再手写 new Set + filter。
+  const ncSrc = fs.readFileSync(new URL('./test-nocache.mjs', import.meta.url), 'utf8');
+  const pgSrc = fs.readFileSync(new URL('./test-paging.mjs', import.meta.url), 'utf8');
+  check('test-nocache 改用 countOverlap（不留内联集合比较）', ncSrc.indexOf('countOverlap(') >= 0 && !/\.filter\(\((item|x)\) => ids\S*\.has/.test(ncSrc), 'nocache inline compare still present');
+  check('helper 内部实现只有一处集合比较', (SRC.match(/new Set\(/g) || []).length <= 1, 'new Set count=' + (SRC.match(/new Set\(/g) || []).length);
+  check('test-paging 若比较重叠也走同一 helper', !/\.filter\(\([a-z]+\) => .{0,12}\.has\(/.test(pgSrc) || pgSrc.indexOf('countOverlap(') >= 0, 'check paging');
 }
 
 console.log('');

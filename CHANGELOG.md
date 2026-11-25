@@ -9,9 +9,16 @@
   此前裸奔的 7 处子进程调用全部接线：src/extra-sources.js:18（cmd /d /s /c npx）、src/sources.js:439（browse CLI）、
   src/cli-install.js:382（curl 兜底下载）、src/http.js:32 / :126 / :257（python 探针与 curl.exe）、index.js:1752；
   src/cli-install.js 原有的 env 拼装改为复用 childEnv，不再维护第二套口径。
-- 新套件 test/test-child-env.mjs（55 条，已登记进 test:chain：70⇒71 段）：真跑 childEnv 断言「只补缺、不覆盖」；
+- 新套件 test/test-child-env.mjs（57 条，已登记进 test:chain：70⇒71 段）：真跑 childEnv 断言「只补缺、不覆盖」；
   静态锁「files 白名单里不带 env 的子进程调用数 === 0」——裸调用这一类是 PR#1 Test 14 的盲区（它只锁显式写了
   env:{...} 的调用），锁函数本身是纯函数、可喂假源码自证；并以真孙进程实测 %SystemDrive% 正常展开为盘符。
+- CI 首跑（run 45574263352）抓到同一根因的残余：publish.yml 跑 ubuntu-latest，homedir() 是 /home/runner（无盘符），
+  SystemRoot 兜底旧写法 process.env.SystemRoot || (driveFrom(home) + "\Windows") 在 CI 上拼出无盘符的「\Windows」，
+  孙进程的 %SystemRoot% 退化成相对路径——与本次要修的 bug 同形（既有平台化教训第五次目击）。改为 homeDrive 兜底：
+  真实 SystemDrive → homedir 前缀 → 字面 C:，任何平台都产出带盘符的绝对路径；SystemRoot 不再优先读宿主 env（注入式）。
+  判据随动补两条绝对性锁（SystemRoot 必须 ^[A-Za-z]:\Windows$、ComSpec 必须 ^[A-Za-z]:\Windows\system32\cmd\.exe$）：
+  本机 57/0/0 绿；变异自证=兜底换回旧写法两条锁齐红（本机 got=C:\WINDOWS 那侧仍由「不带盘符即红」的形态锁住，
+  CI 上旧写法必红）。套件登记随 test:chain 71 段一起进门。
 
 ## 0.5.171
 

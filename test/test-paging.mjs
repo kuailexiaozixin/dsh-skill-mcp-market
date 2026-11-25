@@ -1,7 +1,7 @@
 // 逐个源验证「下一页」真的取到不同的条目（而不是重复第一页）。
 import { safeTempDir } from "../src/home.js";
 import { makeCache, searchSkills, ALL_SOURCES, skillsShCatalog } from "../src/sources.js";
-import { overlapVerdict, emptyPageAction, emptyWithoutEvidence, pagePairVerdict } from "./paging-verdict.mjs";
+import { overlapVerdict, emptyPageAction, emptyWithoutEvidence, pagePairVerdict, countOverlap } from "./paging-verdict.mjs";
 
 const cache = makeCache(safeTempDir());
 const pageSize = 12;

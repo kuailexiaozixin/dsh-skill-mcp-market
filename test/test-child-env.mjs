@@ -248,9 +248,14 @@ if (typeof childEnv === "function") {
   const extraEmpty = withPlatform("win32", () => childEnv({ SystemDrive: "" }, win({})));
   check("extra 显式给空串也算调用方给出的值", extraEmpty.SystemDrive === "", "got=" + JSON.stringify(extraEmpty.SystemDrive));
 
-  // 4) base 里 Windows 键全缺时的兜底（本进程 process.env 实测正是这种情况）
+  // 4) base 里 Windows 键全缺时的兜底。这条必须在任何平台都成立：publish.yml 跑 ubuntu-latest，
+  //    而 childEnv 的 Windows 分支靠 withPlatform 注入 —— homedir() 在 CI 上是 /home/runner（无盘符），
+  //    兜底若拼出无盘符路径，孙进程的 %SystemRoot% 就退化成相对路径，正是本次要根治的形态。
   const allMissing = withPlatform("win32", () => childEnv({}, { PATH: "x", TEMP: HD }));
   check("base 全缺时 SystemRoot 回落 homedir 盘符", typeof allMissing.SystemRoot === "string" && allMissing.SystemRoot.indexOf(HDDrive) === 0, "got=" + allMissing.SystemRoot);
+  // 绝对性锁：不带盘符的 \Windows 一律判红（CI 首跑就是死在这一条上——53/1，红了才说明锁有效）。
+  check("base 全缺时 SystemRoot 必为带盘符的绝对路径", /^[A-Za-z]:\\Windows$/.test(String(allMissing.SystemRoot)), "got=" + allMissing.SystemRoot);
+  check("base 全缺时 ComSpec 同样带盘符", /^[A-Za-z]:\\Windows\\system32\\cmd\.exe$/.test(String(allMissing.ComSpec)), "got=" + allMissing.ComSpec);
   check("base 全缺时七项全部补齐", ENV_DEFAULTS.every((k) => typeof allMissing[k] === "string" && allMissing[k] !== ""), "");
   check("base 全缺时非 Windows 键照常透传", allMissing.PATH === "x" && allMissing.TEMP === HD, "");
 

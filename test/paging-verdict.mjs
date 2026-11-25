@@ -35,6 +35,31 @@ export function overlapVerdict(o) {
   return { verdict: 'fail', reason: o.source + ' 跨页重叠 overlap=' + overlap + '（同页重复请求实测自稳 ⇒ 本侧 offset 算术回归）' };
 }
 
+/**
+ * countOverlap —— 相邻两页里共现的条目数，全仓唯一一份集合比较。
+ *
+ * 为什么抽出来：test-nocache 与 test-paging 此前各写一遍 `new Set` + `filter(has)`，
+ * 两套相近判据互相打架是本仓踩过的坑（同一形状在 emptyWithoutEvidence 那条上已统一过一次）。
+ * 语义按集合算，不按配对算：同一条目在两页里重复出现只算一次共现；
+ * 整页重复（page 参数被忽略）读作 next.length，正是 overlapVerdict 要 fail 的那个形状。
+ * 缺 id 的条目保守计入：两边都取不到 id 时判成重叠，因为「判成不重叠」等于静默放行——
+ * 整页重复会被读成 ok，那比一次 flake 坏得多。
+ *
+ * @param {Array|{items:Array}|null|undefined} prev 前一页
+ * @param {Array|{items:Array}|null|undefined} next 后一页
+ * @returns {number} 共现条目数（distinct）
+ */
+export function countOverlap(prev, next) {
+  const list = (side) => (Array.isArray(side) ? side : side && Array.isArray(side.items) ? side.items : []);
+  const key = (item) => (item && typeof item === 'object' && 'id' in item ? item.id : item);
+  const a = list(prev);
+  const b = list(next);
+  if (a.length === 0 || b.length === 0) return 0;
+  const seen = new Set(a.map(key));
+  const keys = b.map(key);
+  return keys.filter((k, i) => keys.indexOf(k) === i && seen.has(k)).length;
+}
+
 export function emptyPageAction(o) {
   const p1 = Number(o.p1) || 0;
   const p2 = Number(o.p2) || 0;

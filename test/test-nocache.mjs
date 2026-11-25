@@ -2,7 +2,7 @@
 // source layer WITHOUT a cache object. That path used to crash with
 // "fallbackCache is not defined" after the 0.5.10 paging rewrite, so keep it covered.
 import { ALL_SOURCES, searchSkills, warmMarketCache } from "../src/sources.js";
-import { overlapVerdict, emptyPageAction, emptyWithoutEvidence, pagePairVerdict } from './paging-verdict.mjs';
+import { overlapVerdict, emptyPageAction, emptyWithoutEvidence, pagePairVerdict, countOverlap } from './paging-verdict.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -38,22 +38,34 @@ for (const source of ALL_SOURCES) {
       await new Promise((r) => setTimeout(r, 1500));
       p2 = await searchSkills({ query: '', source, page: 2, pageSize: 12 });
     }
-    const ids1 = new Set(p1.items.map((item) => item.id));
-    const overlap = p2.items.filter((item) => ids1.has(item.id)).length;
+    const overlap = countOverlap(p1.items, p2.items);
+    // 「上游在重排」与「我们 offset 算错」必须靠实测分开，而不是给某个源发永久通行证。
+    // 证据 = 同一页用同一参数再请求一次：两次逐条一致 ⇒ 该页自稳（stable=true）；
+    // 对不上 ⇒ 上游默认序自身在漂（stable=false）⇒ overlapVerdict 记 SKIP 并写明依据。
+    // 取不到可用的重复页（空或自报 degraded）⇒ 留 undefined，helper 一律 fail：
+    // 「没测过」不等于「没问题」，与 sortedOverlap 同一条原则。
+    let firstPageStable;
+    if (overlap > 0 && overlap < p1.items.length) {
+      for (let attempt = 1; attempt <= 2 && firstPageStable === undefined; attempt++) {
+        await new Promise((r) => setTimeout(r, 1200));
+        const p1b = await searchSkills({ query: '', source, page: 1, pageSize: 12 });
+        const usable = p1b.items.length > 0 && !(p1b.degraded || []).some((d) => d.source === source);
+        if (usable) firstPageStable = countOverlap(p1.items, p1b.items) === p1.items.length;
+      }
+    }
     // skillhub 默认榜（不带 sortBy）自身在重排：实测同一请求首条在 icon-design 与
     // govwriter-pro 之间漂移，跨页重叠一次 2、一次 7。外部数据状态不该伪装成代码回归，
     // 但放宽必须有边界与自证 —— 判定交给纯函数 overlapVerdict（可被真值表证伪）：
     //   整页重复 → fail（page 参数被忽略，这是我们的分页回归）；
     //   部分重复 + 显式排序路径 overlap=0 → skip（上游默认序在重排，下发的分页参数没错）；
     //   显式排序路径也重复 → fail（这条判据绝不放宽）。
-    let sortedOverlap = 0;
+    let sortedOverlap;
     if (overlap > 0 && source === 'skillhub') {
       const s1 = await searchSkills({ query: '', source, page: 1, pageSize: 12, sort: 'installCount' });
       const s2 = await searchSkills({ query: '', source, page: 2, pageSize: 12, sort: 'installCount' });
-      const idsS = new Set(s1.items.map((x) => x.id));
-      sortedOverlap = s2.items.filter((x) => idsS.has(x.id)).length;
+      sortedOverlap = countOverlap(s1.items, s2.items);
     }
-    const vd = overlapVerdict({ source, overlap, pageCount: p1.items.length, sortedOverlap });
+    const vd = overlapVerdict({ source, overlap, pageCount: p1.items.length, sortedOverlap, firstPageStable });
     if (vd.verdict === 'skip') { skipped += 1; console.log('SKIP ' + source + ' overlap=' + overlap + ' — ' + vd.reason); continue; }
     const ep = emptyPageAction({ p1: p1.items.length, p2: p2.items.length, total: p1.total, hasMore: p1.hasMore, attempt: ep1.verdict === 'retry' ? 2 : 1 });
     // 重试之后再看：空页若由该页自报失败（degraded），是上游状态，不判本侧回归。
@@ -103,8 +115,7 @@ console.log('--- 端到端证伪：注入真忽略 page 的假 handler，自证�
   };
   const p1f = await searchSkills({ query: '', source: fake, page: 1, pageSize: 12, handlers });
   const p2f = await searchSkills({ query: '', source: fake, page: 2, pageSize: 12, handlers });
-  const idsF = new Set(p1f.items.map((x) => x.id));
-  const ovF = p2f.items.filter((x) => idsF.has(x.id)).length;
+  const ovF = countOverlap(p1f.items, p2f.items);
   check(ovF === p1f.items.length && ovF > 0, '假 handler 构造成立（第 2 页整页重复）', 'overlap=' + ovF);
   const vdF = overlapVerdict({ source: fake, overlap: ovF, pageCount: p1f.items.length, sortedOverlap: undefined });
   check(vdF.verdict === 'fail', '整页重复判 fail（外部状态分支不得放行真回归）', vdF.verdict + ' / ' + vdF.reason);

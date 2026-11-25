@@ -95,8 +95,13 @@ export function childEnv(extra, baseEnv) {
   // Derivation order matters: SystemRoot first (it anchors both the drive and ComSpec), then
   // SystemDrive, which may itself have to come from the extra-supplied SystemRoot.
   const home = homedir();
+  // homedir 在非 Windows 上没有盘符（CI 实测 /home/runner），故兜底顺序先看真实 SystemDrive，
+  // 再看 homedir 前缀，最后落回 C:：保证任何平台上拼出来的都是绝对路径。
+  const homeDrive = driveFrom(process.env.SystemDrive) || driveFrom(home) || "C:";
   if (!merged.SystemRoot && !given.has("SystemRoot")) {
-    merged.SystemRoot = process.env.SystemRoot || (driveFrom(home) + "\\Windows");
+    // 兜底盘符必须与 homedir 无关：CI 跑在 ubuntu 上，homedir() 是 /home/runner（无盘符），
+    // 旧写法 "\\Windows" 会退化成无盘符路径，孙进程的 %SystemRoot% 就成了相对路径 —— 与本次修的 bug 同形。
+    merged.SystemRoot = homeDrive + "\\Windows";
   }
   if (!merged.SystemDrive && !given.has("SystemDrive")) {
     merged.SystemDrive = driveFrom(merged.SystemRoot) || driveFrom(home) || "C:";
@@ -105,7 +110,7 @@ export function childEnv(extra, baseEnv) {
     merged.ComSpec = merged.SystemRoot + "\\system32\\cmd.exe";
   }
   if (!merged.UserProfile && !given.has("UserProfile")) {
-    merged.UserProfile = process.env.UserProfile || home;
+    merged.UserProfile = home;
   }
   if (!merged.ProgramData && !given.has("ProgramData")) {
     merged.ProgramData = merged.SystemDrive + "\\ProgramData";
