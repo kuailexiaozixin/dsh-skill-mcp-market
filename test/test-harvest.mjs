@@ -349,5 +349,158 @@ console.log('Test 9: 收口包 meta 携带分页口径（面板 final 整表替�
 }
 
 console.log('');
+console.log('Test 10: ModelScope 大源逐页推入 harvest（渐进式加载），且 harvest 通路不受 45s 预算截断');
+{
+  // 用户诉求原话：「不要设置时间预算，超过就停止加载，这会导致显示的结果不全」「有多少就显示多少，
+  // 不断增加新结果」。假上游只经 transport 注入（fetchOne 的 PUT 体），绝不打网络。
+  const es10 = await import('../src/extra-sources.js');
+  const mkMsTransport = (o) => {
+    const st = { calls: [], opts: [] };
+    const delay = typeof o.delay === 'number' ? o.delay : 60;
+    st.tr = async (_url, init) => {
+      const b = JSON.parse(String(init.body));
+      const page = Number(b.PageNumber) || 1;
+      st.calls.push(page);
+      if (typeof o.onCall === 'function') o.onCall(page);
+      await sleep(delay);
+      const rows = [];
+      if (page <= o.pages) {
+        for (let i = 0; i < o.perPage; i++) {
+          rows.push({
+            Name: 'ms-p' + page + '-i' + i,
+            DisplayName: 'Ms p' + page + ' i' + i,
+            Description: 'd' + page + i,
+            Path: 'own' + page,
+            DownloadCount: (o.pages - page) * 100 + (o.perPage - i),
+            SourceStar: page * 10 + i,
+            L1: { ChineseName: o.catOf ? o.catOf(page, i) : '开发工具' },
+          });
+        }
+      }
+      return { ok: true, json: async () => ({ Data: { SkillList: rows, TotalCount: o.total } }) };
+    };
+    return st;
+  };
+  const msHandlers = (st) => ({ modelscope: (opts) => { st.opts.push(opts); return es10.searchModelScope(Object.assign({}, opts, { transport: st.tr })); } });
+  // 增量包 = 带行且不带 final 的包（首包若已有行同样属于增量流）
+  const midPkgs = (pkgs) => pkgs.filter((p) => p.rows.length > 0 && p.final !== true);
+  const ordered = (rows) => rows.map((r) => rowKey(r)).sort().join(',');
+  const inOrder = (rows) => rows.map(rowKey).join(',');
+  const drain = async (store, first, rounds) => {
+    const pkgs = [first];
+    if (first.done && first.final === true) return { pkgs, fin: first };
+    let fin = null;
+    for (let i = 0; i < rounds && !fin; i++) { await sleep(15); const p = store.poll(first.id); if (!p) break; pkgs.push(p); if (p.done) fin = p; }
+    return { pkgs, fin };
+  };
+
+  // ── A. 逐页推：真实时钟，4 页 × 4 行（total=1500 ⇒ msPagesNeeded=4），每页 60ms ──
+  const stA = mkMsTransport({ pages: 4, perPage: 4, total: 3500 });
+  const storeA = makeHarvestStore();
+  const firstA = await storeA.start({ query: 'msA', source: 'modelscope', sort: 'downloadCount', page: 1, pageSize: 24, handlers: msHandlers(stA), cache: null });
+  const runA = await drain(storeA, firstA, 80);
+  const pkgsA = runA.pkgs; const finA = runA.fin;
+  const oneA = await searchSkills({ query: 'msA', source: 'modelscope', sort: 'downloadCount', page: 1, pageSize: 24, handlers: msHandlers(mkMsTransport({ pages: 4, perPage: 4, total: 3500 })), cache: null });
+  check('A1 harvest 至少 2 个带行的中间包（逐页推，不是憋到收口）', midPkgs(pkgsA).length >= 2, 'mids=' + midPkgs(pkgsA).length + ' calls=' + stA.calls.join(','));
+  const rcsA = midPkgs(pkgsA).map((p) => p.meta.rowCount);
+  check('A2 中间包 meta.rowCount 严格单调递增', rcsA.every((v, i) => i === 0 || v > rcsA[i - 1]), JSON.stringify(rcsA));
+  check('A3 中间包一律不带 final（final 只属于收口包）', midPkgs(pkgsA).length > 0 && midPkgs(pkgsA).every((p) => p.final !== true), JSON.stringify(midPkgs(pkgsA).map((p) => Boolean(p.final))));
+  check('A4 中间包 meta 不含 total/pages（分页口径只在 finalMeta 里给）', midPkgs(pkgsA).every((p) => !('total' in p.meta) && !('pages' in p.meta)), JSON.stringify(midPkgs(pkgsA).map((p) => Object.keys(p.meta).filter((k) => k === 'total' || k === 'pages'))));
+  check('A5 第一页落地即推进会话（源尚未 settled 时已有行）', pkgsA.some((p) => p.rows.length > 0 && /from 0\//.test(String(p.stage))), JSON.stringify(pkgsA.map((p) => p.stage).slice(0, 2)));
+  check('A6 收口行集与同参数 skills.search 折叠结果同集合（唯一口径 foldFanResults）', Boolean(finA) && ordered(finA.rows) === ordered(oneA.items), 'final=' + ordered(finA && finA.rows) + ' oneShot=' + ordered(oneA.items));
+  check('A7 收口行序与一次性折叠逐行一致', Boolean(finA) && inOrder(finA.rows) === inOrder(oneA.items), 'final=' + inOrder(finA && finA.rows) + ' oneShot=' + inOrder(oneA.items));
+  const concatA = midPkgs(pkgsA).flatMap((p) => p.rows.map(rowKey));
+  const finalKeysA = new Set((finA && finA.rows || []).map(rowKey));
+  check('A8 逐页增量互不重复且都落在收口行集内（rowKeyOf 去重，收口不重复计行）',
+    new Set(concatA).size === concatA.length && concatA.every((k) => finalKeysA.has(k)) && finA.meta.rowCount === finA.rows.length && concatA.length <= finA.rows.length,
+    'midRows=' + concatA.length + ' distinct=' + new Set(concatA).size + ' final=' + finA.rows.length + ' rc=' + finA.meta.rowCount);
+
+  // ── B. 分类过滤口径：中间包推的必须是已按当前分类过滤后的行 ──
+  const stB = mkMsTransport({ pages: 3, perPage: 3, total: 3500, catOf: (page, i) => (i === 0 ? '开发工具' : '办公效率') });
+  const storeB = makeHarvestStore();
+  const firstB = await storeB.start({ query: 'msB', source: 'modelscope', sort: 'downloadCount', category: '开发工具', page: 1, pageSize: 24, handlers: msHandlers(stB), cache: null });
+  const runB = await drain(storeB, firstB, 80);
+  const midSlugsB = midPkgs(runB.pkgs).flatMap((p) => p.rows.map((r) => r.slug));
+  check('B1 中间包只含当前分类的行（面板不许闪现别类条目）', midSlugsB.length >= 2 && midSlugsB.every((s) => /-i0$/.test(s)), JSON.stringify(midSlugsB));
+  check('B2 收口行同样只含该分类', Boolean(runB.fin) && runB.fin.rows.length > 0 && runB.fin.rows.every((r) => /-i0$/.test(r.slug)), JSON.stringify(runB.fin && runB.fin.rows.map((r) => r.slug)));
+
+  // ── C. 假 handler 直接验证注入与会话侧语义（去重/唤醒/installRef/钩子归属） ──
+  let partialSeen = null;
+  const storeC = makeHarvestStore();
+  const firstC = await storeC.start({ query: 'msC', source: 'modelscope', page: 1, pageSize: 24, cache: null, handlers: {
+    modelscope: async (opts) => {
+      partialSeen = { bypass: opts.harvestBypass, cb: typeof opts.msOnPartial };
+      if (typeof opts.msOnPartial === 'function') {
+        opts.msOnPartial([{ slug: 'pX', source: 'modelscope', installs: 1 }, { slug: 'pX', source: 'modelscope', installs: 1 }]);
+        opts.msOnPartial([{ slug: 'pY', source: 'modelscope', installs: 2 }]);
+      }
+      return { items: [{ slug: 'pY', source: 'modelscope', installs: 2 }], total: 1, totalPages: 1 };
+    },
+  } });
+  check('C1 harvest 通路的 handler 收到 harvestBypass=true 与 msOnPartial 函数', partialSeen && partialSeen.bypass === true && partialSeen.cb === 'function', JSON.stringify(partialSeen));
+  check('C2 msOnPartial 重复行被 rowKeyOf 去重（rowCount 只记一次）', firstC.meta.rowCount === 2 && firstC.rows.length === 2, 'rc=' + firstC.meta.rowCount + ' rows=' + firstC.rows.length);
+  check('C3 msOnPartial 推进会话后立刻唤醒等待者（首包不等源 settled）', firstC.rows.length > 0 && firstC.done === false, 'done=' + firstC.done);
+  check('C4 msOnPartial 推的行带 installRef（与会话口径一致）', Boolean(firstC.rows[0]) && 'installRef' in firstC.rows[0], JSON.stringify(firstC.rows[0]));
+  const optsSeenC = {};
+  const storeC5 = makeHarvestStore();
+  await storeC5.start({ query: 'msC5', source: '', page: 1, pageSize: 24, cache: null, handlers: {
+    modelscope: async (opts) => { optsSeenC.modelscope = { bypass: opts.harvestBypass, cb: typeof opts.msOnPartial }; return { items: [], total: 0, totalPages: 1 }; },
+    lobehub: async (opts) => { optsSeenC.lobehub = { bypass: opts.harvestBypass, cb: opts.msOnPartial }; return { items: [], total: 0, totalPages: 1 }; },
+  } });
+  check('C5 钩子只属于 modelscope 大源（其它 handler 收到 msOnPartial:null）', optsSeenC.modelscope.cb === 'function' && optsSeenC.lobehub.cb === null && optsSeenC.lobehub.bypass === true, JSON.stringify(optsSeenC));
+
+  // ── D. 一次性 skills.search 通路逐字段不变：不带新键、出参键序原样 ──
+  const stE = mkMsTransport({ pages: 12, perPage: 2, total: 12000 });
+  await searchSkills({ query: 'msE', source: 'modelscope', sort: 'downloadCount', page: 1, pageSize: 24, handlers: msHandlers(stE), cache: null });
+  const optsE = stE.opts[0] || {};
+  check('D1 一次性通路不传 harvestBypass/msOnPartial（零开销、出参字段不变）', !('harvestBypass' in optsE) && !('msOnPartial' in optsE), JSON.stringify(Object.keys(optsE)));
+  const oneD2 = await searchSkills({ query: 'msD2', source: 'modelscope', page: 1, pageSize: 24, handlers: { modelscope: async () => ({ items: [{ slug: 'x1', source: 'modelscope', installs: 5 }], total: 1, totalPages: 1 }) }, cache: null });
+  const keysD2 = Object.keys(oneD2);
+  check('D2 一次性结果出参字段集合逐字不变（skills.search 契约未被扩展）', JSON.stringify(keysD2) === JSON.stringify(['items', 'categoryNote', 'serverFacet', 'filteredOut', 'page', 'pageSize', 'pages', 'totalPages', 'total', 'hasMore', 'degraded', 'hints', 'sourceErrors']), JSON.stringify(keysD2));
+
+  // ── E. harvest 无 45s 截断 / 一次性仍截断：只推进 Date.now 的偏移，不真等 45 秒 ──
+  const realNowE = Date.now;
+  let offE = 0;
+  globalThis.Date.now = () => realNowE() + offE;
+  try {
+    // 一次性：每页 +20000ms ⇒ 第 4 页前已越过 45s 预算（MS_FETCH_BUDGET_MS=45000），必须在第 3 页后停。
+    const stF = mkMsTransport({ pages: 12, perPage: 2, total: 12000, delay: 5, onCall: () => { offE += 20000; } });
+    const oneF = await searchSkills({ query: 'msF', source: 'modelscope', sort: 'downloadCount', page: 1, pageSize: 24, handlers: msHandlers(stF), cache: null });
+    check('E1 非 harvest 通路仍在 45s 截断（保留旧行为）', stF.calls.length === 3 && oneF.items.length === 6, 'calls=' + stF.calls.join(',') + ' items=' + oneF.items.length);
+    check('E2 截断态 hint 仍如实说明用完 45s 预算', JSON.stringify(oneF.hints).includes('用完 45s 时间预算'), JSON.stringify(oneF.hints));
+    // harvest：同一偏移口径下必须取到 pagesNeeded=12 的全部页（直到上界为止）。
+    offE = 0;
+    const stG = mkMsTransport({ pages: 12, perPage: 2, total: 12000, onCall: () => { offE += 20000; } });
+    const storeG = makeHarvestStore();
+    const firstG = await storeG.start({ query: 'msG', source: 'modelscope', sort: 'downloadCount', page: 1, pageSize: 24, handlers: msHandlers(stG), cache: null });
+    const runG = await drain(storeG, firstG, 200);
+    const pkgsG = runG.pkgs; const finG = runG.fin;
+    check('E3 harvest 通路无 45s 截断（模拟耗时越过 240s 仍把可达 12 页取到尽头）', stG.calls.length === 12 && finG && finG.rows.length === 24, 'calls=' + stG.calls.join(',') + ' final=' + (finG && finG.rows.length));
+    check('E4 「没有中断」的 harvest 收口不得声称用完 45s 预算', JSON.stringify(finG && finG.meta.hints).includes('45s') === false, JSON.stringify(finG && finG.meta.hints));
+    check('E5 harvest 中间包按页连续增长（每页都推，不憋）', midPkgs(pkgsG).length >= 11, 'mids=' + midPkgs(pkgsG).length + ' rc=' + midPkgs(pkgsG).map((p) => p.meta.rowCount).join(','));
+  } finally {
+    globalThis.Date.now = realNowE;
+  }
+
+  // ── F. 豁免边界锁：只豁免 45s，30s 单页超时与 30 页硬上界仍生效 ──
+  const srcF = fs.readFileSync(path.join(W, 'src/extra-sources.js'), 'utf8');
+  const segF = srcF.split('function searchModelScope')[1] || '';
+  check('F1 预算旁路只包一处（!harvestBypass && 紧贴 MS_FETCH_BUDGET_MS 判据）', (segF.match(/!harvestBypass && next > cachedPages \+ 1 && rows\.length && Date\.now\(\) - startedAt > MS_FETCH_BUDGET_MS/g) || []).length === 1, String((segF.match(/!harvestBypass/g) || []).length));
+  check('F2 逐页取数仍带 30s 单页超时兜底（fetchOne 传 MS_PAGE_TIMEOUT_MS）', /fetchOne\(next, MS_PAGE, MS_PAGE_TIMEOUT_MS\)/.test(segF), 'no call site');
+  check('F3 30 页上界未被整段停用（msPagesNeeded 仍夹 MS_MAX_PAGES）', /Math\.min\(MS_MAX_PAGES,/.test(segF) && srcF.includes('const MS_MAX_PAGES = 30;'), '');
+  const stH = mkMsTransport({ pages: 40, perPage: 1, total: 120000, delay: 0 });
+  await es10.searchModelScope({ query: 'msH', page: 1, pageSize: 24, sort: 'downloadCount', transport: stH.tr });
+  check('F4 上游谎报大 total 时仍停在 30 页硬上界（MS_MAX_PAGES 生效）', stH.calls.length === 30 && Math.max.apply(null, stH.calls) === 30, 'calls=' + stH.calls.length + ' max=' + Math.max.apply(null, stH.calls));
+
+  // ── G. 单份口径源码锁（防第二份谓词/归一漂移） ──
+  const srcS = fs.readFileSync(path.join(W, 'src/sources.js'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+  check('G1 msRowInCategory 全仓只有一份定义', (srcF.match(/const msRowInCategory = /g) || []).length === 1, String((srcF.match(/const msRowInCategory = /g) || []).length));
+  check('G2 msMapItems 全仓只有一份定义', (srcF.match(/function msMapItems/g) || []).length === 1, String((srcF.match(/function msMapItems/g) || []).length));
+  check('G3 分类过滤与逐页推共用同一谓词（categoryRows/msPagePasses 都走 msRowInCategory）', /categoryRows = usableRows\.filter\(msRowInCategory\)/.test(srcF) && /usable\.filter\(msRowInCategory\)/.test(srcF), '');
+  check('G4 归一只有一处口径且调用点传数组（msMapItems(pageRows) 而非 .map(msMapItems)）', (srcF.match(/msMapItems\(pageRows\)/g) || []).length === 1 && !/\.map\(msMapItems\)/.test(srcF), 'arr=' + (srcF.match(/msMapItems\(pageRows\)/g) || []).length + ' callback=' + /\.map\(msMapItems\)/.test(srcF));
+  check('G5 收口唯一口径未被复制：sources.js 里 await foldFanResults 仍为 2', (srcS.match(/await foldFanResults\(/g) || []).length === 2, '');
+  check('G6 harvest 会话行入口只有一份 pushRow（onSettled 与 msOnPartial 共用）', (srcS.match(/const pushRow = /g) || []).length === 1, '');
+}
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

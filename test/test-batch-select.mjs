@@ -8,6 +8,7 @@
 // 循环把失败吞成成功文案 —— summarizeBatch 用真实函数求值验证，不是正则锁。
 import fs from 'node:fs';
 import path from 'node:path';
+import { countHits } from './anchor-lib.mjs';
 
 const W = path.resolve(import.meta.dirname, '..');
 const read = (f) => fs.readFileSync(path.join(W, f), 'utf8');
@@ -71,9 +72,21 @@ console.log('Test 2: 选择态与入口');
   check('selected 用 Set', /const \[selected, setSelected\] = useState\(\(\) => new Set\(\)\)/.test(c));
   check('batchConfirm state', /const \[batchConfirm, setBatchConfirm\] = useState\(false\)/.test(c));
   check('工具行有选择入口', /'退出选择' : '选择'/.test(c));
-  check('批量模式下卡片带 checkbox', /batchMode \? h\('input', \{[\s\S]{0,200}type: 'checkbox'/.test(c));
-  check('checkbox 有 aria-label', /aria-label': .选择 \$\{item\.slug\}/.test(c));
-  check('checkbox 阻止冒泡（不触发卡片展开）', /onClick: \(e\) => e\.stopPropagation\(\),[\s\S]{0,60}onChange: \(\) => setSelected/.test(c));
+  // 语义锁：切出 checkbox 的元素属性块（batchMode ? h('input', { → 该调用的 }) : null,），
+  // 在切片内断言属性与顺序。旧的 {0,200}/{0,60} 字符窗只锁「附近有个 type: 'checkbox'」：
+  // 加一行注释就能撑窗假红，跨到无关代码也照样绿。
+  const sliceOf = (s, a, b) => { const i = s.indexOf(a), j = s.indexOf(b); return i >= 0 && j > i ? s.slice(i, j) : ''; };
+  const INPUT_ANCHOR = "batchMode ? h('input', {";
+  const INPUT_END = '}) : null,';
+  const checkboxProps = sliceOf(c, INPUT_ANCHOR, INPUT_END);
+  check('checkbox 属性块可切片（语义锁前置）', countHits(c, INPUT_ANCHOR) === 1 && countHits(c, INPUT_END) === 1 && checkboxProps.length > 100, 'len=' + checkboxProps.length);
+  check('批量模式下卡片带 checkbox', countHits(checkboxProps, "type: 'checkbox'") === 1, 'checkbox=' + countHits(checkboxProps, "type: 'checkbox'"));
+  const BT = String.fromCharCode(96);
+  const ARIA_NEEDLE = "'aria-label': " + BT + '选择 ${item.slug}' + BT;
+  check('checkbox 有 aria-label', countHits(checkboxProps, ARIA_NEEDLE) === 1, 'aria=' + countHits(checkboxProps, ARIA_NEEDLE));
+  const stopAt = checkboxProps.indexOf('onClick: (e) => e.stopPropagation(),');
+  const changeAt = checkboxProps.indexOf('onChange: () => setSelected');
+  check('checkbox 阻止冒泡（不触发卡片展开）', countHits(checkboxProps, 'onClick: (e) => e.stopPropagation(),') === 1 && stopAt >= 0 && changeAt >= 0 && stopAt < changeAt, 'stop=' + stopAt + ' change=' + changeAt);
 }
 
 console.log('');
@@ -117,7 +130,15 @@ console.log('Test 6: 复用现有 op，零新增');
   check('未新增 skills.batch* op', !/case .skills\.batch/.test(ix));
   check('批量启停走 skills.toggle', /call\('skills\.toggle', \{ slug: item\.slug, enabled: verb === 'enable' \}\)/.test(c));
   check('批量卸载走 skills.uninstall 且带 confirm', /call\('skills\.uninstall', \{ slug: item\.slug, confirm: true \}\)/.test(c));
-  check('动作后刷新列表', /summarizeBatch\(label, results\);[\s\S]{0,120}await loadInstalled\(\);/.test(c));
+  // 语义锁：用本套件已有的 extractFn 按花括号深度切出 runBatch 完整函数体，
+  // 在函数体内断言「汇总之后刷新列表」的顺序（旧 {0,120} 字符窗撑不住插入的注释，
+  // 而且它并不知道自己有没有跨进别的按钮体）。
+  const RUN_BATCH_HEADER = 'const runBatch = async (label, verb, items) => {';
+  const runBatchSrc = extractFn(c, RUN_BATCH_HEADER) || '';
+  check('runBatch 函数体可切片（语义锁前置）', countHits(c, RUN_BATCH_HEADER) === 1 && runBatchSrc.length > 200, runBatchSrc ? 'len=' + runBatchSrc.length : 'extractFn 返回 null');
+  const sumAt = runBatchSrc.search(/summarizeBatch\(label, results\);/);
+  const refreshAt = runBatchSrc.search(/await loadInstalled\(\);/);
+  check('动作后刷新列表', sumAt >= 0 && refreshAt > sumAt && countHits(runBatchSrc, 'await loadInstalled();') === 1, 'summary=' + sumAt + ' refresh=' + refreshAt);
   check('逐项失败被收集不抛出', /results\.push\(\{ ok: false, slug: item\.slug, error: String\(e\.message \|\| e\) \}\)/.test(c));
 }
 

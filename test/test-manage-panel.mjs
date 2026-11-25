@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { safeTempDir } from '../src/home.js';
 import { execSync } from 'node:child_process';
+import { countHits } from './anchor-lib.mjs';
 
 const W = path.resolve(import.meta.dirname, '..');
 const c = fs.readFileSync(path.join(W, 'client.js'), 'utf8');
@@ -31,7 +32,19 @@ console.log('Test 2: 双子页签状态机 + 持久化（参照模式）');
 {
   check('manageTab state 存在', /const \[manageTab, setManageTab\] = useState\(/.test(c));
   check('localStorage 键 dsh-market:manage-tab', c.includes("dsh-market:manage-tab"));
-  check('localStorage 读写包 try/catch', /try \{[^\n]*localStorage\.getItem\(MANAGE_TAB_KEY\)[\s\S]{0,120}\} catch/.test(c) && /try \{[^\n]*localStorage\.setItem\(MANAGE_TAB_KEY/.test(c));
+  // 语义锁：切出 readManageTab / switchManageTab 两个函数体（三个唯一锚夹出的两段区间），
+  // try/catch 必须包在各自函数体里。旧判据的 [^\r\n]*…{0,120} 窗只看「后面不远处有个 catch」。
+  const sliceOf = (s, a, b) => { const i = s.indexOf(a), j = s.indexOf(b); return i >= 0 && j > i ? s.slice(i, j) : ''; };
+  const READ_ANCHOR = 'const readManageTab = () => {';
+  const WRITE_ANCHOR = 'const switchManageTab = (next) => {';
+  const QUERY_ANCHOR = "const [query, setQuery] = useState('');";
+  const readTab = sliceOf(c, READ_ANCHOR, WRITE_ANCHOR);
+  const writeTab = sliceOf(c, WRITE_ANCHOR, QUERY_ANCHOR);
+  check('readManageTab/switchManageTab 可切片（语义锁前置）', countHits(c, READ_ANCHOR) === 1 && countHits(c, WRITE_ANCHOR) === 1 && countHits(c, QUERY_ANCHOR) === 1 && readTab.length > 40 && writeTab.length > 40, readTab.length + '/' + writeTab.length);
+  check('localStorage 读写包 try/catch',
+      countHits(readTab, 'localStorage.getItem(MANAGE_TAB_KEY)') === 1 && readTab.includes('try { return localStorage.getItem(MANAGE_TAB_KEY)') && readTab.indexOf("} catch { return 'skill'; }") > readTab.indexOf('try { return') &&
+      countHits(writeTab, 'localStorage.setItem(MANAGE_TAB_KEY, next);') === 1 && writeTab.includes('try { localStorage.setItem(MANAGE_TAB_KEY, next); } catch {'),
+      'read=' + readTab.length + ' write=' + writeTab.length);
   check('容器 data-manage-tab 锚点', c.includes("'data-manage-tab'"));
   check('页签行 role=tablist', c.includes("role: 'tablist'"));
   check('页签按钮 aria-selected', c.includes('aria-selected'));
@@ -73,12 +86,26 @@ console.log('Test 4: 结构归属——回收站/上传区在技能子页签，M
 console.log('');
 console.log('Test 5: 无谓市场查询回归锁（进 manage/settings 不再 searchMcps）');
 {
-  const eff = c.indexOf('}, [tab, loadSettings, loadInstalled');
+  const DEPS_ANCHOR = '}, [tab, loadSettings, loadInstalled';
+  const eff = c.indexOf(DEPS_ANCHOR);
   check('tab effect 存在', eff >= 0);
   if (eff >= 0) {
-    const block = c.slice(Math.max(0, eff - 900), eff);
-    check('searchMcps 仅在 tab===mcp 分支', !/else\s+searchMcps/.test(block));
-    check('存在 tab === \'mcp\' 守卫的 searchMcps', /tab === 'mcp'[\s\S]{0,120}searchMcps/.test(block));
+    // 语义锁：向前回溯到包裹这个依赖数组的 useEffect 起点，切出真正的 effect 作用域。
+    // 旧的 c.slice(Math.max(0, eff - 900), eff) 是位置窗：effect 上方多写几行注释就会把上一个
+    // effect 的尾部卷进来，判据实际在判谁已经不确定。注释行另外滤掉——说明注释里就写着
+    // searchMcps（client.js:1422），不滤会把它当成第二个调用点。
+    const start = c.lastIndexOf('useEffect(() => {', eff);
+    const effectScope = start >= 0 && start < eff ? c.slice(start, eff) : '';
+    const codeOnly = effectScope.split(/\r?\n/).filter((l) => !l.trim().startsWith('//')).join('\n');
+    const mcpsHits = (codeOnly.match(/searchMcps/g) || []).length;
+    check('tab effect 作用域可切片（语义锁前置）', countHits(c, DEPS_ANCHOR) === 1 && start >= 0 && effectScope.length > 200, 'len=' + effectScope.length);
+    check('searchMcps 仅在 tab===mcp 分支', mcpsHits === 1 && !/else\s+searchMcps/.test(codeOnly), 'hits=' + mcpsHits);
+    const guardAt = codeOnly.indexOf("tab === 'mcp'");
+    check('存在 tab === \'mcp\' 守卫的 searchMcps', guardAt >= 0 && guardAt < codeOnly.indexOf('searchMcps'), codeOnly.slice(0, 120));
+  } else {
+    check('tab effect 作用域可切片（语义锁前置）', false, 'effect 依赖锚失效');
+    check('searchMcps 仅在 tab===mcp 分支', false, 'effect 依赖锚失效');
+    check('存在 tab === \'mcp\' 守卫的 searchMcps', false, 'effect 依赖锚失效');
   }
 }
 
@@ -104,10 +131,26 @@ console.log('Test 6: 语法与零新增 op');
 console.log('');
 console.log('Test 7: 首次进入技能子页签自动拉取回收站（旧行为要手点「读取回收站」）');
 {
-  check('effect 条件含 manageTab skill + trashList null', /manageTab === 'skill'[\s\S]{0,80}trashList === null/.test(c));
-  check('effect 调 loadTrash', /trashList === null[\s\S]{0,140}loadTrash\(\)/.test(c));
+  // 语义锁：切出回收站 effect 的完整作用域（useEffect 起点 → 依赖数组锚），
+  // 条件与调用点都在切片里数，不再靠 {0,80}/{0,140} 字符窗猜「后面应该有」。
+  const TRASH_COND = "if (tab === 'manage' && manageTab === 'skill' && trashList === null && !trashBusy) {";
+  const TRASH_DEPS = '}, [tab, manageTab, trashList, trashBusy, loadTrash]);';
+  const condAt = c.indexOf(TRASH_COND);
+  const depsAt = c.indexOf(TRASH_DEPS);
+  const trashStart = condAt < 0 ? -1 : c.lastIndexOf('useEffect(() => {', condAt);
+  const trashScope = trashStart >= 0 && depsAt > trashStart ? c.slice(trashStart, depsAt) : '';
+  const nullAt = c.indexOf('trashList === null');
+  const nullLine = (() => {
+    if (nullAt < 0) return '';
+    const s = c.lastIndexOf('\n', nullAt) + 1;
+    const e = c.indexOf('\n', nullAt);
+    return c.slice(s, e < 0 ? c.length : e);
+  })();
+  check('回收站 effect 可切片（语义锁前置）', countHits(c, TRASH_COND) === 1 && countHits(c, TRASH_DEPS) === 1 && countHits(c, 'trashList === null') === 1 && trashStart >= 0 && trashStart < condAt && condAt < depsAt && trashScope.length > 40, 'start=' + trashStart + ' len=' + trashScope.length);
+  check('effect 条件含 manageTab skill + trashList null', nullLine.includes("tab === 'manage'") && nullLine.includes("manageTab === 'skill'") && nullLine.includes('trashList === null'), nullLine.trim().slice(0, 90));
+  check('effect 调 loadTrash', countHits(trashScope, 'loadTrash()') === 1, 'calls=' + countHits(trashScope, 'loadTrash()'));
   // TDZ 回归锁：依赖数组在渲染时求值，effect 必须排在 const loadTrash 定义之后
-  check('effect 位于 loadTrash 定义之后（TDZ 回归锁）', c.indexOf('const loadTrash = async') < c.indexOf("if (tab === 'manage' && manageTab === 'skill' && trashList === null"));
+  check('effect 位于 loadTrash 定义之后（TDZ 回归锁）', countHits(c, 'const loadTrash = async') === 1 && condAt >= 0 && c.indexOf('const loadTrash = async') < condAt);
 }
 
 console.log('');

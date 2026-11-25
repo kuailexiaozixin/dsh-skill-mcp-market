@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.175
+
+- CI 墙钟兜底与死脚本清理（批1，commit 512890b）：.github/workflows/publish.yml 加 job 级 timeout-minutes: 25，删除 publish-0.5.19.ps1（手工 npm publish + 2FA 告警的死物，现行是推 v* tag 走 Trusted Publishing）；补判据 test/test-gate-contract.mjs Test 4 锁 publish.yml 必须含 timeout-minutes（54/0；删该行变异 ⇒ 53/1 转红，还原 ⇒ 54/0）。
+- ModelScope 大源逐页推送（批2）：src/extra-sources.js 新增 harvestBypass（:1350 形参、:1450 判据）豁免 MS_FETCH_BUDGET_MS = 45000 的「到点就停」，30 页 MS_MAX_PAGES（上游硬限，第 31 页起 HTTP 500）与 30s 单页超时 MS_PAGE_TIMEOUT_MS 照旧；msPushPartial（:1397-1402）在断点续暖（:1439）与每页取回后（:1465）当场过滤 + 归一推给会话，与最终 categoryRows 共用 msRowInCategory（:1392）/msRowUsable（:1391），全仓只有一份 msMapItems（:1531 定义、:1572 调用，.map(msMapItems) 残留 0）。src/sources.js 侧 pushRow（:1049）与 name === "modelscope"（:1089）把回调接进 harvest 会话；一次性 skills.search 不带这两个键，出参逐字段不变。
+- test/test-harvest.mjs 由 59 条增至 91 条（507 行纯 LF）：逐页增量单调、未过滤行不得出现、finalMeta 不得提前写。lead 亲验变异（每例转红后还原，还原 91/0）：删 !harvestBypass && ⇒ 87/4；把 name === "modelscope" 改名 ⇒ 84/7；注释掉 msPushPartial(nx.rows)（憋到收口）⇒ 87/4。test-modelscope-category-vocab 回归同步转绿 181/0/2skip。
+- 邻近字符窗源码锁 → 语义锁（批2，12 个套件）：mcp 家族 6 套（panel-p0 22/0、status-p1 26/0、tools-popup 28/0、full-edit 47/0、raw-edit 53/0、command-guard 42/0）+ client 家族 6 套（install-progress 17→19、batch-select 42→44、manage-panel 32→35、manage-optimizations 38→39、func-fixes 9→10、lobehub-category-vocab 123→126；六套合计 196+/43-）。断言行里的 {0,N} 窗实测残留 0（逐行核过，命中只剩解释性注释）；孩子自证 16 例变异全红，另附韧性对照：往被锁代码插 544 字符注释（>0.5.174 CI 假红的 346），新语义锁 8 个插点全绿、旧字符窗版 6 个插点当场假红。成因与 0.5.174 那条「注释把 confirm 锁挤出院外」的假红同型。
+- lockref-mcp run2 交回时 6 处 Test 块漏写闭括号（panel-p0「SyntaxError: Identifier 'seg' has already been declared」、tools-popup/status-p1「SyntaxError: Unexpected end of input」），由 lead 用锚点定向补齐（该批 run 2/3 已耗尽，lead 自修）。教训入册：括号深度探针会被 for (const …) { 与 check 行内大括号互相抵销 ⇒ 改「行首 {/} 平衡 + node --check 逐步收敛」。
+- lead 独立验收（不采信自述）：client.js / index.js 字节未动（git status 无该项，SHA 与 pristine 副本一致）；ubuntu 检出仿真（跟踪文本全转 LF 后另树跑——CI ubuntu 检出的就是 blob 本体）下 9 套重构套件全绿 ⇒ 新锁不依赖行尾；lead 亲跑变异 4 例转红后还原——去 readManageTab 的 try/catch ⇒ manage-panel 34/1、切源不清分类 ⇒ func-fixes 9/1、删 type: 'checkbox', ⇒ batch-select 43/1、删 chip 的 padding: '4px 10px' ⇒ lobehub 122/4（该字面量在 client.js 出现 2 处：subTab 与 S.chip，单点 replace 只命中 subTab 故首试假绿，两处全删才转红 ⇒ 切片确实锁进 S.chip 体）。孩子报告里 M14「装配键 lobehub:」子串假绿一处已自纠为整词键名集合 + 值断言。
+- README「渐进式加载（harvest）」(:275) 内补「ModelScope 大源逐页推」条目：写清 45s 截断只在 harvest 通路被 harvestBypass: true 豁免、一次性通路行为与出参不变；test-dead-exports 47/0、test-cleanup 14/0（两者读 README 作语料）同步复跑。
+- 发布前门读数：npm test ⇒ 72/73 green，唯一红 test-profile-sync（Test 3「no stale copies」+ Test 4 版本镜像：工作树含未提交的 harvest/extra-sources 改动而 profile 仍是已装 0.5.174）⇒ 与 0.5.174 发布前同形，装机 0.5.175 后转绿；CI 侧无 profile 目录故该套件 skip，不阻断。
+- 本批遗留（0.5.176 候选）：index.js:1415-1419 skills.upload 逐条重扫技能目录的 N+1；harvest 每包同步调 listInstalledSkills（本机 3630 个 SKILL.md ⇒ 冷 986ms / 热 49ms）可做首包预热；HTTP_BLOCKED_OPS 仍空集（index.js:1132，harvest 两 op 未在 HTTP 面屏蔽）；src/shipped.js、src/auto-repair.js、src/session-repair.js、src/toolcall-guard.js、src/zip.js 等薄判据模块补测。
 ## 0.5.174
 
 - 渐进式加载（harvest）落地：服务端新增 `harvest.start` / `harvest.poll` 两个 op（`index.js:1867`、`:1886`），会话表 `makeHarvestStore({ ttlMs: 180000, maxSessions: 8 })`（`index.js:1139`），面板 250ms 轮询增量 upsert，收口包整表替换；未知或过期 id 回 `ok:false`，面板自动回落 `skills.search`（旧服务端兼容）。

@@ -6,11 +6,34 @@
 // 参照 Fishquito7/dsh-skill-mcp-panel：probe 语义是「独立实例测试，pending 不是失败」（0.5.103 起我们同语义）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { blockEnd } from './anchor-lib.mjs';
 
 const W = path.resolve(import.meta.dirname, '..');
 const read = (f) => fs.readFileSync(path.join(W, f), 'utf8');
 const c = read('client.js');
 const ix = read('index.js');
+
+// ---- 语义作用域切片：先切作用域再断言（替代旧 {0,N} 字符窗，插入无关代码不再假红）----
+const NL = String.fromCharCode(10);
+const norm = (s) => s.replace(/\r\n/g, NL);
+const scopeOf = (src, startNeedle, label) => {
+  const ls = norm(src).split(NL);
+  const a = ls.findIndex((l) => l.includes(startNeedle));
+  if (a < 0) return '';
+  let b;
+  try { b = blockEnd(norm(src), a, label); } catch { return ''; }
+  return ls.slice(a, b + 1).join(NL);
+};
+const lineRange = (lines, startNeedle, endNeedle) => {
+  const s = lines.findIndex((l) => l.includes(startNeedle));
+  if (s < 0) return '';
+  const e = lines.findIndex((l, i) => i > s && l.includes(endNeedle));
+  return e > s ? lines.slice(s, e + 1).join(NL) : '';
+};
+const probeCase = scopeOf(ix, 'case "mcp.probe"', 'caseProbe');
+const CL = norm(c).split(NL);
+// 卡片作用域 = installedMcps map 行 → 「搜索栏提到 body 之外」注释行（行锚切片，替代 +3200/+4200 定宽窗）
+const cardSeg = lineRange(CL, 'const installedMcps', '搜索栏提到 body 之外');
 
 let passed = 0, failed = 0;
 const check = (n, cond, d = '') => { if (cond) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + String(d).slice(0, 130) + ']' : '')); } };
@@ -19,12 +42,16 @@ console.log('');
 console.log('Test 1: 已装 MCP 卡片带「编辑」与「测试连接」按钮');
 {
   const s = c.indexOf('const installedMcps');
-  const seg = c.slice(s, s + 3200);
-  check('installedMcps 存在', s > 0);
-  check('编辑按钮', /编辑/.test(seg));
-  check('测试连接按钮', /测试连接/.test(seg));
-  check('编辑打开 openMcpDetail（同一抽屉复用，不另造表单）', /openMcpDetail\(/.test(seg));
-  check('测试走新 probe op 而非安装通道', /mcp\.probe/.test(seg));
+  const seg = cardSeg;
+  check('installedMcps 存在', seg !== '');
+  // 变异拒绝：卡片删掉「编辑」按钮 ⇒ 红（旧 +3200 定宽窗废弃）。
+  check('编辑按钮', seg.includes("'编辑'"));
+  // 变异拒绝：卡片删掉「测试连接」按钮 ⇒ 红。
+  check('测试连接按钮', seg.includes("'测试连接'"));
+  // 变异拒绝：编辑按钮不再调 openMcpDetail(item.serverName) ⇒ 红。
+  check('编辑打开 openMcpDetail（同一抽屉复用，不另造表单）', seg.includes('openMcpDetail(item.serverName)'));
+  // 变异拒绝：测试连接改走安装通道 ⇒ 红。
+  check('测试走新 probe op 而非安装通道', seg.includes("call('mcp.probe'"));
 }
 
 console.log('');
@@ -32,6 +59,8 @@ console.log('Test 2: 服务端新增 mcp.probe op（封装已有内部方法）'
 {
   check('index.js 有 case "mcp.probe"', ix.includes('case "mcp.probe"'));
   check('调用 mcp.probe 内部方法', /case "mcp\.probe"[\s\S]{0,300}\.probe\(/.test(ix));
+  // 变异拒绝：probe case 体不再转调内部 mcp.probe ⇒ 红（旧 300 字符窗废弃）。
+  check('调用 mcp.probe 内部方法', probeCase.includes('mcp.probe(body.serverName'));
 }
 
 console.log('');
@@ -53,18 +82,22 @@ console.log('');
 console.log('Test 4: probe 按钮防重复 + 结果文案区分 pending/失败');
 {
   const s = c.indexOf('const installedMcps');
-  const seg = c.slice(s, s + 4200);
-  check('按钮 disabled 绑定 busy:probe', /busy === \`probe:/.test(seg));
-  check('pending 文案（服务器还在启动）', /还在启动|启动中/.test(seg));
-  check('失败文案', /未连上|失败/.test(seg));
+  const seg = cardSeg;
+  // 变异拒绝：disabled 不再绑定 busy === `probe:` ⇒ 红（旧 +4200 定宽窗废弃）。
+  check('按钮 disabled 绑定 busy:probe', seg.includes('busy === `probe:'));
+  // 变异拒绝：pending 文案被改 ⇒ 红（旧二选一收紧为实锚「还在启动」）。
+  check('pending 文案（服务器还在启动）', seg.includes('还在启动'));
+  // 变异拒绝：失败态不再显示「未连上」或丢掉 r.error 原因 ⇒ 红（旧二选一收紧为两者都在）。
+  check('失败文案', seg.includes('未连上') && seg.includes('r.error'));
 }
 
 console.log('');
 console.log('Test 5: 编辑入口行为正确（打开抽屉不重新安装）');
 {
-  const seg = c.slice(c.indexOf('const installedMcps'), c.indexOf('const installedMcps') + 3200);
-  check('编辑 onClick 调 openMcpDetail(item.serverName)', /openMcpDetail\(item\.serverName\)/.test(seg));
-  check('编辑不调用 mcp.install', !/mcp\.install/.test(seg));
+  const seg = cardSeg;
+  check('编辑 onClick 调 openMcpDetail(item.serverName)', seg.includes('openMcpDetail(item.serverName)'));
+  // 变异拒绝：卡片区域出现 mcp.install ⇒ 红（编辑绝不重装）；行锚失效→空串也红，不再 vacuous 通过。
+  check('编辑不调用 mcp.install', seg !== '' && !seg.includes('mcp.install'));
 }
 
 console.log('');

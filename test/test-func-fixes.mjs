@@ -9,6 +9,7 @@ import path from 'node:path';
 import { safeTempDir } from '../src/home.js';
 import { listInstalledSkills } from '../src/skills.js';
 import { searchSkills, makeCache } from '../src/sources.js';
+import { countHits } from './anchor-lib.mjs';
 
 let passed = 0, failed = 0, skipped = 0;
 const check = (n, c, d = '') => { if (c) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  ' + d : '')); } };
@@ -72,8 +73,16 @@ console.log('');
 console.log('Test 4: 客户端切源时重置分类');
 {
   const c = fs.readFileSync(path.join(W, 'client.js'), 'utf8');
-  const seg = c.slice(c.indexOf('setSource(key)') - 200, c.indexOf('setSource(key)') + 200);
-  check('switching source resets category to all', /setSource\(key\)[\s\S]{0,160}setCategory\(['"]all['"]\)/.test(seg), seg.slice(0, 120));
+  // 语义锁：切出「切源那一段」（setSource(key); → 紧随的 searchSkills 下发）。
+  // 旧的 indexOf 位置 ±200 窗是几何窗口不是作用域：切源逻辑加长就断，
+  // 而 setCategory('all') 只要落在窗口里就算绿，落在哪个回调里它不管。
+  const SET_SOURCE = 'setSource(key);';
+  const SEARCH_CALL = 'searchSkills(query, { source: key';
+  const ssAt = c.indexOf(SET_SOURCE);
+  const seAt = c.indexOf(SEARCH_CALL);
+  const seg = ssAt >= 0 && seAt > ssAt ? c.slice(ssAt, seAt) : '';
+  check('切源段可切片（语义锁前置）', countHits(c, SET_SOURCE) === 1 && countHits(c, SEARCH_CALL) === 1 && seg.length > 20, 'len=' + seg.length);
+  check('switching source resets category to all', countHits(seg, "setCategory('all')") + countHits(seg, 'setCategory("all")') === 1 && seg.search(/setCategory\((['"])all\1\)/) > 0, seg.slice(0, 120));
 }
 
 console.log('');

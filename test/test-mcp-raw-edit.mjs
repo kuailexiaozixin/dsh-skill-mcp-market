@@ -16,12 +16,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { safeTempDir } from '../src/home.js';
+import { blockEnd } from './anchor-lib.mjs';
 
 const W = path.resolve(import.meta.dirname, '..');
 const read = (f) => fs.readFileSync(path.join(W, f), 'utf8');
 const mj = read('src/mcp.js');
 const ix = read('index.js');
 const c = read('client.js');
+// ---- 语义作用域切片：先切作用域再断言（替代旧 {0,N} 字符窗，插入无关代码不再假红）----
+const NL = String.fromCharCode(10);
+const norm = (s) => s.replace(/\r\n/g, NL);
+const scopeOf = (src, startNeedle, label) => {
+  const ls = norm(src).split(NL);
+  const a = ls.findIndex((l) => l.includes(startNeedle));
+  if (a < 0) return '';
+  let b;
+  try { b = blockEnd(norm(src), a, label); } catch { return ''; }
+  return ls.slice(a, b + 1).join(NL);
+};
+
 
 let passed = 0, failed = 0;
 const check = (n, cond, d) => { if (cond) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + String(d).slice(0, 140) + ']' : '')); } };
@@ -124,7 +137,10 @@ console.log('Test 3: rawSet 行为级验证（真落盘真拒绝）');
       // mountCount 恒为 0 —— 拿它当判据会在 CI 上必红。改为两锁：结构锁（rawSet 体内
       // 确实尝试 unmount+mount）+ 行为锁（失败降级为 connectError，且不回滚文件）。
       const rawSetBody = mj.slice(mj.indexOf('async function rawSet('), mj.indexOf('async function status('));
-      check('rawSet 尝试重连（结构锁）', /unmount\(name\);[\s\S]{0,80}await mount\(saved\);/.test(rawSetBody));
+      // 变异拒绝：rawSet 体内删掉 unmount(name) 或 await mount(saved)（重连脱钩）⇒ 红；顺序颠倒也红。
+      const unAt = rawSetBody.indexOf('unmount(name)');
+      const moAt = rawSetBody.indexOf('await mount(saved)');
+      check('rawSet 尝试重连（结构锁）', unAt >= 0 && moAt > unAt);
       check('保存与连接分开报告', typeof r1.connected === 'boolean' && typeof r1.connectError === 'string', JSON.stringify(r1));
       check('保存与连接分开报告', typeof r1.connected === 'boolean' && typeof r1.connectError === 'string');
       mgr.dispose();
@@ -158,15 +174,33 @@ console.log('Test 5: 面板 UI（默认不加载 + 明文警告）');
   check('明文警告文案', /明文/.test(c) && /环境变量/.test(c));
   check('hasSecrets 驱动警告', /mcpRaw\.hasSecrets/.test(c));
   check('保存走 mcp.raw.set', c.includes("call('mcp.raw.set'"));
-  check('保存带 confirm', /'mcp\.raw\.set'[\s\S]{0,220}confirm: true/.test(c));
+  // 旧 {0,220} 窗随调用参数增长会漂出；改为 saveMcpRaw 函数体切片 + 顺序断言。
+  // 变异拒绝：saveMcpRaw 把 confirm:true 从 mcp.raw.set 调用里拿掉 ⇒ 红（破坏性 op 闸门脱钩）。
+  const saveRawFn = scopeOf(c, 'const saveMcpRaw = async () => {', 'saveMcpRaw');
+  check('保存带 confirm', saveRawFn.includes("call('mcp.raw.set'") && saveRawFn.indexOf('confirm: true') > saveRawFn.indexOf("call('mcp.raw.set'"));
   check('command/args 只读提示已撤（完全可编辑）', !/面板不开放改写/.test(c));
   check('textarea 编辑原文', /value: mcpRaw\.text/.test(c));
   // 用户实测（0.5.148）：「定义原文的文本框也太小了，很难用啊」——原文是整份 JSON，
   // 180px 只够七八行。判据锁高度量级与可拉伸，不锁具体像素。
-  const ta = c.indexOf('value: mcpRaw.text');
-  const taStyle = ta > 0 ? c.slice(ta - 320, ta + 60) : '';
-  check('原文 textarea 高度 ≥ 400（不再是 180）', /height: (\d{3,})/.test(taStyle) && Number(RegExp.$1) >= 400, '样式切片=' + taStyle.replace(/\s+/g, ' ').slice(-90));
-  check('原文 textarea 可手动拉伸', /resize: 'vertical'/.test(taStyle), '');
+  // 旧 ta-320/+60 是定宽字符窗：样式块加注释/字段就漂出 ⇒ 假红。改为该 textarea 花括号块整块切片
+  // （从 value 行回溯到 h('textarea', { 起点，blockEnd 配对收尾），切片自校验含 value 锚，锚失效即空串响红。
+  const rawTA = (() => {
+    const ls = norm(c).split(NL);
+    const v = ls.findIndex((l) => l.includes('value: mcpRaw.text'));
+    if (v < 0) return '';
+    let a = v;
+    while (a > 0 && !ls[a].trim().startsWith("h('textarea', {")) a--;
+    if (a <= 0) return '';
+    let b;
+    try { b = blockEnd(norm(c), a, 'rawTA'); } catch { return ''; }
+    const seg = ls.slice(a, b + 1).join(NL);
+    return seg.includes('value: mcpRaw.text') ? seg : '';
+  })();
+  // 变异拒绝：height 改回 180 量级或删掉 ⇒ 红（锁高度量级 ≥400，不锁具体像素）。
+  const hm = /height: (\d+)/.exec(rawTA);
+  check('原文 textarea 高度 ≥ 400（不再是 180）', hm !== null && Number(hm[1]) >= 400, '样式切片=' + rawTA.replace(/\s+/g, ' ').slice(-120));
+  // 变异拒绝：resize 改成 none/both 或删掉 ⇒ 红。
+  check('原文 textarea 可手动拉伸', rawTA.includes("resize: 'vertical'"), '');
 }
 
 console.log('');

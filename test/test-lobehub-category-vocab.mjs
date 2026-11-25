@@ -27,7 +27,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { safeTempDir } from '../src/home.js';
-import { once, lineOf } from './anchor-lib.mjs';
+import { once, lineOf, countHits, blockEnd } from './anchor-lib.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (f) => readFileSync(path.join(here, '..', f), 'utf8');
@@ -481,8 +481,26 @@ console.log('Test 7: 端到端——带分类的 lobehub 请求必须服务端�
     check('index.js 从 extra-sources 导入 lobehub 词表（read + 抓取两件）',
         /readLobeHubSkillCategoryVocabulary/.test(idx) && /lobeHubSkillCategoryVocabulary/.test(idx),
         (idx.match(/import[^\n]*extra-sources\.js/) || ['(无 import 行)'])[0].slice(0, 180));
+    // 语义锁：切出 index.js 的词表装配作用域（let categoryVocabulary = null; → trusttools 补装行），
+    // 再到装配对象字面量本身里面找 lobehub 键。旧的 {0,1200} 窗会被 sortCapabilities.mcp.lobehub
+    // （index.js:1237）满足——那是假绿：词表键跑到排序表里，判据照样绿。
+    const sliceOf = (s, a, b) => { const i = s.indexOf(a), j = s.indexOf(b); return i >= 0 && j > i ? s.slice(i, j) : ''; };
+    const VOC_HEAD = 'let categoryVocabulary = null;';
+    const VOC_TAIL = 'if (categoryVocabulary) categoryVocabulary.trusttools = ttVocab;';
+    const VOC_PAYLOAD = 'categoryVocabulary: categoryVocabulary || undefined,';
+    const vocScope = sliceOf(idx, VOC_HEAD, VOC_TAIL);
+    const vocAsm = sliceOf(vocScope, 'categoryVocabulary = {', '};');
+    check('词表装配作用域可切片（语义锁前置）',
+        countHits(idx, VOC_HEAD) === 1 && countHits(idx, VOC_TAIL) === 1 && countHits(idx, VOC_PAYLOAD) === 1 && vocScope.length > 200 && vocAsm.length > 40,
+        'scope=' + vocScope.length + ' asm=' + vocAsm.length);
+    // 键名必须整词匹配：把 lobehub 改名成 lhlobehub 时，子串式 needle 'lobehub:' 与无左界的
+    // /lobehub:/ 都照样命中，判据会假绿（变异自证 M14 就是这么暴露的）。这里取装配对象的
+    // 真实键名集合，再取 lobehub 键自己的值，两者都必须是语义结果而非字符窗。
+    const vocKeys = [...vocAsm.matchAll(/([A-Za-z_$][\w$]*)\s*:/g)].map((m) => m[1]);
+    const lhVal = (vocAsm.match(/(?:^|[{,\s])lobehub:\s*([^,}]+)/) || [])[1] || '';
     check('settings.get 按源下发 lobehub 词表（分组里必须有 lobehub 键）',
-        /categoryVocabulary[\s\S]{0,1200}lobehub:/.test(idx), 'no lobehub key near categoryVocabulary');
+        vocKeys.includes('lobehub') && lhVal.includes('lhVocab'),
+        'keys=' + vocKeys.join(',') + ' value=' + lhVal.trim());
     check('面板装配只读缓存、不等网络（read + void 补取）',
         /readLobeHubSkillCategoryVocabulary\(\{\s*cache:/.test(idx) && /void lobeHubSkillCategoryVocabulary\(/.test(idx), 'read/void 组合缺失');
     const esSrc = readLf('src/extra-sources.js');
@@ -522,11 +540,26 @@ check('窗外文案自证：正常形通过、旧「其他 · 窗外」形不通
 console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只留 10 个分类）');
 {
     const client = readLf('client.js');
-    const genericBody = (client.match(/const isGenericBucket = \(r\) => \{[\s\S]{0,600}?\n {2}\};/) || [''])[0];
+    // 语义锁：isGenericBucket 用 blockEnd 按花括号深度切函数体（旧的 {0,600}? 惰性窗会随
+    // 实现加长而截断），mergeCategoryVocab 用两个唯一函数名夹作用域——「桶沉到底」的
+    // 三件套必须落在同一个函数体里才算数，不再对着整个 client.js 数。
+    const sliceOf = (s, a, b) => { const i = s.indexOf(a), j = s.indexOf(b); return i >= 0 && j > i ? s.slice(i, j) : ''; };
+    const GB_ANCHOR = 'const isGenericBucket = (r) => {';
+    const gbStart = clientLines.findIndex((l) => l.includes(GB_ANCHOR));
+    const gbEnd = gbStart < 0 ? -1 : blockEnd(client, gbStart, 'isGenericBucket');
+    const genericBody = gbStart >= 0 && gbEnd > gbStart ? clientLines.slice(gbStart, gbEnd + 1).join(NL) : '';
+    const MG_ANCHOR = 'function mergeCategoryVocab(derived, vocab) {';
+    const MGE_ANCHOR = 'function categoryChipLabel(value, vocab) {';
+    const mergeScope = sliceOf(client, MG_ANCHOR, MGE_ANCHOR);
+    check('isGenericBucket/mergeCategoryVocab 可切片（语义锁前置）',
+        countHits(client, GB_ANCHOR) === 1 && countHits(client, MG_ANCHOR) === 1 && countHits(client, MGE_ANCHOR) === 1
+        && gbStart >= 0 && gbEnd > gbStart && genericBody.trimEnd().endsWith('};') && genericBody.length > 40 && mergeScope.length > 400,
+        'gb=' + genericBody.length + ' merge=' + mergeScope.length);
     check('client.js 的桶判定用同一套 token，且在 mergeCategoryVocab 里真把桶沉到底',
         BUCKET_TOKENS.every((t) => genericBody.indexOf(t) >= 0) &&
-        /const sorted = ranked\.concat\(sunk\);/.test(client) && /for \(const r of sorted\)/.test(client) &&
-        /const expandedChips = splitBuckets\(vocabChips\.filter\(realChip\)\);/.test(client), genericBody.slice(0, 120));
+        countHits(mergeScope, 'const ranked = [];') === 1 && countHits(mergeScope, 'const sunk = [];') === 1 &&
+        /const sorted = ranked\.concat\(sunk\);/.test(mergeScope) && /for \(const r of sorted\)/.test(mergeScope) &&
+        countHits(client, 'const expandedChips = splitBuckets(vocabChips.filter(realChip));') === 1, genericBody.slice(0, 120));
     const _dl = client.split(NL).find((l) => l.includes("new Set(skills.map(") && l.includes(".slice(")) || "";
     const derivedLine = (_dl === undefined ? '' : _dl).trim();
     check('派生行的 10 上限已放开（词表在手时是权威，缺词表时用户也不该只看到 10 个入口）',
@@ -825,14 +858,27 @@ const runRenderFor = (entries, fold) => {
     // 根因不是 chipRow 的 nowrap，而是 S.chip 自己没有拒绝压缩：flex 子项默认 flex-shrink:1，
     // 中文词的 min-content 只有一个字宽 ⇒ 空间不够就逐字折行。lobehub 的英文 slug 整词不可断，
     // 所以这条在 lobehub 上看不出来——判据必须真跑样式函数，光看 chipRow 是抓不到的。
-    const chipStyleSrc = (client.match(/chip: \(active\) => \(\{[\s\S]{0,600}?\n {6}\}\)/) || [''])[0];
-    check('S.chip 样式体可被真跑取到（不复制实现）', /padding: '4px 10px'/.test(chipStyleSrc), chipStyleSrc.slice(0, 90));
+    // 语义锁：chip 样式体用 blockEnd 按花括号深度切，不再用 {0,600}? 惰性窗
+    // （注释一插就截断，截断后的半截还会让 new Function 抛在夹具里）。
+    const CHIP_ANCHOR = 'chip: (active) => ({';
+    const chipStart = clientLines.findIndex((l) => l.includes(CHIP_ANCHOR));
+    const chipEnd = chipStart < 0 ? -1 : blockEnd(client, chipStart, 'S.chip');
+    const chipStyleSrc = chipStart >= 0 && chipEnd > chipStart ? clientLines.slice(chipStart, chipEnd + 1).join(NL) : '';
+    check('S.chip 样式体可被真跑取到（不复制实现）', countHits(client, CHIP_ANCHOR) === 1 && /\}\),?$/.test(chipStyleSrc.trimEnd()) && /padding: '4px 10px'/.test(chipStyleSrc), chipStyleSrc.slice(0, 90));
     const chipStyleFn = (() => {
-        try { return new Function('return (' + chipStyleSrc.replace('chip: ', '') + ');')(); }
+        // 切片尾部带对象字面量后的逗号，必须剥掉再求值；剥完仍是「(active) => ({...})」一个箭头函数。
+        try { return new Function('return (' + chipStyleSrc.replace('chip: ', '').replace(/,\s*$/, '') + ');')(); }
         catch (e) { return { err: String((e && e.message) || e) }; }
     })();
     check('chip 样式函数真跑出不抛（取到的是箭头函数本身，不是结果对象）',
         typeof chipStyleFn === 'function', JSON.stringify(chipStyleFn && chipStyleFn.err));
+    // 自由量纪律（本会话踩过 CAT_TAIL_LABEL / splitBuckets 漏绑直接 ReferenceError）：
+    // 重取切片后若样式体引用了新自由量，这里调用一次就会暴露，而不是留到后面的断言里炸。
+    const chipFreeVarProbe = (() => {
+        try { chipStyleFn(false); return ''; } catch (e) { return String((e && e.message) || e); }
+    })();
+    check('chip 夹具自由量集合不变（调用一次不抛，只需参数 active）',
+        typeof chipStyleFn === 'function' && chipFreeVarProbe === '', chipFreeVarProbe.slice(0, 120));
     const chipStyle = typeof chipStyleFn === 'function' ? chipStyleFn(false) : chipStyleFn;
     check('chip 拒绝压缩折行（whiteSpace nowrap + flexShrink 0：中文分类名一列一字=现网缺陷）',
         chipStyle.whiteSpace === 'nowrap' && chipStyle.flexShrink === 0, JSON.stringify({ ws: chipStyle.whiteSpace, fs: chipStyle.flexShrink }));

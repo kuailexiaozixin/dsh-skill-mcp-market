@@ -19,28 +19,42 @@ const c = read('client.js');
 
 let passed = 0, failed = 0;
 const check = (n, cond, d) => { if (cond) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + String(d).slice(0, 130) + ']' : '')); } };
-import { once, lineOf, countHits } from './anchor-lib.mjs';
+import { once, lineOf, countHits, blockEnd } from './anchor-lib.mjs';
 
 console.log('');
 console.log('Test A: 测试连接后刷新卡片');
 {
   // 用函数体切片（saveMcpEdit 的教训：固定窗口会漏）。
-  const pi = once(c, "const r = await call('mcp.probe'", 'probe调用');
+  const PROBE_CALL = "const r = await call('mcp.probe'";
+  const pi = once(c, PROBE_CALL, 'probe调用');
   check('probe 调用存在', pi > 0);
-  // 从 probe 调用向前找 onClick 起点、向后找 finally/setBusy('') 结束
-  const start = c.lastIndexOf('onClick: async', pi);
-  const end = c.indexOf("setBusy('');", pi);
-  const body = pi > 0 && start > 0 && end > pi ? c.slice(start, end) : '';
-  check('probe 处理体可切片', body.length > 100, 'start=' + start + ' end=' + end);
-  // 'onClick: async' 有 8 处：lastIndexOf 取到的是包裹 pi 的那个（语义正确），
-  // 但必须校验区间确实只含这一个调用点，否则会跨到别的按钮体。
-  check('probe 体区间不跨其它按钮', pi - start < 260 && (body.match(/await call\(/g) || []).length === 1, 'span=' + (pi - start) + ' calls=' + (body.match(/await call\(/g) || []).length);  check('成功分支刷新列表', /if \(r\.ok\)[\s\S]{0,200}loadInstalled/.test(body) || /loadInstalled[\s\S]{0,120}已连接|连接正常[\s\S]{0,120}loadInstalled/.test(body), body.slice(0, 200));
-  check('pending 分支也刷新（启动完成后卡片相位会变）', body.split('loadInstalled').length >= 2, 'loadInstalled 出现 ' + (body.match(/loadInstalled/g) || []).length + ' 次');
+  // 语义锁（替掉旧的两类字符窗：lastIndexOf('onClick: async') + pi - start < 260 的手写跨度上限，
+  // 以及 {0,200}/{0,80}/{0,160} 窗）：从包裹 probe 调用的 onClick 行按花括号深度扫到配对闭括号，
+  // 得到真正的按钮处理体；「没跨到别的按钮」由块内锚点唯一性证明，不靠魔数。
+  const NLL = String.fromCharCode(10);
+  const cLines = c.replace(/\r\n/g, NLL).split(NLL);
+  const piLine = cLines.findIndex((l) => l.includes(PROBE_CALL));
+  let onClickLine = -1;
+  for (let i = piLine; i >= 0; i--) { if (cLines[i].includes('onClick: async')) { onClickLine = i; break; } }
+  const bodyEnd = onClickLine < 0 ? -1 : blockEnd(c, onClickLine, 'probe onClick');
+  const body = onClickLine >= 0 && bodyEnd > onClickLine ? cLines.slice(onClickLine, bodyEnd + 1).join(NLL) : '';
+  check('probe 处理体可切片', body.length > 100, 'onClickLine=' + onClickLine + ' bodyEnd=' + bodyEnd);
+  check('probe 体区间不跨其它按钮', countHits(body, 'onClick: async') === 1 && countHits(body, 'await call(') === 1 && countHits(body, PROBE_CALL) === 1, 'onClick=' + countHits(body, 'onClick: async') + ' calls=' + countHits(body, 'await call('));
+  const okAt = body.indexOf('if (r.ok) {');
+  const pendAt = body.indexOf('else if (r.pending) {');
+  const failAt = body.indexOf('else setNotice(');
+  const catchAt = body.indexOf('} catch (e) {');
+  const okBranch = okAt >= 0 && pendAt > okAt ? body.slice(okAt, pendAt) : '';
+  const pendBranch = pendAt >= 0 && failAt > pendAt ? body.slice(pendAt, failAt) : '';
+  const failBranch = failAt >= 0 && catchAt > failAt ? body.slice(failAt, catchAt) : '';
+  check('三条结果分支各自可切片（语义锁前置）', countHits(body, 'if (r.ok) {') === 1 && countHits(body, 'else if (r.pending) {') === 1 && countHits(body, 'else setNotice(') === 1 && countHits(body, '} catch (e) {') === 1 && okBranch.length > 20 && pendBranch.length > 20 && failBranch.length > 20, 'ok=' + okBranch.length + ' pending=' + pendBranch.length + ' fail=' + failBranch.length);
+  check('成功分支刷新列表', countHits(okBranch, 'await loadInstalled();') === 1, okBranch.replace(/\s+/g, ' ').slice(0, 140));
+  check('pending 分支也刷新（启动完成后卡片相位会变）', countHits(body, 'loadInstalled') >= 2 && countHits(pendBranch, 'await loadInstalled();') === 1, 'loadInstalled 出现 ' + countHits(body, 'loadInstalled') + ' 次');
   // 用户实测（0.5.148）：点「测试连接」只看到一闪「处理中」，结果没地方看。
   // 三条分支都必须给出可读结果，且失败不能只写进红条（红条会被后续操作冲掉）。
-  check('成功分支给工具数', /测试连接成功[\s\S]{0,80}个工具/.test(body), body.replace(/\s+/g, ' ').slice(0, 140));
-  check('失败分支也走 notice（不只 setError）', /测试连接失败/.test(body) && /setNotice[\s\S]{0,160}未连上/.test(body), '');
-  check('pending 分支说明下一步动作', /稍后再点一次「测试连接」/.test(body), '');
+  check('成功分支给工具数', okBranch.includes('测试连接成功') && okBranch.includes('个工具'), okBranch.replace(/\s+/g, ' ').slice(0, 140));
+  check('失败分支也走 notice（不只 setError）', failBranch.includes('setNotice') && failBranch.includes('测试连接失败') && failBranch.includes('未连上'), '');
+  check('pending 分支说明下一步动作', pendBranch.includes('稍后再点一次「测试连接」'), '');
 }
 
 console.log('');

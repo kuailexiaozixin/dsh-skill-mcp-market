@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { safeTempDir } from '../src/home.js';
 import { execSync } from 'node:child_process';
+import { countHits } from './anchor-lib.mjs';
 
 const W = path.resolve(import.meta.dirname, '..');
 const rd = (f) => fs.readFileSync(path.join(W, f), 'utf8');
@@ -40,16 +41,35 @@ console.log('');
 console.log('Test 3: 客户端实时进度（轮询 mcp.list，非猜测）');
 {
   check('进度 state', /const \[installProgress, setInstallProgress\] = useState\(/.test(c));
-  check('轮询 mcp.list 取实时工具数', /setInterval\([\s\S]{0,700}call\('mcp\.list',\s*\{\}\)/.test(c));
+  // 语义锁：先切出 waitForTools 的作用域（两个唯一锚夹出的区间），再在切片内做无字符窗断言。
+  // 旧判据是 setInterval( …{0,700}… call('mcp.list'))：生产码在轮询体里插一段注释就会把
+  // 窗口撑爆而假红（test-mcp-full-edit 的 346 字符注释事故同因）；作用域切片没有字符窗。
+  const sliceOf = (s, a, b) => { const i = s.indexOf(a), j = s.indexOf(b); return i >= 0 && j > i ? s.slice(i, j) : ''; };
+  const WF_ANCHOR = 'const waitForTools = (serverName) => new Promise((resolve) => {';
+  const WF_END = 'const doInstallMcp = async (item, envValues) => {';
+  const wfAt = c.indexOf(WF_ANCHOR);
+  const wfScope = sliceOf(c, WF_ANCHOR, WF_END);
+  check('waitForTools 作用域可切片（语义锁前置）', countHits(c, WF_ANCHOR) === 1 && countHits(c, WF_END) === 1 && wfScope.length > 200, 'len=' + wfScope.length);
+  const polling = (wfScope.match(/call\('mcp\.list',\s*\{\}\)/g) || []).length;
+  check('轮询 mcp.list 取实时工具数', countHits(wfScope, 'setInterval(') === 1 && polling === 1 && wfScope.indexOf('setInterval(') < wfScope.indexOf("call('mcp.list'"), 'setInterval=' + countHits(wfScope, 'setInterval(') + ' mcp.list=' + polling);
   {
-    const m = c.match(/const POLL_INTERVAL_MS = (\d+)/);
-    check('轮询间隔常量 ≤ 1000ms', !!m && Number(m[1]) > 0 && Number(m[1]) <= 1000, m ? m[1] + 'ms' : 'POLL_INTERVAL_MS 未定义');
-    check('setInterval 用该常量', /setInterval\([\s\S]{0,900}, POLL_INTERVAL_MS\)/.test(c));
+    const pm = c.match(/const POLL_INTERVAL_MS = (\d+)/);
+    check('轮询间隔常量 ≤ 1000ms', !!pm && Number(pm[1]) > 0 && Number(pm[1]) <= 1000, pm ? pm[1] + 'ms' : 'POLL_INTERVAL_MS 未定义');
+    const pollName = pm ? pm[0].slice('const '.length).replace(/ =.*/, '') : '';
+    const pollClose = pollName ? ', ' + pollName + ')' : '';
+    check('setInterval 用该常量', pollName !== '' && countHits(wfScope, 'setInterval(') === 1 && countHits(wfScope, pollClose) === 1 && wfScope.indexOf('setInterval(') < wfScope.indexOf(pollClose), 'name=' + pollName + ' close=' + countHits(wfScope, pollClose));
   }
-  check('有最长预算（不无限轮询）', /120_?000|120000|MAX_PROGRESS/.test(c));
-  check('定时器一定被清理 clearInterval', /clearInterval\(timer\)|clearInterval\(\w+\)/.test(c));
+  check('有最长预算（不无限轮询）', countHits(wfScope, 'MAX_PROGRESS_MS') === 1 && /120_?000|120000|MAX_PROGRESS/.test(c), 'MAX=' + countHits(wfScope, 'MAX_PROGRESS_MS'));
+  check('定时器一定被清理 clearInterval', countHits(wfScope, 'clearInterval(') >= 1, 'clear=' + countHits(wfScope, 'clearInterval('));
   check('进度文案含已等待秒数', /已等待/.test(c));
-  check('npx 冷启动提示', /npx[\s\S]{0,120}下载|首次运行[\s\S]{0,60}下载/.test(c));
+  // 语义锁：切出 doInstallMcp 的 pending 分支（在安装体里再切一层），冷启动提示必须落在这个分支内。
+  const IB_END = 'const toggleGroupCollapsed = (key) => {';
+  const installBody = sliceOf(c, WF_END, IB_END);
+  const pdAt = installBody.indexOf('} else if (r.pending) {');
+  const pdEnd = installBody.indexOf('} else {', pdAt);
+  const pendingBranch = pdAt >= 0 && pdEnd > pdAt ? installBody.slice(pdAt, pdEnd) : '';
+  check('doInstallMcp pending 分支可切片（语义锁前置）', countHits(c, IB_END) === 1 && countHits(installBody, '} else if (r.pending) {') === 1 && countHits(installBody, '} else {') === 1 && pendingBranch.length > 100, 'body=' + installBody.length + ' pending=' + pendingBranch.length);
+  check('npx 冷启动提示', /下载/.test(pendingBranch) && (/npx/.test(pendingBranch) || /首次运行/.test(pendingBranch)) && countHits(pendingBranch, 'await waitForTools(r.serverName);') === 1, 'npx=' + countHits(pendingBranch, 'npx') + ' 首次运行=' + countHits(pendingBranch, '首次运行'));
 }
 
 console.log('');

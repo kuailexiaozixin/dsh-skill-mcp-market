@@ -1045,6 +1045,14 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
     const signal = () => {
       while (s.waiters.length) s.waiters.shift()();
     };
+    // 行入会话的唯一入口（源收口与逐页增量共用同一份口径）：带 installRef、按 source|slug 去重。
+    const pushRow = (it) => {
+      const row = Object.assign({}, it, { installRef: installRefOf(it) });
+      const key = rowKeyOf(row);
+      if (s.seen.has(key)) return;
+      s.seen.add(key);
+      s.rows.push(row);
+    };
     // 每个源落地的第一时间把它的行推入会话 —— 这就是「不等别人」的那一半语义。
     const onSettled = (name, box) => {
       s.boxes.set(name, box);
@@ -1056,13 +1064,7 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
         const result = box ? box.result : null;
         if (result && result.hint) s.hints.push(name + "：" + result.hint);
         const srcItems = result && Array.isArray(result.items) ? result.items : [];
-        for (const it of srcItems) {
-          const row = Object.assign({}, it, { installRef: installRefOf(it) });
-          const key = rowKeyOf(row);
-          if (s.seen.has(key)) continue;
-          s.seen.add(key);
-          s.rows.push(row);
-        }
+        for (const it of srcItems) pushRow(it);
       }
       if (!s.done) s.stage = "collected " + s.rows.length + " rows from " + s.settled + "/" + picked.length + " sources";
       signal();
@@ -1077,7 +1079,21 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
       onSettled,
       run: (name) => {
         const handler = (handlers && handlers[name]) || SOURCE_HANDLERS[name];
-        return handler({ query, page: p, pageSize: size, cache, sort: effectiveSort, category });
+        // harvest 专属钩子（一次性 skills.search 通路不带这两个键，那条路径行为逐字节不变）：
+        //   harvestBypass —— 豁免 ModelScope 的 45s 单次调用预算（30s 单页超时与 30 页上界保留）；
+        //   msOnPartial —— 每取回一页就把过滤+归一后的行推进会话并唤醒等待者，面板因此
+        //                  「有多少就显示多少，不断增加新结果」，而不是等整个大源落地。
+        return handler({
+          query, page: p, pageSize: size, cache, sort: effectiveSort, category,
+          harvestBypass: true,
+          msOnPartial: name === "modelscope"
+            ? (pageItems) => {
+                for (const it of pageItems) pushRow(it);
+                if (!s.done) s.stage = "collected " + s.rows.length + " rows from " + s.settled + "/" + picked.length + " sources";
+                signal();
+              }
+            : null,
+        });
       },
     });
     const finish = async () => {

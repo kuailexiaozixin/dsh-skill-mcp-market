@@ -14,12 +14,43 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { safeTempDir } from '../src/home.js';
+import { blockEnd } from './anchor-lib.mjs';
 
 const W = path.resolve(import.meta.dirname, '..');
 const read = (f) => fs.readFileSync(path.join(W, f), 'utf8');
 const ix = read('index.js');
 const mj = read('src/mcp.js');
 const c = read('client.js');
+// ---- 语义作用域切片：先切作用域再断言（替代旧 {0,N} 字符窗，插入无关代码不再假红）----
+const NL = String.fromCharCode(10);
+const norm = (s) => s.replace(/\r\n/g, NL);
+const scopeOf = (src, startNeedle, label) => {
+  const ls = norm(src).split(NL);
+  const a = ls.findIndex((l) => l.includes(startNeedle));
+  if (a < 0) return '';
+  let b;
+  try { b = blockEnd(norm(src), a, label); } catch { return ''; }
+  return ls.slice(a, b + 1).join(NL);
+};
+const caseUpdate = scopeOf(ix, 'case "mcp.update"', 'caseUpdate');
+const caseInstall = scopeOf(ix, 'case "mcp.install"', 'caseInstall');
+const needsFn = scopeOf(ix, 'function needsConfirmFor(', 'needsConfirmFor');
+const saveEdit = scopeOf(c, 'const saveMcpEdit = async () => {', 'saveMcpEdit');
+const submitAdd = scopeOf(c, 'const submitMcpAdd = async () => {', 'submitMcpAdd');
+const CL = norm(c).split(NL);
+const cmdRow = CL.find((l) => l.includes("placeholder: '可执行")) || '';
+const argsTA = (() => {
+  const v = CL.findIndex((l) => l.includes("value: draft.args || ''"));
+  if (v < 0) return '';
+  let a = v;
+  while (a > 0 && !CL[a].trim().startsWith("h('textarea', {")) a--;
+  if (a <= 0) return '';
+  let b;
+  try { b = blockEnd(norm(c), a, 'argsTA'); } catch { return ''; }
+  const seg = CL.slice(a, b + 1).join(NL);
+  return seg.includes("value: draft.args || ''") ? seg : '';
+})();
+
 
 let passed = 0, failed = 0;
 const check = (n, cond, d) => { if (cond) { passed++; console.log('  OK ' + n); } else { failed++; console.log('  FAIL ' + n + (d ? '  [' + String(d).slice(0, 140) + ']' : '')); } };
@@ -38,8 +69,10 @@ console.log('');
 console.log('Test 1: mcp.update 反转——command/args 可改，但需 confirm');
 {
   check('update 接受 confirm 通道（不再永久拒绝）', !/patch\.command !== undefined \|\| patch\.args !== undefined/.test(ix));
-  check('改 command/args 需 confirm:true（未确认时拒）', /NEEDS_CONFIRM_FIELDS/.test(ix) || /needsConfirm/.test(ix));
-  check('拒绝文案改为「需二次确认」语义', /需二次确认|confirm/.test(ix.slice(ix.indexOf('case "mcp.update"'), ix.indexOf('case "mcp.update"') + 1200)));
+  // 变异拒绝：mcp.update case 体删掉 needsConfirmFor 闸门调用 ⇒ 红（NEEDS_CONFIRM_FIELDS 在 index.js 0 命中，死侧已删）。
+  check('改 command/args 需 confirm:true（未确认时拒）', caseUpdate !== '' && caseUpdate.includes('needsConfirmFor('));
+  // 变异拒绝：case 体删掉 body.confirm !== true 闸门或「需要二次确认」文案 ⇒ 红（1200 字符定宽窗废弃）。
+  check('拒绝文案改为「需二次确认」语义', caseUpdate.includes('body.confirm !== true') && caseUpdate.includes('需要二次确认'));
 }
 
 console.log('');
@@ -61,7 +94,8 @@ console.log('Test 2: mcp.update 行为级（假 manager 真调用）');
 console.log('');
 console.log('Test 3: mcp.update 的 patch 语义（字段级全编辑）');
 {
-  check('update 接受 patch.command', /patch\.command/.test(ix) || /\bpatch\b[\s\S]{0,200}command/.test(ix.slice(ix.indexOf('case "mcp.update"'), ix.indexOf('case "mcp.update"') + 1500)));
+  // 变异拒绝：needsConfirmFor 不再读 patch.command（漏判 command 改动）或 case 不再把 patch 交给闸门 ⇒ 红。
+  check('update 接受 patch.command', needsFn.includes('patch.command') && caseUpdate.includes('needsConfirmFor(patch'));
   check('src update spread 合并（字段级全透传）', /\.\.\.def, \.\.\.patch/.test(mj));
   check('envSet/envUnset 合并语义存在', mj.includes('function applyEnvPatch') || ix.includes('function applyEnvPatch') || /envSet|envUnset/.test(mj) || /envSet|envUnset/.test(ix));
 }
@@ -130,9 +164,10 @@ console.log('');
 console.log('Test 7: mcp.install 反转——手动自定义安装可带 command');
 {
   check('install case 不再永久拒绝 command', !/if \(body\.command\) \{\s*\n?\s*throw/.test(ix));
-  // 0.5.174 在 install case 之前插入 harvestStore 装配（+346 字符），旧写法只看 600 字符窗口 ⇒ 漂出窗口即假红。
-// 锁的是「install case 体内要求 confirm」这一语义，不是字面标识符位置。
-check('手动安装需 confirm（两步确认）', /case "mcp\.install"[\s\S]{0,600}confirm[\s\S]{0,80}true/.test(ix) || /mcp\.install[\s\S]{0,600}NEEDS_CONFIRM|mcp\.install[\s\S]{0,600}needsConfirm/.test(ix));
+  // 0.5.174 在 install case 之前插入 harvestStore 装配（+346 字符），600 字符窗口假红（实测 confirm 距离 491→786 漂移）。
+  // 锁的是「install case 体内要求 confirm」这一语义；改为 case 体切片（blockEnd 配对），插码漂移免疫。
+  // 变异拒绝：install case 删掉 body.confirm !== true 闸门 ⇒ 红（旧析取第二侧 NEEDS_CONFIRM/needsConfirm 在 index.js 0 命中，死侧已删）。
+  check('手动安装需 confirm（两步确认）', caseInstall !== '' && caseInstall.includes('body.confirm !== true') && caseInstall.includes('需要二次确认'));
   check('manualMcpDefinition 仍在（已有能力复用）', ix.includes('function manualMcpDefinition'));
 }
 
@@ -140,14 +175,18 @@ console.log('');
 console.log('Test 8: 面板表单全字段可编辑');
 {
   check('命令输入框可编辑（无 readOnly）', !/h\('input', \{ style: \{ \.\.\.S\.input, opacity: 0\.75, background: 'var\(--dsh-bg[^}]*\}, value: draft\.command[^}]*readOnly/.test(c));
-  check('命令字段 onChange 接线', /value: draft\.command[\s\S]{0,200}onChange/.test(c));
+  // 变异拒绝：命令输入行删掉 value 接线或 onChange ⇒ 红（作用域=该输入行整行）。
+  check('命令字段 onChange 接线', cmdRow !== '' && cmdRow.includes("value: draft.command || ''") && cmdRow.includes('onChange'));
   check('参数 textarea 可编辑', !/value: draft\.args \|\| '',\s*\n\s*readOnly: true,/.test(c));
-  check('参数 onChange 接线', /value: draft\.args \|\| '',[\s\S]{0,200}onChange/.test(c));
+  // 变异拒绝：参数 textarea 花括号块删掉 value 接线或 onChange ⇒ 红（作用域=该 textarea 块）。
+  check('参数 onChange 接线', argsTA !== '' && argsTA.includes("value: draft.args || ''") && argsTA.includes('onChange'));
   check('env 编辑器存在（键值行 + 增删）', /envSet|envUnset|envDraft/.test(c));
   check('headers 编辑器存在', /headersEdit|headersDraft|headers 行/.test(c) || /headers/.test(c));
   check('cwd/toolCallTimeoutMs/reconnect 高级区', /toolCallTimeoutMs/.test(c));
-  check('改命令时 UI 两步确认', /需要二次确认|confirmCommand|两步确认/.test(c) || /confirm: true[\s\S]{0,120}draft\.command/.test(c));
-  check('保存带 confirm 字段（改命令时）', /'mcp\.update'[\s\S]{0,300}confirm/.test(c) || /confirmCommand/.test(c));
+  // 变异拒绝：保存函数删掉武装步骤 setMcpConfirmArmed(true) 或两步确认注释 ⇒ 红（旧析取第二侧为死侧，已删）。
+  check('改命令时 UI 两步确认', saveEdit.includes('setMcpConfirmArmed(true)') && saveEdit.includes('需要二次确认'));
+  // 变异拒绝：保存函数把 confirm 从 mcp.update 调用参数里拿掉或放到调用之前 ⇒ 红。
+  check('保存带 confirm 字段（改命令时）', saveEdit.includes("call('mcp.update'") && saveEdit.indexOf('confirm: needsConfirm') > saveEdit.indexOf("call('mcp.update'"));
   check('只读提示文案已更新（不再是「面板不开放改写」）', !/面板不开放改写/.test(c));
 }
 
@@ -156,11 +195,10 @@ console.log('Test 9: 面板添加表单（E-2）');
 {
   check('添加 MCP 手动模式入口', /手动添加|添加自定义连接器/.test(c));
   check('添加表单全字段', /serverName/.test(c) && /transport/.test(c));
-  // 实测 confirm 距 'mcp.install' 321 字符（窗口 300 差 21）；市场安装点（slug）本就不带 confirm，
-  // 所以断言只针对手动添加路径：第一个调用点（submitMcpAdd）必须带 confirm。
-  // 实测：加字段后 confirm 距 'mcp.install' 498（原 321）；固定窗口随字段增长脆弱，改为函数体切片。
-  const _si = c.indexOf('const submitMcpAdd');
-  check('添加走 mcp.install 且自定义命令带 confirm', /'mcp\.install'[\s\S]{0,700}confirm/.test(c.slice(_si, _si + 1600)));
+  // 实测 confirm 距 'mcp.install' 321→498 字符，固定窗（300→700）与定长切片（+1600）两代都靠加宽续命。
+  // 改为 submitMcpAdd 函数体切片（blockEnd 配对到收尾 };），插码漂移免疫。
+  // 变异拒绝：添加调用删掉 confirm: command ? true : undefined 字段 ⇒ 红。
+  check('添加走 mcp.install 且自定义命令带 confirm', submitAdd.includes("call('mcp.install'") && submitAdd.includes('confirm: command ? true : undefined'));
   check('手动模式说明诚实（写明会执行该命令）', /将执行|会执行|本机执行/.test(c));
 }
 

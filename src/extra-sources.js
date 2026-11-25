@@ -1347,7 +1347,7 @@ export const MODELSCOPE_SORT_GETTERS = {
   name: (r) => r.DisplayName || r.Name,
 };
 
-export async function searchModelScope({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "", transport = null } = {}) {
+export async function searchModelScope({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "", transport = null, msOnPartial = null, harvestBypass = false } = {}) {
   const p = Math.max(1, Number(page) || 1);
   const size = Math.max(1, Math.min(50, Number(pageSize) || 24));
   const q = String(query || "").trim();
@@ -1385,6 +1385,21 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   };
   let rows = [];
   let total = 0;
+  // 渐进式加载（harvest 通路）：分类谓词全仓只有一份 —— msRowInCategory（最终 categoryRows 与
+  // 逐页增量共用同一谓词）；行归一 msMapItems 在下方 items 处收口（同样只有一份），msPushPartial
+  // 是函数声明、可在定义前被取数循环调用。禁止第二份口径。
+  const msRowUsable = (raw) => Boolean(raw && raw.Name);
+  const msRowInCategory = (raw) => Boolean(raw && raw.L1 && typeof raw.L1 === "object" && raw.L1.ChineseName === catActive);
+  const msPagePasses = (raws) => {
+    const usable = raws.filter(msRowUsable);
+    return catActive ? usable.filter(msRowInCategory) : usable;
+  };
+  function msPushPartial(raws) {
+    if (!msOnPartial || !useFull) return;
+    const pushed = msMapItems(msPagePasses(raws));
+    if (!pushed.length) return;
+    try { msOnPartial(pushed, {}); } catch { /* 面板推送失败绝不影响取数循环 */ }
+  }
   // 0.5.165 Fix B —— 分页形状（本机同姿势实测：PageSize=5000 → HTTP 200 但 wall=66s；
   // PageSize=1000 → 24.1s；PageSize=200 → 7.3s）。旧写法 fetchOne(1, 5000, 90 秒) 让一次大页
   // 请求决定整源生死：live 撞 90.3 秒 abort（监测方留档 after164-chips.txt：cat=市场推广/开发工具
@@ -1420,6 +1435,8 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
     let next = fullHit && fullHit.done ? 0 : cachedPages + 1;
     msDone = next === 0;
     if (next > 0) {
+      // 断点续暖：缓存里已有的前 N 页立刻推给会话（冷启动时这里是空集，逐页推在循环里）。
+      msPushPartial(rows);
       // 注意边界：pagesNeeded 是**需要的页数**，循环必须含它（旧写法 pg < pagesNeeded 少拉
       // 最后一页，实测差一整页 ≈ 可达集合的 3%（1000/30,000），与注释声称的覆盖自相矛盾）。空页仍由 break 兜住。
       const msPagesNeeded = (n) => Math.min(MS_MAX_PAGES, Math.ceil(Math.min(n || 1, MS_PAGE * MS_MAX_PAGES) / MS_PAGE));
@@ -1429,17 +1446,23 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
       let pagesNeeded = total > 0 ? msPagesNeeded(total) : MS_MAX_PAGES;
       while (next <= pagesNeeded) {
         // 预算截断只在已经取到行时生效：一页都没取回时至少把下一页试完。
-        if (next > cachedPages + 1 && rows.length && Date.now() - startedAt > MS_FETCH_BUDGET_MS) {
+        // harvest 旁路：渐进式会话「有多少显示多少」是用户明确要求，45s 预算只属于一次性调用。
+        if (!harvestBypass && next > cachedPages + 1 && rows.length && Date.now() - startedAt > MS_FETCH_BUDGET_MS) {
           msBudgetStop = true;
           break;
         }
         try {
+          // harvestBypass 只豁免「超预算就停」：30s 单页超时（MS_PAGE_TIMEOUT_MS）保留作挂死兜底，
+          // MS_MAX_PAGES=30 是上游硬上限（第 31 页起 HTTP 500），保留。
           const nx = await fetchOne(next, MS_PAGE, MS_PAGE_TIMEOUT_MS);
           if (!nx.rows.length) {
             msDone = true; // 上游到尽头（实测 5000×9 时 page10 起为空）
             break;
           }
           rows = rows.concat(nx.rows);
+          // 逐页推：这一页新取回的行当场过滤+归一推给会话（不排序、不切页——排序后的整表在收口包），
+          // 绝不憋到收口（面板要的是「不断增加新结果」）。
+          msPushPartial(nx.rows);
           if (!total && nx.total) {
             total = nx.total;
             pagesNeeded = msPagesNeeded(total);
@@ -1468,7 +1491,7 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   let categoryRows = usableRows;
   let catFiltered = false;
   if (catActive) {
-    categoryRows = usableRows.filter((raw) => raw.L1 && typeof raw.L1 === "object" && raw.L1.ChineseName === catActive);
+    categoryRows = usableRows.filter(msRowInCategory);
     catFiltered = true;
   }
   const catTotal = catFiltered ? categoryRows.length : 0;
@@ -1505,7 +1528,8 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   // 分类态本页 0 条时便误判成「该源不提供分类信息」——那句对 modelscope 是假的（本页 0 条是
   // 可达窗口内该类无行，不是源没有分类）。字段在此声明，消费方由 lead 在聚合层接。
   const categoryInfo = true;
-  const items = pageRows.map((raw) => {
+  function msMapItems(rawRows) {
+    return rawRows.map((raw) => {
     const owner = raw.Path || raw.Owner || "";
     const name = raw.Name || "";
     const ident = owner ? `${owner}/${name}` : name;
@@ -1543,7 +1567,9 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
       installable: true,
       modelScopeIdent: ident,
     };
-  });
+    });
+  }
+  const items = msMapItems(pageRows);
   // total 口径：分类态用可达集合内过滤后的真实条数；普通态上游 TotalCount 缺失/0 且本页
   // 无行时绝不反推页码（旧写法 p*size+1 让空深页凭空造出 2400、14400）——只在确实有行时
   // 兜底反推，与 sources.js:833 的守卫同一口径。
