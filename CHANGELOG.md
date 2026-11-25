@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.173
+
+- test-warm-budget 判据缺陷修复（门内 420s TIMEOUT 的根因，非实现回归）：原 Test 1 与 Test 2 各用
+  全新缓存目录 ⇒ 每次跑套件都要**从零连爬两遍** clawhub 目录（本机实测 167s + 165s = 332s），在
+  71 套件的全门负载下越过单套件 420s 线被硬杀；单跑偶尔绿，门内长期不可靠。
+- 修法三件，均不削弱覆盖强度：
+  1. Test 1/2 共享缓存目录，默认预算那一跳从 323 行接着补到 1200 行（复用后实测 61s + 98s）。
+     缓存复用本身就是预热的既有契约（test-warmup Test 3 守这条），不是把断言搬走；并新增
+     「默认预算确实接着上一跳补」的行为断言，防止退化成两遍从零。
+  2. 耗时上限 120s ⇒ 240s、300s ⇒ 400s，并在注释里把量纲交代清楚：clawhub 每页正常 ~7s，
+     命中 fetch→curl→python 降级链的页 ~28s（每级 25s 超时 + 3s 退避）。旧的 120s 等于
+     「六页一次都不许重试」——那是上游抖动不是本侧逻辑；240s 仍能一刀砍死无界爬取
+     （28k+ 目录按 50 页/爬满算是十几分钟量级）。
+  3. 新增 Test 3「预算与错误上限的文本锁」：warmClawHubCatalog 的取页直调 getJsonClawHub
+     （extra-sources.js:64），不吃可注入 fetchJson ⇒ 无法离线伪造「游标无限」的上游来证明
+     预算生效，于是把预算三要素钉回源码形态（与 test-clawhub-quality 同口径）：while 里带
+     rows.length < budget、while 里带 consecutiveErrors < 3、默认预算是有限字面量 1200、
+     游标断掉立刻 done=true; break、爬完 { rows, cursor, done } 落缓存；五道锁各配一条
+     变异反证（抹掉对应形态 ⇒ 锁必须翻转），保证锁不是恒绿。该锁不联网，门内必判。
+- 读数：test-warm-budget 17 passed, 0 failed（Test 1 61s、Test 2 98s、Test 3 十条全绿）；
+  全门 **71/71 suites green**（657s），test-warm-budget 由 TIMEOUT 转 PASS 101s，
+  test-profile-sync 7/0（0.5.172 发布后转绿，实证上批的「镜像滞后属发布前正常态」判定）。
+- 版本 0.5.173。
+
 ## 0.5.172
 
 - 子进程环境根因守卫收口（0.5.161 / 0.5.163 两次回归同一根因，这次是根治不是清扫）：src/home.js 新增纯函数
