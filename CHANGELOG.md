@@ -10,6 +10,14 @@
 - 判据：test-lobehub-category-vocab 新增 3 条——样式体可从 client.js 整段取到、取到的是箭头函数本身
   （真跑一次调用才拿到对象，直接断言对象会假绿）、whiteSpace/flexShrink 双锁。变异自证 M-ws / M-fs 各红 1 条。
 - 版本口径：0.5.169 的 npm tarball 已发布且不含本修复（同一版本不能重发），故本批走 0.5.170。
+- 发布闭环：CI run 45549221279（publish.yml, tag v0.5.170）completed success（3m46s，Run tests ✓ + Publish ✓）；npm 侧传播延迟实测 9 轮 25s 轮询（约 4 分钟）后 npm view dsh-skill-mcp-market@0.5.170 = 0.5.170、dist-tags.latest=0.5.170；装机 dsh plugin --profile desktop add dsh-skill-mcp-market@0.5.170 ⇒「- 0.5.169 / + 0.5.170，Done in 6.7s using pnpm v11.28.5」。
+- 面板 live 复验（Before/After 同场景，port=54733，本会话面板 tab D3F31666CD1FAB15657688955E3A2334；0.5.168 那次的 tab 656A7D6ADB474ADA0E7DA43AD80A9987 已失效）：
+  · Before=0.5.169 bundle：modelscope 21 chip 的 box 高度 82/46 两档、y 141/159 两档，截图 sha256:6570de59b83020fedcb039ce3295bb1b5ad6a2f45aaf5275e7633806b843bb02 肉眼实证「开发工具」竖排 4 行 1 字。
+  · After=0.5.170 bundle：同一 clip{x:270,y:126,w:1000,h:60} scale2 ⇒ 21 个 chip 全在 y=141、height=28，中文词单行不断字（sha256:daaf38929be8501e41d7a3bb287eed427364877fbed434bce719610a1c3346c6）；顺序末位=「其他」⇒ m19018「其他放末尾」在装机后仍成立。
+  · 空分类出路条实测：点「监控」chip ⇒ span「该分类在已取回的条目里没有命中…（近似，不等于该分类）：」+ button「近似搜索「监控」」；按下 ⇒ 面板「共约 1512 个 · 第 1 / 63 页」并出卡片（MITM 代理监控台 / 监控告警编写 / Grafana 监控面板…），sha256:dc136f921b484096e2aa9b3bf7624cf292bf15c96edffc4e0275869cb090976e。⇒ 不是死按钮。
+  · 窗外入口实测：lobehub 收起态 chip 行=34 个 button（全部分类 + 32 类 + 窗外入口），窗外入口 box.x=4812 超 1280 视口 ⇒ chipRow 横向滚动生效；skillsmp 收起态同形（34 个 button，窗外入口 x=4309），横向滚动到行尾实拍 sha256:2c0d4e1931095bf7fcd2eac9884f3455607f773659a13437a8892e9537f210fd。⇒ 用户 m18991 的「其他只有文字不能点」两处都已是可点 button，且不再与上游真分类撞名。
+  · 展开态限高实测：点窗外入口后 chip 容器 div box={x:270,y:141,w:970,h:116}（S.catsRow maxHeight 116 生效，246 类在内部纵向滚动），卡片区紧随其下未被挤走，sha256:8570df9dab6397b4a587a62a89befe6f4f636704ad9cec4f8516a8dbbbfff505；桶沉尾在展开态可见=「general 1」落最后一行（y=1257，收起入口同排）。⇒ m19004「还是搞这么多分类」的根因（展开即铺满屏）解除。
+- 现网一键验收（0.5.170 装机后）：node test/live-verify.mjs ⇒ port=54733 fingerprint=new，rows=14 LIVE-FAIL=0 NOT-TESTED=0 GAP=2，RESULT: PASS exit=0。两条 GAP 不变（「监控」0 条=可达集合外覆盖缺口；__cat_other 服务端旧通路信息项）。
 
 ## 0.5.169
 - 一句话：收掉用户三条报障（「其他」到底是干什么的、lobehub 展开后还是铺满屏、modelscope「其他」该放末尾且部分标签搜不出东西），并把面板里两个撞名的「其他」彻底分开。
