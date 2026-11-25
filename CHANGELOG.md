@@ -17,7 +17,7 @@
 - 发布闭环凭据：CI run 45644369726（tag v0.5.174，headSha=7396541）conclusion=success；日志末两行「[GATE] 73/73 suites green」「[GATE] total 235s across 73 suites」（底稿 C:/Users/Public/dsh-scratch/ms174c-ci.log:324 起）。首次 run 45642081925 的两红由同批 7396541 修掉后转绿，test-temp-hygiene 7/0、test-mcp-full-edit 47/0 均在门内读数里。
 - npm 侧：Trusted Publishing（OIDC）出包 dsh-skill-mcp-market@0.5.174，package size 244.2 kB / unpacked 757.7 kB / total files 33 / shasum 1643a06af322743d38e2c41cd740eb2870396ede，provenance 已进透明度日志；registry latest 第 4 轮询（约 80s）见 0.5.174。
 - 装机与镜像一致性：dsh plugin --profile desktop add dsh-skill-mcp-market@0.5.174（pnpm 28.6s，+1 -5）⇒ profile deps=0.5.174、node_modules 内包 version=0.5.174、pnpm-lock.yaml:822 与 :2240 两条 0.5.174；test-profile-sync 由发布前 5/2 红（陈旧副本 + work=0.5.174 profile=0.5.173）转 **7/0**「mirrors report 0.5.174」。
-- 现网一键复验：node test/live-verify.mjs（端口自发现=57669）跑了三轮。冷缓存两轮「监控」判 LIVE-FAIL——那轮 modelscope 整份行集冷拉带「第 x/y 页取数失败」，hint 自承「分类取数中断」⇒ 判据②按 0.5.165 口径必须判红（不是覆盖缺口的形状）；行集缓存热后终态 **rows=14 LIVE-FAIL=0 NOT-TESTED=0 GAP=2 RESULT: PASS**，与 0.5.168/0.5.172 基线同形。两处 GAP=①「监控」0 条且无中断措辞（30,000 行可达集合外的覆盖缺口）②服务端旧通路 __cat_other 信息项。
+- 现网一键复验：node test/live-verify.mjs（端口自发现=57669）跑了三轮。冷缓存两轮「监控」判 LIVE-FAIL，走的是判据 :86 分支（文案原文「0 条且文案自承取数中断」，即 hint 内含「取数中断」）；同一轮里「市场推广/开发工具」wall=30~70s 说明整份行集正在冷拉，因此那是取数失败形状、不是可达集合外的覆盖缺口，判红符合 0.5.165 口径；行集缓存热后终态 **rows=14 LIVE-FAIL=0 NOT-TESTED=0 GAP=2 RESULT: PASS**，与 0.5.168/0.5.172 基线同形。两处 GAP=①「监控」0 条且无中断措辞（30,000 行可达集合外的覆盖缺口）②服务端旧通路 __cat_other 信息项。
 - 面板侧 harvest 尚未在进程内生效（诚实记录）：对 57669 直发 {op:"harvest.start"} 实测回 `unknown operation "harvest.start"`，而已装 node_modules/dsh-skill-mcp-market/index.js 内 harvest.start 与 harvest.poll 两串都在 ⇒ 宿主仍跑 0.5.173 bundle（default 分支 index.js:1899 抛该错），需点菜单「重启应用与 Host」加载 0.5.174 后才能取渐进加载与窗外两态的画面凭据。
 
 ## 0.5.173
