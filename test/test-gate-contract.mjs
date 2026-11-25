@@ -187,5 +187,12 @@ console.log('Test 6: SUSPEND-SUSPECT（整机睡眠不得被当成套件真慢�
 }
 
 console.log('');
+console.log("Test 4: CI 发布工作流的墙钟兜底（job 级 timeout-minutes）");
+{
+  const wfSrc = fs.readFileSync(path.join(W, '.github', 'workflows', 'publish.yml'), 'utf8');
+  // 拒绝的变异：删掉 timeout-minutes 那行 ⇒ 门挂死可吃满 runner 6h 默认额度（本机单套件 420s 硬杀的先例只在门内，CI 侧无对应保护）。
+  check('publish job 必须有 timeout-minutes', /^[ \t]+timeout-minutes:[ \t]*\d+/m.test(wfSrc), '');
+}
+
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
