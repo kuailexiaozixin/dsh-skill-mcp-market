@@ -19,6 +19,11 @@
   判据随动补两条绝对性锁（SystemRoot 必须 ^[A-Za-z]:\Windows$、ComSpec 必须 ^[A-Za-z]:\Windows\system32\cmd\.exe$）：
   本机 57/0/0 绿；变异自证=兜底换回旧写法两条锁齐红（本机 got=C:\WINDOWS 那侧仍由「不带盘符即红」的形态锁住，
   CI 上旧写法必红）。套件登记随 test:chain 71 段一起进门。
+- 发布闭环凭据（0.5.172）：CI run 45578239485（tag v0.5.172 → 8f2461f）末行「[GATE] 71/71 suites green」「total 232s across 71 suites」，
+  含 test-child-env 56/0/1skip、test-live-verify 69/0/1skip、test-modelscope-category-vocab 181/0/2skip；npm dist-tags.latest=0.5.172；
+  profile 装成 0.5.172（manifest 16:48:15，pnpm-lock L822/L2240）；现网一键复验 node test/live-verify.mjs（port 57560，hint 指纹=「已取回的」）
+  ⇒ RESULT: PASS rows=14 LIVE-FAIL=0 NOT-TESTED=0 GAP=2（「监控」=可达集合外覆盖缺口、__cat_other=服务端旧通路信息项）；工作区根无 %/$ 字面路径树、.dsh-tmp absent。
+- 本批遗留（0.5.173 在建）：渐进式加载 harvest.start/harvest.poll（服务端，用户原话要求 harvest 路径不得有「超预算就停」）、「其他」=窗外并集真筛选与 skillsmp 展开态可上下滚动。
 
 ## 0.5.171
 
