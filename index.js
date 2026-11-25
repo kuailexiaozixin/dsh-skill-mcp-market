@@ -18,7 +18,7 @@ import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, set
 import { importShipped, pluginFrom, resolveShipped, SHIPPED } from "./src/shipped.js";
 import { readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { emptyTrash, installSkill, listInstalledSkills, listTrash, restoreFromTrash, skillFileToggleable, toggleSkillFile, uninstallSkill, updateSkill } from "./src/skills.js";
+import { emptyTrash, installSkill, listTrash, makeInstalledCache, restoreFromTrash, skillFileToggleable, toggleSkillFile, uninstallSkill, updateSkill } from "./src/skills.js";
 import { fetchSkillMd, parseRepoRef } from "./src/github.js";
 import { skillMetaFromText, kebab } from "./src/frontmatter.js";
 import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js";
@@ -41,6 +41,11 @@ import { installToolCallGuard } from "./src/toolcall-guard.js";
 import { readZip } from "./src/zip.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+// listInstalledSkills 的 TTL 缓存（整进程共享一份）：面板轮询、登记回读、
+// 搜索结果标注 installed 都在同一批目录上反复全盘扫描，见 src/skills.js。
+// 技能集一旦发生增删改，对应变更点必须调用 installedCache.invalidate()。
+const installedCache = makeInstalledCache();
 
 export const name = "dsh-skill-mcp-market";
 export const inject = ["tools"];
@@ -355,6 +360,9 @@ export async function apply(ctx, config = {}) {
   const trashDir = join(dirname(settingsPath()), "trash");
   const marketCache = makeCache(join(dirname(settingsPath()), "cache"));
 
+  // 路径重挂载之后 skillDirs 可能已经换掉，模块级缓存不能继续供旧目录的结果。
+  installedCache.invalidate();
+
   // ---------------------------------------------------------------- skill provider
   // We own the provider so `disabledSkills` (a `skills.disabled: [name]` list, as used by
   // several agent runtimes) is a real configuration item instead of a directory trick.
@@ -498,6 +506,7 @@ export async function apply(ctx, config = {}) {
       } catch {
         /* ignore */
       }
+      installedCache.invalidate();
       return {
         ok: true,
         slug: key,
@@ -596,7 +605,7 @@ export async function apply(ctx, config = {}) {
     for (const root of roots) {
       let items = [];
       try {
-        items = await listInstalledSkills([root.dir]);
+        items = await installedCache.list([root.dir]);
       } catch {
         items = [];
       }
@@ -635,7 +644,7 @@ export async function apply(ctx, config = {}) {
 
   // 递归查找包目录内所有"含 SKILL.md 子目录"的父目录（深度上限 4，避免遍历过深）。
   // 返回的是 listInstalledSkills 能直接扫描的目录——即"技能子目录的父目录"，
-  // 因为 listInstalledSkills(dirs) 对每个 dir 做 readdir 找子目录里的 SKILL.md。
+  // 因为 listInstalledSkills 对每个 dir 做 readdir 找子目录里的 SKILL.md。
   function findSkillDirs(pkgDir, depth = 0) {
     if (depth > 4) return [];
     const out = [];
@@ -793,7 +802,7 @@ export async function apply(ctx, config = {}) {
         page: args.page || 1,
         pageSize: args.pageSize || 20,
       });
-      const installed = await listInstalledSkills(settings.skillDirs);
+      const installed = await installedCache.list(settings.skillDirs);
       const installedSlugs = new Set(installed.map((item) => item.slug));
       return {
         ...result,
@@ -841,6 +850,7 @@ export async function apply(ctx, config = {}) {
         skillDirs: settings.skillDirs,
         cache: marketCache,
       });
+      installedCache.invalidate();
       const mounted = Boolean(disposeProvider);
       return {
         ...result,
@@ -859,7 +869,7 @@ export async function apply(ctx, config = {}) {
     parameters: { type: "object", properties: { dir: { type: "string" } }, additionalProperties: false },
     handler: async (args) => {
       const dirs = args.dir ? [expandPath(args.dir)] : settings.skillDirs;
-      const items = await listInstalledSkills(dirs);
+      const items = await installedCache.list(dirs);
       return { dirs, total: items.length, items };
     },
   });
@@ -875,7 +885,9 @@ export async function apply(ctx, config = {}) {
     },
     handler: async (args) => {
       const dirs = args.dir ? [expandPath(args.dir)] : settings.skillDirs;
-      return uninstallSkill({ slug: args.slug, dirs, trashDir, agentsHomeSkillsDir: join(agentsHome(), "skills") });
+      const uninstalled = await uninstallSkill({ slug: args.slug, dirs, trashDir, agentsHomeSkillsDir: join(agentsHome(), "skills") });
+      installedCache.invalidate();
+      return uninstalled;
     },
   });
 
@@ -1257,7 +1269,7 @@ function needsConfirmFor(patch, current) {
           pageSize: body.pageSize || 24,
           sort: body.sort || "",
         });
-        const installedNow = await listInstalledSkills(settings.skillDirs);
+        const installedNow = await installedCache.list(settings.skillDirs);
         const taken = new Set(installedNow.map((item) => item.slug));
         // 每个源都实现了真正的翻页（服务端 page，或缓存全量目录后本地切片），
         // 所以「加载更多」是否可用完全由这一页返回的 hasMore 决定。
@@ -1288,6 +1300,7 @@ function needsConfirmFor(patch, current) {
         });
         // 让新装技能立即出现在对话框 / 浮窗里：往 DSH 原生扫描路径写一份 junction/symlink
         await registerInstalledSkillToCatalog(installed, log);
+        installedCache.invalidate();
         return installed;
       }
       case "skills.list": {
@@ -1295,7 +1308,9 @@ function needsConfirmFor(patch, current) {
         return { dirs: await collectDshNativeSkillDirs(), groups: grouped.groups, items: grouped.items };
       }
       case "skills.uninstall":
-        return uninstallSkill({ slug: body.slug, dirs: settings.skillDirs, trashDir, agentsHomeSkillsDir: join(agentsHome(), "skills") });
+        const removed = await uninstallSkill({ slug: body.slug, dirs: settings.skillDirs, trashDir, agentsHomeSkillsDir: join(agentsHome(), "skills") });
+        installedCache.invalidate();
+        return removed;
       case "skills.trash": {
         return listTrash({ trashDir, dirs: settings.skillDirs });
       }
@@ -1308,6 +1323,7 @@ function needsConfirmFor(patch, current) {
         } catch {
           /* ignore */
         }
+        installedCache.invalidate();
         return restored;
       }
       case "skills.trashEmpty": {
@@ -1318,6 +1334,7 @@ function needsConfirmFor(patch, current) {
         } catch {
           /* ignore */
         }
+        installedCache.invalidate();
         return cleared;
       }
       case "skills.import": {
@@ -1326,13 +1343,15 @@ function needsConfirmFor(patch, current) {
         const info = await stat(target);
         const kind = info.isDirectory() ? "local" : /\.zip$/i.test(target) ? "zip" : "";
         if (!kind) throw new Error("只支持目录或 .zip 文件");
-        return installSkill({
+        const imported = await installSkill({
           source: kind,
           reference: target,
           name: body.name || "",
           force: Boolean(body.force),
           skillDirs: settings.skillDirs,
         });
+        installedCache.invalidate();
+        return imported;
       }
       case "skills.importZip": {
         const b64 = String(body.dataBase64 || "");
@@ -1372,6 +1391,7 @@ function needsConfirmFor(patch, current) {
             dir: body.dir || "",
             skillDirs: settings.skillDirs,
           });
+          installedCache.invalidate();
           await registerInstalledSkillToCatalog(installed, log);
           return { ...installed, fileName: label, entries: entries.length, skipped: zipRead.skipped };
         } finally {
@@ -1412,10 +1432,13 @@ function needsConfirmFor(patch, current) {
             force: Boolean(body.force),
           });
         }
+        // upload 落地了新的技能目录：先失效再单扫一次，循环内只做 find（旧写法是每条 item
+        // 都全盘重扫一次，N+1）。
+        installedCache.invalidate();
+        const uploaded = await installedCache.list(settings.skillDirs);
         for (const item of result.items || []) {
           try {
-            const installed = await listInstalledSkills(settings.skillDirs);
-            const match = installed.find((s) => s.slug === item.slug);
+            const match = uploaded.find((s) => s.slug === item.slug);
             if (match) await registerInstalledSkillToCatalog(match, log);
           } catch {
             /* registration is best-effort */
@@ -1517,6 +1540,7 @@ function needsConfirmFor(patch, current) {
               skillDirs: [tmpRoot],
               cache: marketCache,
             });
+            installedCache.invalidate();
             const detail = await readSkillBody([tmpRoot], installed.slug);
             return {
               slug: installed.slug,
@@ -1555,6 +1579,7 @@ function needsConfirmFor(patch, current) {
             skillDirs: [tmpRoot],
             cache: marketCache,
           });
+          installedCache.invalidate();
           const detail = await readSkillBody([tmpRoot], installed.slug);
           return {
             slug: installed.slug,
@@ -1594,6 +1619,7 @@ function needsConfirmFor(patch, current) {
         } catch {
           /* ignore */
         }
+        installedCache.invalidate();
         return updated;
       }
       case "mcp.detail": {
@@ -1726,7 +1752,7 @@ function needsConfirmFor(patch, current) {
           // 打开某个技能的文件夹
           const slug = String(body.slug || "");
           if (!slug) throw new Error("market.openDir: skill 需要一个 slug");
-          const all = await listInstalledSkills(await collectDshNativeSkillDirs());
+          const all = await installedCache.list(await collectDshNativeSkillDirs());
           const item = all.find((x) => x.slug === slug);
           if (!item) throw new Error(`未找到技能 ${slug}`);
           // item.dir 现在就是技能自身所在目录（@owner 布局下与根目录不同），
@@ -1875,7 +1901,7 @@ function needsConfirmFor(patch, current) {
           pageSize: body.pageSize || 24,
           sort: body.sort || "",
         });
-        const harvestedTaken = new Set((await listInstalledSkills(settings.skillDirs)).map((item) => item.slug));
+        const harvestedTaken = new Set((await installedCache.list(settings.skillDirs)).map((item) => item.slug));
         // final 随 spread 原样透传（只有收口包才有这个键）：面板契约 —— 看到 final:true 就把
         // 整表替换成 rows，没看到就按 source|slug 增量 upsert。中间包绝不带 final。
         return {
@@ -1888,7 +1914,7 @@ function needsConfirmFor(patch, current) {
         // 未知/过期 id：报 ok:false 而不是抛错，面板据此回落 skills.search（旧服务器没有这两个
         // op 时走 default 的 unknown operation，同样是 ok:false，两条路径都不需要面板特判）。
         if (!nextPackage) return { ok: false, error: "该 harvest 会话不存在或已过期，请改用 skills.search" };
-        const polledTaken = new Set((await listInstalledSkills(settings.skillDirs)).map((item) => item.slug));
+        const polledTaken = new Set((await installedCache.list(settings.skillDirs)).map((item) => item.slug));
         // 同上：final:true 的那一次透传给面板做整表替换，其余包是增量。
         return {
           ok: true,

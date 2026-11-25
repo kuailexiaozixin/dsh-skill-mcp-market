@@ -78,6 +78,60 @@ export async function listInstalledSkills(dirs) {
   return out.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
+/**
+ * 带 TTL 的 listInstalledSkills 缓存。
+ *
+ * 动机：listInstalledSkills 是全盘扫描（本机 3630 个 SKILL.md，冷 ~986ms / 热 ~49ms），
+ * 而面板轮询与登记回读会在同一批目录上反复扫它。这里只缓存「目录集合 -> 技能列表」这一
+ * 纯派生结果，任何会改动技能集的操作都必须调用 invalidate()。
+ *
+ * 返回值契约：list() 每次给出一个新数组（浅拷贝），且入库的列表本身被 Object.freeze 冻结，
+ * 因此调用方 push/splice/排序都不会污染缓存；数组内的条目对象是共享只读引用，请勿就地改。
+ *
+ * @param {{ttlMs?: number, maxEntries?: number, scan?: (dirs: string[]) => Promise<any[]>}} [options]
+ */
+export function makeInstalledCache({ ttlMs = 3000, maxEntries = 32, scan = listInstalledSkills } = {}) {
+  /** key -> { at: number, value: readonly any[] }；Map 保持插入序，超容量时淘汰最旧。 */
+  const store = new Map();
+  /** key -> 在途 Promise，合并面板 250ms 轮询打来的并发同 key 请求。 */
+  const pending = new Map();
+  // 代际计数：invalidate() 发生在某次扫描在途时，那次结果落地前会被判为过期而丢弃。
+  let generation = 0;
+
+  const keyOf = (dirs) => JSON.stringify((dirs || []).map((dir) => String(dir)));
+
+  async function list(dirs) {
+    const key = keyOf(dirs);
+    const hit = store.get(key);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.value.slice();
+    const inflight = pending.get(key);
+    if (inflight) return (await inflight).slice();
+    const at = generation;
+    const task = (async () => {
+      try {
+        const rows = await scan(dirs);
+        // 扫描期间被 invalidate() 过：这份结果已经是历史，不能写回缓存。
+        if (generation !== at) return rows;
+        const frozen = Object.freeze(rows);
+        store.set(key, { at: Date.now(), value: frozen });
+        while (store.size > maxEntries) store.delete(store.keys().next().value);
+        return frozen;
+      } finally {
+        pending.delete(key);
+      }
+    })();
+    pending.set(key, task);
+    return (await task).slice();
+  }
+
+  function invalidate() {
+    generation += 1;
+    store.clear();
+  }
+
+  return { list, invalidate, keyOf, size: () => store.size };
+}
+
 function uniqueSlug(base, taken) {
   let slug = base || "skill";
   let index = 2;

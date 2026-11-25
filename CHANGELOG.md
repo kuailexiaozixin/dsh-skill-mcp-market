@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.176
+
+- 已安装技能列表缓存（T-A）：src/skills.js 新增 `export function makeInstalledCache({ ttlMs = 3000, maxEntries = 32, scan = listInstalledSkills } = {})`（:93，list :103-125 / invalidate :127-130）——store Map 按 `keyOf(dirs)` 存 `{ at, value: Object.freeze(rows) }`，命中回 `hit.value.slice()` 防调用方原地改；pending Map 合并在途同 key 扫描；`generation` 代际丢弃使 invalidate 之前起飞的那次扫描结果不得写回（否则变更前旧列表会在 TTL 内继续供出）。返回 {list, invalidate, keyOf, size}。
+- 为什么必须缓存：listInstalledSkills 逐目录 readdir + 逐 SKILL.md readFile 且全仓无缓存，本机 3630 个 SKILL.md 实测冷 986ms / 热 49ms；harvest 面板 250ms 轮询每个 start/poll 各扫一次全盘（index.js:1904/:1917），首包白吃近 1s。
+- 接线（index.js +40/-14）：:21 import 换入 makeInstalledCache、:48 模块级 `const installedCache = makeInstalledCache();`；只读 8 点 :608/:805/:872/:1272/:1438/:1755/:1904/:1917（`await listInstalledSkills(` 残留 0）；失效 14 点 :364/:509/:853/:889/:1303/:1312/:1326/:1337/:1353/:1394/:1437/:1543/:1582/:1622 覆盖 install/uninstall/import/importZip/restoreFromTrash/emptyTrash/updateSkill/toggleSkillFile 全部变更面。
+- 顺带修掉 skills.upload 的 N+1 全盘扫：原 :1415-1423 在 for-of 里逐条调 listInstalledSkills（每条一次全盘 readdir+readFile），现改为循环前 `installedCache.invalidate()` 一次 + 循环内 `installedCache.list()`（index.js:1437/:1438），一批 N 条只扫一次。
+- harvest 首包不再冷扫：start 与 poll 共用同一 TTL 窗口（installedCache :93 默认 ttlMs 3000 > 面板 250ms 轮询间隔），250ms 节奏下同一浏览会话只扫 1 次全盘。宿主面 `invalidateSkills`（声明 :371、调用 :497/:515/:1307/:1317/:1593）与新增缓存无关，同名不同物，未被复用。
+- TDD 判据缺口与返工（如实记录）：run1 的变异自证在内存内 `new Function` 跑，红=10/10 但覆盖不到磁盘态；lead 亲跑变异把 `if (generation !== at) return rows;` 整行删除，test-installed-cache 仍 84/0 全绿 ⇒ 代际丢弃当时 0 判据锁住。返工（run 2/3，边界只改测试文件）补 2 条端到端断言「在途扫描期间 invalidate：那次结果不写回缓存（size 归 0）」「脏写被代际丢弃，下一次拿到新扫描的结果」，自证清单加 F6（删 guard）/F7（判据取反）。
+- lead 复验变异（改盘→跑→字节级还原，restored equal=true）：删 generation guard ⇒ 79 passed/9 failed exit=1；判据取反 ⇒ 79/9；删 `generation += 1;` ⇒ 80/10（含「失效时递增代际（丢弃在途结果）」）；另 F1 TTL 恒假 ⇒ 71/10、F5 返回冻结本体 ⇒ 77/6、删 pending.set ⇒ 78/6、删淘汰 ⇒ 77/7 均红。终态 test-installed-cache **90 passed / 0 failed**（新建 313 行/20038B 纯 LF，12 例工厂变异 + 5 例 index 语义锁）。
+- 渐进式加载契约零改动复核：test-harvest 91/0、test-panel-harvest 70/0、test-search-latency-recovery 99/0、test-search-fanout-latency 207/0、test-live-verify 判据套件绿 ⇒ 缓存只吃扫描成本，未改 rows/installed 标记语义。
+- src/shipped.js 首次行为级覆盖（T-B）：新建 test/test-shipped.mjs（283 行/17510B 纯 LF，8 个 Test 块 81 判据，**80 passed / 0 failed / 1 skipped**）——SHIPPED 键集、candidateFiles 五组布局逐一命中与三段/单段包名拆段、未命中回 null 不抛、优先级链 explicitRoot > env.DSH_SHIPPED_ROOT > process.resourcesPath > execDir/resources > execDir（含显式根落空后继续试 env 根）、importShipped 真 import 命名导出与 default、重复导入命中缓存、同根两包不串台、失败时 cache.delete 后再补齐依赖可成功、错误文案、pluginFrom 恰五键且 reusable:true。前置 LAYOUTS 表 + plant() + withStubbed()（临时改写三个进程级根再 finally 还原），temp 目录一律 safeTempDir()。
+- lead 亲验 shipped 变异 7 例（均转红后还原）：删 `cache.delete(file);`、ENTRY 改 lib/main.js、显式根注入错值 ⇒ 71/9、单删 layout-4 候选、删 layout-5 ⇒ 79/1、删 `push(execDir);` ⇒ 79/1、删 env 根 push ⇒ 78/2 ⇒ 五组布局与优先级链逐条有活判据，非 vacuous。src/shipped.js 一字未改（git hash-object = 0d82dae1334724ec5aef92b66f310319baf5b298 = HEAD blob）。
+- 门登记：package.json version 0.5.175⇒0.5.176，test:chain 73⇒75 段（末两段 test-installed-cache.mjs、test-shipped.mjs）；test-suite-inventory 12/0（此前「游离: test-installed-cache.mjs, test-shipped.mjs」的预期红按预测自愈）、test-gate-replay 50/0/0 档案不失真、test-gate-contract 54/0（含 0.5.175 批1 的 timeout-minutes 锁）、test-cleanup 14/0、test-dead-exports 47/0、test-temp-hygiene 7/0、test-index-runtime 26/0、test-rpc-surface 6/0、test-new-features 43/0。
+- 本批遗留（0.5.177 候选）：HTTP_BLOCKED_OPS 仍是空集（index.js:1132，harvest 两 op 未在 HTTP 面屏蔽）；src/zip.js / toolcall-guard / session-repair / auto-repair / frontmatter / provider 仍薄判据；ModelScope 可达集合外的分类（如「监控」实测 0 条）覆盖与否属产品决策，留用户定夺。
+
 ## 0.5.175
 
 - CI 墙钟兜底与死脚本清理（批1，commit 512890b）：.github/workflows/publish.yml 加 job 级 timeout-minutes: 25，删除 publish-0.5.19.ps1（手工 npm publish + 2FA 告警的死物，现行是推 v* tag 走 Trusted Publishing）；补判据 test/test-gate-contract.mjs Test 4 锁 publish.yml 必须含 timeout-minutes（54/0；删该行变异 ⇒ 53/1 转红，还原 ⇒ 54/0）。
