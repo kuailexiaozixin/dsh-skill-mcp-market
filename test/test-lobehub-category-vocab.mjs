@@ -704,8 +704,28 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
     check('渲染集合随 catsExpanded 切换（不是恒按窗口铺开）',
         /catsExpanded \? allRealChips/.test(client) && /const allRealChips = expandedChips;/.test(client),
         (client.split(NL).find((l) => l.includes('catsExpanded ?')) || '(none)').trim().slice(0, 160));
-    check('展开偏好持久化（跨重挂载与刷新保留，与回收站/分组折叠同口径）',
-        /dsh-skill-mcp-market\.cats-expanded/.test(client) && /localStorage\.setItem\(CATS_EXPANDED_KEY/.test(client), '');
+    // 重启路径判据（用户 m19770①）：展开态曾经落 localStorage ⇒ 宿主重启后每次开面板都全量展开，
+    // 只剩 catsRow 的 maxHeight:116 兜底——「默认就该是一行」这个报障口径被持久化吃掉了。
+    // 口径：展开是本次浏览的临时动作，不是偏好；重挂载 / 刷新 / 重启一律默认收起。
+    check('展开态不落持久化：CATS_EXPANDED_KEY 与 cats-expanded 字样在 client.js 里彻底不存在（留着不读同样是隐患）',
+        !/CATS_EXPANDED_KEY/.test(client) && !/cats-expanded/.test(client),
+        JSON.stringify({ key: (client.match(/CATS_EXPANDED_KEY/g) || []).length, ls: (client.match(/cats-expanded/g) || []).length }));
+    check('展开态初值是字面量 false（不是惰性初始化函数——函数体里读存储是最容易看漏的写法）',
+        /const \[catsExpanded, setCatsExpanded\] = useState\(false\);/.test(client),
+        (client.split(NL).find((l) => l.includes('const [catsExpanded, setCatsExpanded]')) || '(none)').trim().slice(0, 130));
+    // 切源复位：chip 词表随源变（lobehub 246 类 / modelscope 20 类），展开态跨源残留会让用户在
+    // 新源上直接看到一屏不相干的铺开标签，正是 m19004 抱怨的形状。复位必须落在切源那一段里。
+    check('切源时复位展开态（setSource 那一段里必须 setCatsExpanded(false)）',
+        (() => {
+            const at = clientLines.findIndex((l) => l.includes('setSource(key);'));
+            if (at < 0) return false;
+            const seg = clientLines.slice(at, at + 14).join(NL);
+            return /setCatsExpanded\(false\)/.test(seg) && /searchSkills\(query, \{ source: key/.test(seg);
+        })(),
+        (() => { const at = clientLines.findIndex((l) => l.includes('setSource(key);')); return at < 0 ? '(no setSource(key);)' : clientLines.slice(at, at + 14).filter((l) => /setCatsExpanded|searchSkills\(query/.test(l)).map((l) => l.trim()).join(' | '); })());
+    check('展开/收起入口仍走 toggleCats（去持久化不许把 toggleCats 一起删掉，渲染块靠它）',
+        /const toggleCats = \(next\) => \{/.test(client) && !/localStorage\.setItem\(CATS_EXPANDED_KEY/.test(client),
+        (client.split(NL).find((l) => l.includes('localStorage.setItem(CATS_EXPANDED_KEY')) || '(removed)').trim().slice(0, 130));
     check('收起态 chip 行是单行横向滚动（报障主诉求：不占大半个空间）',
         /chipRow: \{[^\n]*flexWrap: 'nowrap'/.test(client) && /style: catsExpanded \? S\.catsRow : S\.chipRow/.test(client), '');
     // 现网新缺陷（0.5.169 装机后 modelscope 面板实拍）：一行 20 个中文 chip 被压成一列一字竖排。

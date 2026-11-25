@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.171
+
+- 用户 m19770 遗留项①收口：展开态去持久化。0.5.169 把分类 chip 展开偏好写进 localStorage（dsh-skill-mcp-market.cats-expanded），
+  宿主重启不清 ⇒ 每次开面板都直接铺开全量标签，只剩 S.catsRow 的 maxHeight:116 兜底——m18209 原始诉求「默认就该是一行」
+  被持久化吃掉了。口径改为：展开是本次浏览的临时动作，不是偏好。CATS_EXPANDED_KEY 常量与 cats-expanded 存储键在 client.js
+  里彻底删除（留着不读同样是隐患），初值改成字面量 useState(false) ⇒ 重挂载 / 刷新 / 重启一律默认收起。
+- 切源复位展开态：源 tab 的 onClick 里 setCategory('all') 之后补 setCatsExpanded(false)。chip 词表随源变（lobehub 246 类 /
+  modelscope 20 类），展开态跨源残留会让用户在新源上直接看到一屏不相干的铺开标签，正是 m19004 抱怨的形状。
+- 判据随动（用户 m19770 遗留项②）：test-lobehub-category-vocab 里旧的「展开偏好持久化（跨重挂载与刷新保留）」2 行
+  替换为 4 条重挂载路径判据——CATS_EXPANDED_KEY/cats-expanded 字样零命中、初值必须是字面量 useState(false)
+  （惰性初始化函数体里读存储是最容易看漏的写法，故锁字面量而非只锁行为）、切源那一段（setSource(key) 起 14 行窗口内）
+  必须同时出现 setCatsExpanded(false) 与 searchSkills(query, { source: key（证明复位落在真切源路径上）、
+  toggleCats 仍在位且不再写存储。套件 111 passed / 0 failed（净 +4 条）。
+- 变异自证（改 client.js 跑套件后还原，sha 回基线）：M-a 删掉切源复位行 ⇒ 1 红；M-b 把 useState(false) 改回惰性读
+  localStorage ⇒ 2 红（不落持久化 + 字面量初值）；M-c 在 toggleCats 里恢复 localStorage.setItem ⇒ 1 红。
+- 诚实边界：去持久化之后「展开」只活在一次面板挂载内，习惯展开着翻长列表的用户刷新后要重新点一次。这是刻意取舍
+  （默认一行是 m18209 的原始诉求）。若实测确有感，正解是 sessionStorage（会话内记住、重启即清），不是回到 localStorage。
+- 依赖：本批改动全在 client.js（面板 bundle），插件 server 侧无改 ⇒ 装机即生效，不需要宿主重启。
+
 ## 0.5.170
 
 - 现网实拍缺陷（0.5.169 装机后 modelscope 面板）：中文分类 chip 被压成一列一字竖排。根因不是 chipRow 的

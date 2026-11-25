@@ -686,11 +686,9 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const [cardBatch, setCardBatch] = useState(1);
       const [sort, setSort] = useState('default');
       const [category, setCategory] = useState('all');
-      // 分类 chip 展开偏好：默认收起成一行（用户 m18209 的报障口径），跨面板重挂载与刷新保留。
-      const CATS_EXPANDED_KEY = 'dsh-skill-mcp-market.cats-expanded';
-      const [catsExpanded, setCatsExpanded] = useState(() => {
-        try { return window.localStorage.getItem(CATS_EXPANDED_KEY) === '1'; } catch { return false; }
-      });
+      // 分类 chip 展开态：本次浏览的临时动作，一律默认收起（用户 m18209 报障口径；m19770 复审：
+      // 落 localStorage 会让宿主重启后每次开面板都全量展开，只剩限高兜底——不持久化）。
+      const [catsExpanded, setCatsExpanded] = useState(false);
       const [pageJump, setPageJump] = useState('');
       const [mcpPageJump, setMcpPageJump] = useState('');
       // 跳页被拒绝时的可见理由（两 tab 共用一个：同一时刻只有一个分页器可见）
@@ -1962,10 +1960,9 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const expandedChips = splitBuckets(vocabChips.filter(realChip));
       const allRealChips = expandedChips;
       const collapseChip = { value: CATS_COLLAPSE, label: '收起分类', totalAll: 0, fixed: true };
+      // 展开态只活在本次面板（重挂载/刷新/重启回到收起态），不再落 localStorage。
       const toggleCats = (next) => {
-        const want = next === true;
-        setCatsExpanded(want);
-        try { window.localStorage.setItem(CATS_EXPANDED_KEY, want ? '1' : '0'); } catch { /* 拒绝存储只是不记忆，不影响本次筛选 */ }
+        setCatsExpanded(next === true);
       };
       const chipEntries = [{ value: 'all', label: '全部分类', totalAll: 0, fixed: true }]
         .concat(catsExpanded ? allRealChips.concat(chipFold.other ? [collapseChip] : []) : chipFold.window);
@@ -2402,6 +2399,8 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                             // 切源时重置分类：新源不一定有分类字段，沿用旧值会导致空列表
                             setSource(key);
                             setCategory('all');
+                            // 新源的 chip 词表不同，展开态跨源残留会铺开一屏不相干标签：切源即复位成一行。
+                            setCatsExpanded(false);
                             // 切源时若旧源支持的排序键新源不支持，必须回落 default：
                             // 否则 sort 残留（如在 clawhub 选 trending 再切 skillsmp）会下发一个无效键。
                             const nextCaps = capsFor(sortCaps && sortCaps.skills ? sortCaps.skills[key] : null, Boolean(String(query || '').trim()));
