@@ -18,6 +18,15 @@
 - 诚实边界：去持久化之后「展开」只活在一次面板挂载内，习惯展开着翻长列表的用户刷新后要重新点一次。这是刻意取舍
   （默认一行是 m18209 的原始诉求）。若实测确有感，正解是 sessionStorage（会话内记住、重启即清），不是回到 localStorage。
 - 依赖：本批改动全在 client.js（面板 bundle），插件 server 侧无改 ⇒ 装机即生效，不需要宿主重启。
+- 发布闭环：CI run 45557232359（publish.yml, tag v0.5.171）completed success（3m49s，Run tests ✓ + Publish ✓）；npm 传播 7 轮 25s 轮询后 npm view dsh-skill-mcp-market@0.5.171=0.5.171、dist-tags.latest=0.5.171；
+  装机 dsh plugin --profile desktop add ⇒「- 0.5.170 / + 0.5.171，Done in 8.6s using pnpm v11.28.5」。装机产物自证：profile 里 client.js 的 CATS_EXPANDED_KEY=0、cats-expanded=0、useState(false)=1、setCatsExpanded(false) 落在 :2403（切源段）。
+- 面板 live 复验（同场景 Before/After，port=54733，本会话面板 tab BD699D681AB3D0D9737CFEFC2D0C0F34）：
+  · 全新挂载默认收起：刷新页面后打开面板切到 modelscope ⇒ chip 行 21 个 button 全在 y=141 单行（sha256:0461df8b56eebb273030f8a8cdd99fd38e929f991eea0985acd87f504f797c15）。
+  · 展开态限高仍生效：lobehub 点「窗外 214 类合计 743 条」⇒ 铺开 331 个 button，chip 容器 div box={x:292,y:141,width:970,height:116}（内部纵向滚动，sha256:c608a165e004b37a685b11a6ad6179eadbc8a1c49ded5fa96e4a0e850ea19f62）。
+  · 切源复位（本批新增行为）：展开状态下点 modelscope ⇒ 回到 21 chip 单行 y=141、「收起分类」入口消失、卡片区紧随其下（sha256:f3798cd19e7f97ef6893a727b8115cd26219a2c95f5822b34654859700961366）。
+- 现网一键验收（0.5.171 装机后）：node test/live-verify.mjs ⇒ port=54733 fingerprint=new，rows=14 LIVE-FAIL=0 NOT-TESTED=0 GAP=2，RESULT: PASS exit=0（两条 GAP 与 0.5.170 同：「监控」=可达集合外覆盖缺口、__cat_other=服务端旧通路信息项）。
+- 追加 docs 前的小勘正（提交 937b76f，不升版本）：client.js 渲染块两处注释仍写「「其他」是面板自造入口」「窗外 214 类」——0.5.169 起入口已改名「窗外」、类数不该硬编码 lobehub 的 214；test/live-verify.mjs:108 备注补「0.5.171 起展开态不再持久化」。tag v0.5.171 仍 peel=d17243c（docs/注释勘正不入 tag，同 0.5.163/164/166/168/170 先例）。
+- 卫生复查：工作区根 60 条目、字面 %SystemDrive% 树 absent、仓库根 git status 干净、.dsh-tmp absent（.local 与 undefined 是既有合法条目，非本轮产物）。
 
 ## 0.5.170
 
