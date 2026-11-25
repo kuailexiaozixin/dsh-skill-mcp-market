@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.170
+
+- 现网实拍缺陷（0.5.169 装机后 modelscope 面板）：中文分类 chip 被压成一列一字竖排。根因不是 chipRow 的
+  flexWrap:'nowrap'，而是 S.chip 自己没有拒绝压缩——flex 子项默认 flex-shrink:1，中文词的 min-content 宽度
+  只有一个字，于是一行放不下时逐字折行；lobehub 的英文 slug 整词不可断，把缺陷掩盖住了（0.5.168 复验没暴露）。
+- 修法：S.chip 补 whiteSpace:'nowrap' + flexShrink:0，超出宽度交给 chipRow 横向滚动（chip 是短标签按钮，
+  永远不许压缩折行）。
+- 判据：test-lobehub-category-vocab 新增 3 条——样式体可从 client.js 整段取到、取到的是箭头函数本身
+  （真跑一次调用才拿到对象，直接断言对象会假绿）、whiteSpace/flexShrink 双锁。变异自证 M-ws / M-fs 各红 1 条。
+- 版本口径：0.5.169 的 npm tarball 已发布且不含本修复（同一版本不能重发），故本批走 0.5.170。
+
 ## 0.5.169
 - 一句话：收掉用户三条报障（「其他」到底是干什么的、lobehub 展开后还是铺满屏、modelscope「其他」该放末尾且部分标签搜不出东西），并把面板里两个撞名的「其他」彻底分开。
 - 窗外入口改名「窗外」（新增 CAT_TAIL_LABEL，foldChips 第三参下发）：以前面板自造的窗外披露叫「其他」，而上游词表里真有同名分类——lobehub 第 190 类 slug=general / label 其他（1 条）、modelscope 第 7 类 slug 其他、clawhub 第 14 类 slug=other。两个「其他」并排，用户按 m18991 的原话就是「我搞不懂操作逻辑」。文案现在是「窗外 214 类合计 743 条」，身份自证。

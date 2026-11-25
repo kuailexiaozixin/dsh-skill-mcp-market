@@ -555,6 +555,11 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       // auto-fill：宽面板自动多列、窄侧边栏自动降到 2/1 列，不再固定三列把按钮挤成两行。
     grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(272px, 1fr))', gap: 10, alignContent: 'start', alignItems: 'start' },
       chip: (active) => ({
+        // 0.5.169 现网缺陷（中文分类名）：chipRow 是 flexWrap:'nowrap'，flex 子项默认 flex-shrink:1
+        // ⇒ 一行放不下时被压缩；中文词的 min-content 宽度只有一个字，于是「开发工具」被压成一列一字
+        // 竖排（lobehub 的英文 slug 整词不可断，掩盖了这个缺陷）。chip 是短标签按钮，永远不许压缩折行。
+        whiteSpace: 'nowrap',
+        flexShrink: 0,
         padding: '4px 10px',
         borderRadius: 999,
         cursor: 'pointer',

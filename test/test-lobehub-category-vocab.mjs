@@ -708,6 +708,21 @@ console.log('Test 8: 派生兜底的截断上限（词表缺失时不得再只�
         /dsh-skill-mcp-market\.cats-expanded/.test(client) && /localStorage\.setItem\(CATS_EXPANDED_KEY/.test(client), '');
     check('收起态 chip 行是单行横向滚动（报障主诉求：不占大半个空间）',
         /chipRow: \{[^\n]*flexWrap: 'nowrap'/.test(client) && /style: catsExpanded \? S\.catsRow : S\.chipRow/.test(client), '');
+    // 现网新缺陷（0.5.169 装机后 modelscope 面板实拍）：一行 20 个中文 chip 被压成一列一字竖排。
+    // 根因不是 chipRow 的 nowrap，而是 S.chip 自己没有拒绝压缩：flex 子项默认 flex-shrink:1，
+    // 中文词的 min-content 只有一个字宽 ⇒ 空间不够就逐字折行。lobehub 的英文 slug 整词不可断，
+    // 所以这条在 lobehub 上看不出来——判据必须真跑样式函数，光看 chipRow 是抓不到的。
+    const chipStyleSrc = (client.match(/chip: \(active\) => \(\{[\s\S]{0,600}?\n {6}\}\)/) || [''])[0];
+    check('S.chip 样式体可被真跑取到（不复制实现）', /padding: '4px 10px'/.test(chipStyleSrc), chipStyleSrc.slice(0, 90));
+    const chipStyleFn = (() => {
+        try { return new Function('return (' + chipStyleSrc.replace('chip: ', '') + ');')(); }
+        catch (e) { return { err: String((e && e.message) || e) }; }
+    })();
+    check('chip 样式函数真跑出不抛（取到的是箭头函数本身，不是结果对象）',
+        typeof chipStyleFn === 'function', JSON.stringify(chipStyleFn && chipStyleFn.err));
+    const chipStyle = typeof chipStyleFn === 'function' ? chipStyleFn(false) : chipStyleFn;
+    check('chip 拒绝压缩折行（whiteSpace nowrap + flexShrink 0：中文分类名一列一字=现网缺陷）',
+        chipStyle.whiteSpace === 'nowrap' && chipStyle.flexShrink === 0, JSON.stringify({ ws: chipStyle.whiteSpace, fs: chipStyle.flexShrink }));
     check('展开态 chip 行限高并内部纵向滚动（m19004：246 类不再铺满半屏）',
         /catsRow: \{[^\n]*maxHeight: 116[^\n]*overflowY: 'auto'/.test(client), (client.split(NL).find((l) => l.includes('catsRow:')) || '(none)').trim().slice(0, 160));
     check('foldChips 外露 tail（窗外集合可点的前提；旧实现只给 covers 不给行）',
