@@ -15,7 +15,7 @@ function cliRun(pkg, args, { timeoutMs = 120000 } = {}) {
     const cmd = isWinCli
       ? [process.env.ComSpec || "cmd.exe", "/d", "/s", "/c", "npx -y " + pkg + " " + args.map((a) => JSON.stringify(a)).join(" ")]
       : ["npx", "-y", pkg, ...args];
-    execFile(cmd[0], cmd.slice(1), { timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(cmd[0], cmd.slice(1), { timeout: timeoutMs, windowsHide: true, maxBuffer: 8 * 1024 * 1024, env: childEnv() }, (err, stdout, stderr) => {
       if (err) reject(new Error(pkg + " CLI 失败：" + String((stderr || err.message || "")).slice(0, 160)));
       else resolve(String(stdout || ""));
     });
@@ -26,7 +26,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { skillMetaFromText } from "./frontmatter.js";
-import { safeTempDir } from "./home.js";
+import { safeTempDir, childEnv } from "./home.js";
 
 const UA = { "User-Agent": "dsh-skill-mcp-market/0.9", accept: "application/json" };
 

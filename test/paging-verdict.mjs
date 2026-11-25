@@ -17,13 +17,22 @@ export function overlapVerdict(o) {
   const overlap = Number(o.overlap) || 0;
   if (overlap === 0) return { verdict: 'ok', reason: '' };
   if (pageCount > 0 && overlap >= pageCount) return { verdict: 'fail', reason: '第 2 页与第 1 页整页相同：page 参数被忽略' };
-  if (o.source === 'skillhub') {
+  if (o.source === 'skillhub' && o.sortedOverlap !== undefined && o.sortedOverlap !== null) {
     // sortedOverlap 必须由调用方真测出来；缺失（undefined）不能当 0 放行。
-    if (o.sortedOverlap === undefined || o.sortedOverlap === null) return { verdict: 'fail', reason: '未提供显式排序路径的重叠实测值' };
-    if (Number(o.sortedOverlap) === 0) return { verdict: 'skip', reason: '上游默认榜自身在重排；显式排序路径 overlap=0，本仓库分页参数无回归' };
-    return { verdict: 'fail', reason: '显式排序路径也跨页重复 sortedOverlap=' + o.sortedOverlap };
+    if (Number(o.sortedOverlap) === 0) return { verdict: 'skip', reason: 'skillhub 上游默认榜自身在重排；显式排序路径 overlap=0，本仓库分页参数无回归' };
+    return { verdict: 'fail', reason: 'skillhub 显式排序路径也跨页重复 sortedOverlap=' + o.sortedOverlap };
   }
-  return { verdict: 'fail', reason: '跨页重叠 overlap=' + overlap };
+  // 通用出口：部分重叠的两种成因必须靠「同一页重复请求是否自稳」的实测证据分开，
+  // 而不是给某个源发永久通行证。firstPageStable 未测（undefined）一律 fail ——
+  // 与 sortedOverlap 同一条原则：没测过不等于没问题。
+  // 理由必须带源名：门内那次 `跨页重叠 overlap=5` 单跑全绿却定不了性，就是因为日志里没有源。
+  if (o.firstPageStable === undefined || o.firstPageStable === null) {
+    return { verdict: 'fail', reason: o.source + ' 跨页重叠 overlap=' + overlap + '，且未实测同页重复请求的自稳性（不得凭未测放行）' };
+  }
+  if (o.firstPageStable === false) {
+    return { verdict: 'skip', reason: o.source + ' 上游默认序自身在重排（同页重复请求实测不自稳）：跨页重叠 overlap=' + overlap + '，本仓库分页参数无回归' };
+  }
+  return { verdict: 'fail', reason: o.source + ' 跨页重叠 overlap=' + overlap + '（同页重复请求实测自稳 ⇒ 本侧 offset 算术回归）' };
 }
 
 export function emptyPageAction(o) {

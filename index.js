@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, settingsPath, agentsHome, dshHome, safeTempDir } from "./src/home.js";
+import { defaultSettings, ensureDir, expandPath, loadSettings, saveSettings, settingsPath, agentsHome, dshHome, safeTempDir, childEnv } from "./src/home.js";
 import { importShipped, pluginFrom, resolveShipped, SHIPPED } from "./src/shipped.js";
 import { readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1749,7 +1749,7 @@ function needsConfirmFor(patch, current) {
           const args = process.platform === "win32" && (kind === "skill" || kind === "mcp-item")
             ? ["/select,", target]
             : [target];
-          execFile(command, args, { windowsHide: false }, () => resolve());
+          execFile(command, args, { windowsHide: false, env: childEnv() }, () => resolve());
         });
         return { opened: target, kind };
       }

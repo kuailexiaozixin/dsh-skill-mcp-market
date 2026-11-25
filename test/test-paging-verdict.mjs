@@ -97,5 +97,35 @@ console.log('Test 8: pagePairVerdict —— 空页由上游自报失败时不得
 }
 
 console.log('');
+console.log('');
+console.log('Test 9: 部分重叠按「同页自稳证据」判定，且 FAIL 必须带源名');
+{
+  // 门内实测 test-nocache 一次 `FAIL 跨页重叠 overlap=5`，单跑 14/0 全绿 —— 而定不了性，
+  // 因为 overlapVerdict 的理由里只有 overlap 数字、没有源名，日志看不出是谁。
+  // 同时 ba-staging/nocache-churn.mjs 实测：八个源里七个 stabA=12（同一页重复请求完全自稳）。
+  // 所以「部分重叠」有两种成因，必须用证据分开，而不是给某个源开永久特例：
+  //   同页自稳却仍跨页重复 → 本侧 offset 真算错 → fail（对非 skillhub 源比旧判据更讲道理）；
+  //   同页自身两次就不一致 → 上游默认序在重排 → skip（必须写明实测依据）；
+  //   没测过（undefined）→ 不得凭未测放行 → fail（与 Test 3 的 sortedOverlap 同一原则）。
+  // 整页重复（page 参数被忽略）优先于一切外部状态豁免。
+  const w = (o) => overlapVerdict(o);
+  check('自稳源部分重叠 → fail', w({ source: 'lobehub', overlap: 5, pageCount: 12, firstPageStable: true }).verdict === 'fail');
+  check('同页自不稳 → skip（外部状态）', w({ source: 'lobehub', overlap: 5, pageCount: 12, firstPageStable: false }).verdict === 'skip');
+  check('未测同页稳定性 → fail（不得凭未测放行）', w({ source: 'lobehub', overlap: 5, pageCount: 12 }).verdict === 'fail');
+  check('整页重复即使同页自不稳也 fail（豁免不吃真回归）', w({ source: 'lobehub', overlap: 12, pageCount: 12, firstPageStable: false }).verdict === 'fail');
+  check('overlap=0 一律 ok（不引入额外网络成本）', w({ source: 'lobehub', overlap: 0, pageCount: 12, firstPageStable: false }).verdict === 'ok');
+  const rf = w({ source: 'trusttools', overlap: 5, pageCount: 12, firstPageStable: true });
+  check('fail 理由带源名（可定性）', rf.reason.indexOf('trusttools') >= 0, rf.reason);
+  check('skip 理由写明来自重复请求实测', /自稳|重复请求/.test(w({ source: 'trusttools', overlap: 5, pageCount: 12, firstPageStable: false }).reason), '');
+  // skillhub 既有三条必须原样成立（旧口子不被新证据顶掉）
+  check('skillhub 显式排序干净 → 仍 skip', w({ source: 'skillhub', overlap: 7, pageCount: 12, sortedOverlap: 0 }).verdict === 'skip');
+  check('skillhub 显式排序也重复 → 仍 fail', w({ source: 'skillhub', overlap: 2, pageCount: 12, sortedOverlap: 3 }).verdict === 'fail');
+  check('skillhub 有 sortedOverlap 时优先于自稳证据', w({ source: 'skillhub', overlap: 7, pageCount: 12, sortedOverlap: 0, firstPageStable: true }).verdict === 'skip');
+  // 削弱自证：把「未测」也当放行，第三条会绿；这里要求两者结论不同，证明判据有效。
+  const weakened = { source: 'lobehub', overlap: 5, pageCount: 12 };
+  check('未测与自稳都必须 fail（不接受静默放行）', w(weakened).verdict === 'fail' && w({ ...weakened, firstPageStable: true }).verdict === 'fail');
+}
+
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

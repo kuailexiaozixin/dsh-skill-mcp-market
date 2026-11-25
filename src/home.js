@@ -63,6 +63,62 @@ export function safeTempDir() {
   return last;
 }
 
+/**
+ * The environment block handed to every child process.
+ *
+ * Root cause this guards (two live regressions, 0.5.161 and 0.5.163, same origin): on Windows a
+ * child that never receives `SystemDrive` cannot expand `%SystemDrive%`. npm does exactly that in
+ * its own config, so the un-expanded literal becomes a *relative* path and the grandchild creates a
+ * whole cache tree in the current working directory under a folder literally named `%SystemDrive%`.
+ * DSH hosts often start us with a trimmed environment, so we must not assume the key is there.
+ *
+ * Contract (test/test-child-env.mjs is the authority):
+ *  - fill only what is missing; a key the caller passed in `extra` is never overwritten, not even
+ *    when its value is an empty string (an empty value from `extra` is the caller's decision);
+ *  - an empty string coming from `base` counts as missing (Windows blocks stripped by a host carry
+ *    `KEY=` more often than they carry a real value);
+ *  - never mutate `base`, never write `process.env`, always return a fresh object;
+ *  - non-Windows: pass `{...base, ...extra}` through untouched — inventing Windows keys there would
+ *    be noise, and the literal-expansion bug cannot exist off Windows.
+ *
+ * @param {Record<string,string>|undefined} extra  caller-specific additions (win over base)
+ * @param {Record<string,string>|undefined} baseEnv  base block; defaults to process.env
+ */
+export function childEnv(extra, baseEnv) {
+  const base = baseEnv || process.env;
+  const add = extra || {};
+  const merged = { ...base, ...add };
+  if (process.platform !== "win32") return merged;
+  // Keys the caller named explicitly: honoured verbatim, empty string included.
+  const given = new Set(Object.keys(add));
+  const driveFrom = (value) => (/^[A-Za-z]:/.test(String(value || "")) ? String(value).slice(0, 2) : "");
+  // Derivation order matters: SystemRoot first (it anchors both the drive and ComSpec), then
+  // SystemDrive, which may itself have to come from the extra-supplied SystemRoot.
+  const home = homedir();
+  if (!merged.SystemRoot && !given.has("SystemRoot")) {
+    merged.SystemRoot = process.env.SystemRoot || (driveFrom(home) + "\\Windows");
+  }
+  if (!merged.SystemDrive && !given.has("SystemDrive")) {
+    merged.SystemDrive = driveFrom(merged.SystemRoot) || driveFrom(home) || "C:";
+  }
+  if (!merged.ComSpec && !given.has("ComSpec")) {
+    merged.ComSpec = merged.SystemRoot + "\\system32\\cmd.exe";
+  }
+  if (!merged.UserProfile && !given.has("UserProfile")) {
+    merged.UserProfile = process.env.UserProfile || home;
+  }
+  if (!merged.ProgramData && !given.has("ProgramData")) {
+    merged.ProgramData = merged.SystemDrive + "\\ProgramData";
+  }
+  if (!merged.AppData && !given.has("AppData")) {
+    merged.AppData = merged.UserProfile + "\\AppData\\Roaming";
+  }
+  if (!merged.LocalAppData && !given.has("LocalAppData")) {
+    merged.LocalAppData = merged.UserProfile + "\\AppData\\Local";
+  }
+  return merged;
+}
+
 export function defaultSettings() {
   const home = dshHome();
   return {

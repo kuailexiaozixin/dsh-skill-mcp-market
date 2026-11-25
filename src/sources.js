@@ -15,7 +15,7 @@ import {
   searchSkillsMp,
   searchTrustTools,
 } from "./extra-sources.js";
-import { safeTempDir } from "./home.js";
+import { safeTempDir, childEnv } from "./home.js";
 
 const UA = { "User-Agent": "dsh-skill-mcp-market/0.3 (+skill and mcp market)", accept: "application/json" };
 
@@ -436,7 +436,7 @@ async function searchBrowseSh({ query = "", page = 1, pageSize = 24, cache, sort
         ? [process.env.ComSpec || "cmd.exe", "/d", "/s", "/c", "npx -y " + cliPkg + " " + cliArgs.map((a) => JSON.stringify(a)).join(" ")]
         : ["npx", "-y", cliPkg, ...cliArgs];
       const text = await new Promise((resolve, reject) => {
-        execFile(cmd[0], cmd.slice(1), { timeout: 120000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+        execFile(cmd[0], cmd.slice(1), { timeout: 120000, windowsHide: true, maxBuffer: 8 * 1024 * 1024, env: childEnv() }, (err, stdout, stderr) => {
           if (err) reject(new Error("browse CLI 失败：" + String((stderr || err.message || "")).slice(0, 160)));
           else resolve(String(stdout || ""));
         });

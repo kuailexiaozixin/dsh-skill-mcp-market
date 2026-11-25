@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.172
+
+- 子进程环境根因守卫收口（0.5.161 / 0.5.163 两次回归同一根因，这次是根治不是清扫）：src/home.js 新增纯函数
+  childEnv(extra, baseEnv) —— Windows 下只补缺失的 SystemDrive / SystemRoot / ComSpec / UserProfile /
+  ProgramData / AppData / LocalAppData（SystemDrive 由 SystemRoot 前缀推导，UserProfile 回落 os.homedir()），
+  调用方显式给出的键（哪怕值为空串）一律不覆盖；绝不写 process.env、绝不改动 base，非 win32 原样透传。
+  此前裸奔的 7 处子进程调用全部接线：src/extra-sources.js:18（cmd /d /s /c npx）、src/sources.js:439（browse CLI）、
+  src/cli-install.js:382（curl 兜底下载）、src/http.js:32 / :126 / :257（python 探针与 curl.exe）、index.js:1752；
+  src/cli-install.js 原有的 env 拼装改为复用 childEnv，不再维护第二套口径。
+- 新套件 test/test-child-env.mjs（55 条，已登记进 test:chain：70⇒71 段）：真跑 childEnv 断言「只补缺、不覆盖」；
+  静态锁「files 白名单里不带 env 的子进程调用数 === 0」——裸调用这一类是 PR#1 Test 14 的盲区（它只锁显式写了
+  env:{...} 的调用），锁函数本身是纯函数、可喂假源码自证；并以真孙进程实测 %SystemDrive% 正常展开为盘符。
+
 ## 0.5.171
 
 - 用户 m19770 遗留项①收口：展开态去持久化。0.5.169 把分类 chip 展开偏好写进 localStorage（dsh-skill-mcp-market.cats-expanded），

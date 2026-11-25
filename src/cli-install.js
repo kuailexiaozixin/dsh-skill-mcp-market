@@ -17,7 +17,7 @@ import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { kebab, skillMetaFromText } from "./frontmatter.js";
-import { writeJson, ensureDir, expandPath } from "./home.js";
+import { writeJson, ensureDir, expandPath, childEnv } from "./home.js";
 import { readZip, stripCommonPrefix, locateSkillRoot } from "./zip.js";
 
 const isWindows = process.platform === "win32";
@@ -37,7 +37,7 @@ export function npxRun(pkg, args, { timeoutMs = 90000, env = {} } = {}) {
         maxBuffer: 16 * 1024 * 1024,
         windowsVerbatimArguments: true,
         windowsHide: true,
-        env: { ...process.env, ...env, NO_COLOR: "1", npm_config_yes: "true" },
+        env: { ...childEnv({ ...env }, { ...process.env }), NO_COLOR: "1", npm_config_yes: "true" },
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -379,7 +379,7 @@ async function downloadFile(url, target, timeoutMs = 60000) {
     // Fall back to curl
     await new Promise((resolve, reject) => {
       const curlArgs = ["-sL", "--max-time", String(Math.ceil(timeoutMs / 1000)), "--retry", "2", "-o", target, url];
-      execFile("curl", curlArgs, { timeout: timeoutMs + 20000, windowsHide: true }, (err, _stdout, stderr) => {
+      execFile("curl", curlArgs, { timeout: timeoutMs + 20000, windowsHide: true, env: childEnv() }, (err, _stdout, stderr) => {
         if (err) reject(new Error(`download failed: ${String(stderr || error.message).slice(0, 200)}`));
         else resolve(target);
       });

@@ -11,6 +11,7 @@
 import { execFile } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { childEnv } from "./home.js";
 
 const CURL_BINARIES = ["curl.exe", "curl"];
 
@@ -32,7 +33,7 @@ function runCurl(binary, url, headers, timeoutMs) {
     execFile(
       binary,
       args,
-      { maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs + 5000, windowsHide: true },
+      { maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs + 5000, windowsHide: true, env: childEnv() },
       (error, stdout) => {
         if (error) reject(error);
         else resolve(String(stdout || ""));
@@ -123,7 +124,7 @@ async function isPython(binary) {
   // the transport actually needs instead of trusting the executable's presence.
   const probe = "import json, ssl, urllib.request; print(1)";
   return new Promise((resolve) => {
-    execFile(binary, ["-c", probe], { timeout: 8000, windowsHide: true }, (error, stdout) => {
+    execFile(binary, ["-c", probe], { timeout: 8000, windowsHide: true, env: childEnv() }, (error, stdout) => {
       resolve(!error && String(stdout).trim() === "1");
     });
   });
@@ -169,7 +170,7 @@ export async function pythonText(url, { headers = {}, timeoutMs = 20000 } = {}) 
         timeout: timeoutMs + 5000,
         windowsHide: true,
         maxBuffer: 16 * 1024 * 1024,
-        env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+        env: { ...process.env, ...childEnv({ PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" }) },
       },
       (error, stdout, stderr) => {
         if (error) reject(new Error(`python 取数失败：${String(stderr || error.message).slice(0, 200)}`));
@@ -199,7 +200,7 @@ export async function pythonDownload(url, target, { timeoutMs = 120000 } = {}) {
     execFile(
       python,
       ["-c", PY_DOWNLOAD, url, target, String(timeoutMs / 1000)],
-      { timeout: timeoutMs + 10000, windowsHide: true, env: { ...process.env, PYTHONUTF8: "1" } },
+      { timeout: timeoutMs + 10000, windowsHide: true, env: { ...process.env, ...childEnv({ PYTHONUTF8: "1" }) } },
       (error, stdout, stderr) => {
         if (error) reject(new Error(`归档下载失败：${String(stderr || error.message).slice(0, 200)}`));
         else resolve(String(stdout));
@@ -254,7 +255,7 @@ async function curlPostText(url, body, { headers = {}, timeoutMs = 15000 } = {})
   for (const [name, value] of Object.entries(merged)) args.push("-H", `${name}: ${value}`);
   args.push(url);
   return new Promise((resolve, reject) => {
-    const child = execFile("curl.exe", args, { maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs + 5000, windowsHide: true },
+    const child = execFile("curl.exe", args, { maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs + 5000, windowsHide: true, env: childEnv() },
       (error, stdout) => (error ? reject(error) : resolve(String(stdout || ""))));
     if (child.stdin) {
       child.stdin.end(payload);
