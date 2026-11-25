@@ -8,7 +8,7 @@
 // 全部用注入的假 handlers + 假定时器，不打网络、不真等 13 秒。
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { safeTempDir } from '../src/home.js';
 import { pathToFileURL } from 'node:url';
 import { makeHarvestStore, searchSkills, HARVEST_BUDGET_MS, DEFAULT_BUDGET_MS_FOR_TEST } from '../src/sources.js';
 
@@ -184,7 +184,8 @@ console.log('Test 5: skills.search 出参不含 harvest 字段（防串味）');
 console.log('');
 console.log('Test 6: RPC 运行时可达（真起 index.js，注入假 ctx，不碰网络）');
 {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harvest-home-'));
+  // 父目录必须走 safeTempDir()：裸 os.tmpdir() 被 test-temp-hygiene 判红（无 TEMP/TMPDIR 时返回不可控路径）。
+const home = fs.mkdtempSync(path.join(safeTempDir(), 'dsh-harvest-home-'));
   fs.mkdirSync(path.join(home, 'market', 'skills'), { recursive: true });
   fs.mkdirSync(path.join(home, 'market', 'mcp'), { recursive: true });
   fs.mkdirSync(path.join(home, '.agents'), { recursive: true });

@@ -8,9 +8,10 @@
 - `finalMeta` 补齐：收口包 meta 带上与一次性搜索同口径的 `total / pages / hasMore / serverFacet / categoryNote / filteredOut`（`src/sources.js:1117`），面板据此整表替换分页口径；中间包 meta 刻意不带这些字段，不得伪造。
 - 「窗外」由披露入口改为真筛选：点击只出一个分类态、结果 = 窗外全部分类的并集（谓词 = 条目分类 ∈ `chipFold.other.covers`），不再把 214 类逐个铺成 chip；上游自带杂项桶（lobehub `general`、modelscope `其他`）不参与并集，否则与「全部」重叠；`upstreamCat` 仍把 `CAT_OTHER` 降级为 `all`，本地过滤口径不变。
 - 展开/收起只在「确实多东西可看」时存在：窗外类数 ≤ `CAT_TAIL_EXPAND_MAX`(40) 才渲染哨兵，lobehub（214）/modelscope 这类大尾巴源两态同形、不再铺满整屏；展开态 `S.catsRow` 限高 116px 可上下滚动（`client.js:759`）。
+- 首次 CI（run 45642081925）两红已在同批改掉并如实记录：`test-temp-hygiene` 抓到我新建的 `test-harvest.mjs:187` 用裸 `os.tmpdir()` 造夹具目录（改为 `safeTempDir()`）；`test-mcp-full-edit.mjs:133` 的 confirm 锁是「`mcp.install` 字面量后 600 字符内出现 needsConfirm」，我 harvestStore 装配（`index.js:1136-1139`）插在该串第一次命中之后 786 字符处 ⇒ 漂出窗口造成假红（不是 confirm 闸门丢了，实测 case 体内 `body.confirm !== true` 仍在）。锁改为「case 体内 `confirm … true`」语义，并对「闸门标识符改名」变异反证（baseline true / 变异 false）。
 - 新增判据：`test/test-harvest.mjs`（59 条）锁住增量集合单调、收口有序、finalMeta 与一次性同值、未知 id 回落、以及「口径唯一」的源码级互斥锁；`test/test-panel-harvest.mjs`（70 条）锁面板消费。两条均有变异反证。
 - 文档：README 新增「渐进式加载（harvest）」与「窗外分类（真筛选）」两节；`docs/ARCHITECTURE.md` 的 sources.js 职责行补上 harvest 与 foldFanResults 同口径。
-- 发布卫生：删除本机被 gitignore 的 `.dsh-tmp/`（1156866B）、`test-results.json`、`test/test-results.json`。
+- 发布卫生：`.dsh-tmp/`、`test-results.json`、`test/test-results.json` 均由 `.gitignore`（:11/:12）屏蔽，`npm pack --dry-run` 实测入包 33 个文件、三者皆不在其中；`.dsh-tmp` 是 lobehub 判据的 ASCII 夹具目录（`test-lobehub-category-vocab.mjs:88` 首选候选，中文用户名 Temp 会让 npx.cmd 失败），跑测试必然重建，不是残留污染。
 - 本批遗留（0.5.175）：`publish.yml` 无 `timeout-minutes`；`publish-0.5.19.ps1` 是手工 `npm publish` + 2FA 告警的死物且全仓无引用（现行是推 v* tag 走 Trusted Publishing）；`index.js:1415-1419` `skills.upload` 逐条重扫技能目录；harvest 首包同步扫 installed（本机 3630 个 SKILL.md ⇒ 冷 986ms / 热 49ms）；ModelScope 30 页上界改走 harvest 逐页推送。
 - 依赖面核对：本包 `dependencies/devDependencies/peerDependencies` 全空、`npm ls --all --depth=0` 为 `(empty)`，`client.js:6` 的 `require('react')` 由宿主 bundle 注入（`dsh.client.inject`）⇒ CI 无需 lockfile/`npm ci`。
 

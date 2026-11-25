@@ -130,7 +130,9 @@ console.log('');
 console.log('Test 7: mcp.install 反转——手动自定义安装可带 command');
 {
   check('install case 不再永久拒绝 command', !/if \(body\.command\) \{\s*\n?\s*throw/.test(ix));
-  check('手动安装需 confirm（两步确认）', /mcp\.install[\s\S]{0,600}NEEDS_CONFIRM|mcp\.install[\s\S]{0,600}needsConfirm/.test(ix));
+  // 0.5.174 在 install case 之前插入 harvestStore 装配（+346 字符），旧写法只看 600 字符窗口 ⇒ 漂出窗口即假红。
+// 锁的是「install case 体内要求 confirm」这一语义，不是字面标识符位置。
+check('手动安装需 confirm（两步确认）', /case "mcp\.install"[\s\S]{0,600}confirm[\s\S]{0,80}true/.test(ix) || /mcp\.install[\s\S]{0,600}NEEDS_CONFIRM|mcp\.install[\s\S]{0,600}needsConfirm/.test(ix));
   check('manualMcpDefinition 仍在（已有能力复用）', ix.includes('function manualMcpDefinition'));
 }
 
