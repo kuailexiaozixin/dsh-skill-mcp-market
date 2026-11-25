@@ -35,19 +35,31 @@ for (const source of ALL_SOURCES) {
     const ep = emptyPageAction({ p1: p1.items.length, p2: p2.items.length, total: p1.total, hasMore: p1.hasMore, attempt: epAttempt });
     const a = ids(p1.items);
     const b = ids(p2.items);
-    const overlap = b.filter((id) => a.includes(id));
+    const overlap = countOverlap(a, b);
+    // 「上游在重排」与「本侧 offset 算错」的分界证据，与 test-nocache 同一条判据：
+    // 同页同参再取一次，逐条一致才算自稳；取不到可用重复页就留 undefined，
+    // overlapVerdict 一律 fail（不得凭未测放行）。这一步必须绕过 cache——
+    // 命中缓存的「重复页」永远和第一次逐字一致，会把上游重排抹平成自稳。
+    let firstPageStable;
+    if (overlap > 0 && overlap < a.length) {
+      for (let attempt = 1; attempt <= 2 && firstPageStable === undefined; attempt++) {
+        await new Promise((r) => setTimeout(r, 1200));
+        const p1b = await searchSkills({ query: '', source, page: 1, pageSize });
+        const usable = p1b.items.length > 0 && !(p1b.degraded || []).some((d) => d.source === source);
+        if (usable) firstPageStable = countOverlap(ids(p1.items), ids(p1b.items)) === p1.items.length;
+      }
+    }
     // 判据与 test-nocache 共用同一个 helper（overlapVerdict），不再写「恰好 1 条且
     // 落在边界」这种魔法阈值：本轮实测 skillhub 默认榜重叠一次 2、一次 7，阈值 1
     // 会把上游重排判成本仓库回归（gate14 里 test-paging 变红的正是这条）。
     // 整页重复仍然 fail —— 那才是 page 参数被忽略，是我们的回归，绝不放宽。
     let sortedOverlap;
-    if (source === 'skillhub' && overlap.length > 0) {
+    if (source === 'skillhub' && overlap > 0) {
       const s1 = await searchSkills({ query: '', source, page: 1, pageSize, cache, sort: 'installCount' });
       const s2 = await searchSkills({ query: '', source, page: 2, pageSize, cache, sort: 'installCount' });
-      const idsS = new Set(ids(s1.items));
-      sortedOverlap = ids(s2.items).filter((id) => idsS.has(id)).length;
+      sortedOverlap = countOverlap(ids(s1.items), ids(s2.items));
     }
-    const vd = overlapVerdict({ source, overlap: overlap.length, pageCount: a.length, sortedOverlap });
+    const vd = overlapVerdict({ source, overlap, pageCount: a.length, sortedOverlap, firstPageStable });
     const boundaryDrift = vd.verdict === 'skip';
     // 上游整体不可达（degraded 命中）与「分页窗口算错」是两件事：前者是外部状态，
     // 后者才是本仓库回归。2026-11-20 实测 ai.trusttools.cn 直接 fetch 失败（10.7s），
@@ -86,11 +98,13 @@ for (const source of ALL_SOURCES) {
     if (!ok) failures += 1;
     console.log(
       `${ok ? (empty ? "SKIP" : "OK  ") : "FAIL"} ${source.padEnd(14)} p1=${String(a.length).padStart(2)} p2=${String(b.length).padStart(2)} ` +
-        `overlap=${overlap.length}${boundaryDrift ? "(边界漂移)" : ""} total=${p1.total} pages=${p1.pages} hasMore=${p1.hasMore} ` +
+        `overlap=${overlap}${boundaryDrift ? "(边界漂移)" : ""} total=${p1.total} pages=${p1.pages} hasMore=${p1.hasMore} ` +
         `${((Date.now() - started) / 1000).toFixed(1)}s` +
         (empty ? " 上游不可达（外部状态，非回归）" : "") + (p1.hint ? ` hint=${p1.hint.slice(0, 40)}` : ""),
     );
     if (!ok) {
+      // 红了必须当场可归因：判定理由带源名与证据，不再只打两页的条目 id。
+      console.log(`     判据：${vd.verdict} — ${vd.reason}${firstPageStable === undefined ? "" : "（同页自稳实测=" + firstPageStable + "）"}`);
       console.log(`     p1=${a.slice(0, 3).join(" | ")}`);
       console.log(`     p2=${b.slice(0, 3).join(" | ")}`);
     }
