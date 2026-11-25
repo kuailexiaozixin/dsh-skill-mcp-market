@@ -2473,8 +2473,8 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                     const cat = chip && chip.value;
                     const foldChip = chipFold.other && chip === chipFold.other;
                     const collapseHere = chip && chip.value === CATS_COLLAPSE;
-                    // 「其他」是面板自造入口，必须把自己的身份写进文案：只报「其他 743 条」
-                    // 会被读成上游那一个叫「其他」的分类（modelscope 就有 565 条的同名类）。
+                    // 窗外入口必须把自己的身份写进文案：只报「其他 743 条」会被读成上游
+                    // 那个真叫「其他」的分类（0.5.169 撞名依据：modelscope 第 7 位、lobehub 第 190 位）。
                     const chipText = foldChip
                       ? chipFold.other.label + ' ' + chipFold.otherCount + ' 类合计 ' + Number(chip.totalAll || 0).toLocaleString() + ' 条'
                       : categoryLabelLite(chip);
@@ -2483,7 +2483,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                       return h('button', { key: 'cat_collapse', style: { ...S.chip(false), whiteSpace: 'nowrap' }, onClick: () => toggleCats(false) }, '收起分类');
                     }
                     if (foldChip) {
-                      // 「其他」是展开入口，不是筛选值：窗外 214 类每个都是上游真 slug，
+                      // 窗外入口是展开入口，不是筛选值：窗外每一类都是上游真 slug，
                       // 铺开后可点、真出结果。按下它只换渲染集合，绝不下发 CAT_OTHER
                       // （:918 upstreamCat 映射与 visibleSkills 无 CAT_OTHER 分支两道防线保留）。
                       return h('button', { key: 'cat_tail_toggle', style: { ...S.chip(false), whiteSpace: 'nowrap' }, onClick: () => toggleCats(true) }, chipText);
