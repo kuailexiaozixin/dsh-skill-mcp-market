@@ -11,6 +11,12 @@
 - README「渐进式加载（harvest）」(:275) 内补「ModelScope 大源逐页推」条目：写清 45s 截断只在 harvest 通路被 harvestBypass: true 豁免、一次性通路行为与出参不变；test-dead-exports 47/0、test-cleanup 14/0（两者读 README 作语料）同步复跑。
 - 发布前门读数：npm test ⇒ 72/73 green，唯一红 test-profile-sync（Test 3「no stale copies」+ Test 4 版本镜像：工作树含未提交的 harvest/extra-sources 改动而 profile 仍是已装 0.5.174）⇒ 与 0.5.174 发布前同形，装机 0.5.175 后转绿；CI 侧无 profile 目录故该套件 skip，不阻断。
 - 本批遗留（0.5.176 候选）：index.js:1415-1419 skills.upload 逐条重扫技能目录的 N+1；harvest 每包同步调 listInstalledSkills（本机 3630 个 SKILL.md ⇒ 冷 986ms / 热 49ms）可做首包预热；HTTP_BLOCKED_OPS 仍空集（index.js:1132，harvest 两 op 未在 HTTP 面屏蔽）；src/shipped.js、src/auto-repair.js、src/session-repair.js、src/toolcall-guard.js、src/zip.js 等薄判据模块补测。
+- 发布闭环凭据（0.5.175）：CI run 45678659786 conclusion=success、headSha=9e52172（与 tag v0.5.175 peel 一致）；日志底稿 C:/Users/Public/dsh-scratch/ms175-ci.log（39121B）末两行「[GATE] 73/73 suites green」「[GATE] total 235s across 73 suites」，门内关键读数 test-harvest PASS 3s 91 passed/0 failed、test-panel-harvest PASS 6s 70 passed/0 failed。
+- npm Trusted Publishing（OIDC）出包：npm view dsh-skill-mcp-market version ⇒ 0.5.175（本轮第 1 次查询即命中，无传播延迟）。
+- 装机：dsh plugin --profile desktop add dsh-skill-mcp-market@0.5.175 ⇒ pnpm 11.28.5「Done in 6.5s」，deps -0.5.174 +0.5.175，并自动向 pnpm-workspace.yaml 的 minimumReleaseAgeExclude 加一条；随后 test-profile-sync ⇒ 7 passed/0 failed（Test 3「no stale copies」转绿、Test 4「mirrors report 0.5.175」）⇒ 发布前那条预期红按预测自愈。
+- 现网一键复验：node test/live-verify.mjs（端口自发现 port=57669，fingerprint=new）⇒ rows=14 LIVE-FAIL=0 NOT-TESTED=0 GAP=2 RESULT: PASS exit=0。两处 GAP 与 0.5.174 同款：①「监控」该类 0 条且无中断措辞 ⇒ 可达集合外覆盖缺口（产品决策留用户）；②服务端旧通路 __cat_other 信息项。
+- 面板侧 harvest 与两态画面凭据仍待用户点菜单「重启应用与 Host」：宿主现网 bundle 尚未重载，前次实测直发 harvest.start 仍回 unknown operation（本条不是新的实测，重启后会补实测凭据）。
+- 工具教训（本批新增）：后台 watcher 用 ConvertFrom-Csv -Delimiter tab 取列名（"Run ID"/Status/Commit）在本机 gh 输出上不匹配 ⇒ 40 轮全打「no run yet」空转，已 job_kill 并改为一趟 gh run list --workflow publish.yml --limit 4 直读。结论：轮询脚本落码前先跑一轮打印原始列名，勿凭列名假定。
 ## 0.5.174
 
 - 渐进式加载（harvest）落地：服务端新增 `harvest.start` / `harvest.poll` 两个 op（`index.js:1867`、`:1886`），会话表 `makeHarvestStore({ ttlMs: 180000, maxSessions: 8 })`（`index.js:1139`），面板 250ms 轮询增量 upsert，收口包整表替换；未知或过期 id 回 `ok:false`，面板自动回落 `skills.search`（旧服务端兼容）。
