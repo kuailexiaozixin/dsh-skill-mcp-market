@@ -539,6 +539,31 @@ const SOURCE_HANDLERS = {
   modelscope: searchModelScope,
 };
 
+// 「其他」分类逐类取数（tail）：面板把窗内未覆盖的分类 slug 列表随 harvest.start 下发，
+// 服务端按 slug 逐类向**该源**取数。两个上限都是护栏而非功能：400 项防住异常长的下发，
+// 并发 4 防住 214 类全并发把上游打死（lobehub 单类实测 4.4~11.8s，走的是 npx CLI）。
+const TAIL_CATEGORY_CAP = 400;
+const TAIL_CONCURRENCY = 4;
+// 只有这些源的 handler 真带 category 参数（skills.sh / browse.sh 的签名里没有分类入参，
+// 逐类调用等于把同一份全目录重取 N 次，白烧上游 —— 直接计失败，不打上游）。
+const TAIL_CATEGORY_SOURCES = ["clawhub", "skillsmp", "trusttools", "lobehub", "skillhub", "modelscope"];
+
+// tailCategories 归一化：非数组一律按空；每项 String + trim；去空串；去重；上限截断。
+// index.js 与 harvest 会话两侧共用这一份（口径唯一），测试亦直接调用它。
+export function normalizeTailCategories(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const rawItem of list) {
+    const slug = String(rawItem == null ? "" : rawItem).trim();
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    out.push(slug);
+    if (out.length >= TAIL_CATEGORY_CAP) break;
+  }
+  return out;
+}
+
 // 短冷却只属于聚合路径（agent 的 source=all 搜索）：面板每个 tab 只有一个源，
 // 把源永久拉黑会让用户「再点一次看看」直接吃空面板。时长从字面量提为具名常量，
 // 便于源码锁判定归属（test-search-latency-recovery Test 5/Test 7）。
@@ -740,6 +765,12 @@ export async function foldFanResults({ entries, wanted, degraded, query, p, size
   // handler 显式声明「我不知道总数」的标记（见下面 srcItems 分支的注释）。
   let totalUnknown = false;
   let pagesSum = 0;
+  // D1（页数谎言）：源自己声明了有限 totalPages，并且该声明对「还能走多远」是权威的 ——
+  // 要么明说 hasMore===false（集合到底），要么自报 windowed===true（skillsmp 窗口硬封顶：
+  // 首页 hasNext 依旧为 true，但 maxResults/totalAll 已说死只有 depth 页可走）。聚合 pages
+  // 不得越过这类声明的深度之和，否则 ceil(上游目录总数/页大小) 会把 20 页的窗口报成 22746 页。
+  let closedDepth = 0;
+  let windowedDepth = false;
   let pagesUnknown = false;
   let hasMore = false;
   // facet 计票：只有**取到数据的源**参与，全部明说 serverFacet===true 才算这一页已被服务端筛过。
@@ -786,6 +817,12 @@ export async function foldFanResults({ entries, wanted, degraded, query, p, size
       : null;
     if (srcPages === null) pagesUnknown = true;
     else pagesSum += srcPages;
+    // hasMore===true / undefined 且没声明窗口的源不参与夹取：那种源的 total 反推仍然合理
+    // （对照测试：totalPages=615 & hasMore=true 时不得夹到 615 以下）。
+    if (declared !== null && Number.isFinite(declared) && declared >= 0 && result) {
+      if (result.hasMore === false) closedDepth += declared;
+      else if (result.windowed === true) { closedDepth += declared; windowedDepth = true; }
+    }
     if (result && result.hasMore) hasMore = true;
   }
   // 本地排序兜底只对**多源聚合**生效（既有契约 extra-sources.js:223：单源排序责任在
@@ -886,7 +923,12 @@ export async function foldFanResults({ entries, wanted, degraded, query, p, size
   // false 只有在响应带真实总数证据时才是结论；否则保持 undefined（未知）。
   const reportedHasMore = items.length === 0 && total === 0 ? undefined : hasMore;
   const reportedTotal = totalUnknown && total === 0 ? undefined : total;
-  const pages = pagesUnknown && wanted.length === 1 ? undefined : Math.max(pagesSum, Math.ceil(total / size), 1);
+  const rawPages = Math.max(pagesSum, Math.ceil(total / size), 1);
+  // 夹取条件：所有源都没说「还有下一页」（全闭合），或至少有一个源声明了窗口硬封顶
+  // （windowed 源的 depth 就是权威可浏览深度，hasNext true 只表示窗口内还没走完）。
+  // 两者都不成立的源不参与夹取，否则会把诚实的大页数（未闭合源）一起压掉。
+  const pages = pagesUnknown && wanted.length === 1 ? undefined
+    : (closedDepth > 0 && (!hasMore || windowedDepth) && rawPages > closedDepth ? closedDepth : rawPages);
   return {
     items: visible,
     categoryNote,
@@ -1045,13 +1087,38 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
     const signal = () => {
       while (s.waiters.length) s.waiters.shift()();
     };
+    // 「其他」成员集合（run 3）：tailList 非空时，任何行进入会话前必须过 tailAdmissible，
+    // 扇出 push、逐类 push、收口并集三条路共用这同一个谓词；非 tail 会话恒放行（单类态/
+    // all 态行集逐条不变）。判定只看「这一行能不能证明自己是合并集合的成员」：
+    //   (1) 行内 category 命中 covers ⇒ 放行（扇出默认页里恰好属于合并类的行也是合法成员）；
+    //   (2) 行内 category 不在 covers ⇒ 拒收（窗内别类的行挂到「其他」标签下就是谎报）；
+    //   (3) category 为空/缺失 ⇒ 只有来自已作证逐类取数的行放行（正证门已确认该类被上游接受，
+    //       整类归因成立）；扇出默认页的无分类行一律拒收 —— 与面板 client.js:2293「unknown 不是
+    //       杂项桶，宁缺毋滥」同口径，绝不让两个状态对同一件事给出两种答案。
+    // 谓词拒收只影响行集，不影响 categoriesFailed：那不是取数失败，是不属于合并集合。
+    const tailList = normalizeTailCategories(o.tailCategories);
+    const tailCovers = new Set(tailList.map((slug) => String(slug).trim().toLowerCase()));
+    // 正证通路推进过的行键：收口并集据此复用当次作证，不必（也不能）从行内容反推。
+    const tailProvenKeys = new Set();
+    const tailAdmissible = (it, provenClass) => {
+      if (!tailList.length) return true;
+      const cat = it && it.category != null ? String(it.category).trim() : "";
+      if (cat === "") return provenClass === true;
+      return tailCovers.has(cat.toLowerCase());
+    };
     // 行入会话的唯一入口（源收口与逐页增量共用同一份口径）：带 installRef、按 source|slug 去重。
-    const pushRow = (it) => {
+    // 返回值 = 这一行是否真的新增（tail 逐类计数要靠它，不能用「seen.size 前后差」——
+    // 并发池里别的类会在 await 期间往 seen 里塞行，差值会把别人的行算到自己头上）。
+    // 成员集合不过的行连 seen 都不进：同一行日后从可证通路再来时还得放行。
+    const pushRow = (it, provenClass) => {
+      if (!tailAdmissible(it, provenClass)) return false;
       const row = Object.assign({}, it, { installRef: installRefOf(it) });
       const key = rowKeyOf(row);
-      if (s.seen.has(key)) return;
+      if (s.seen.has(key)) return false;
       s.seen.add(key);
+      if (provenClass === true) tailProvenKeys.add(key);
       s.rows.push(row);
+      return true;
     };
     // 每个源落地的第一时间把它的行推入会话 —— 这就是「不等别人」的那一半语义。
     const onSettled = (name, box) => {
@@ -1096,6 +1163,104 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
         });
       },
     });
+    // ---- 「其他」分类逐类取数（C1-C5 / E1-E2）----
+    // 与上面的源扇出并行：扇出照常跑、照常增量，逐类取数只是**额外**多推一批行。
+    // 绝不用 fanOutSources —— 它无上界全并发（sources.js:618 注释），214 类一起发会打死上游；
+    // 这里自己开一个小并发池，且每类只取一页（上游窗口实测硬封顶，越界翻页取不到新行）。
+    // tailList / tailCovers / tailAdmissible 在 pushRow 之前就位（成员集合与入会话同生命周期）。
+    // 收口 tail 计数：六字段，键序即契约。未落地前为 null（非 tail 会话永远不带这个键）。
+    s.tail = tailList.length ? {
+      categoriesTotal: tailList.length,
+      categoriesFetched: 0,
+      categoriesFailed: 0,
+      upstreamTotal: 0,
+      windowed: false,
+      retrievedTotal: 0,
+    } : null;
+    // 逐类取数只能发给「handler 真带 category 参数」的源：单源态就是它自己，
+    // source:"all" 态取 picked 里第一个有分类能力的源（面板从不下发 all+tail）。
+    const tailSourceName = tailList.length
+      ? (picked.find((name) => TAIL_CATEGORY_SOURCES.includes(name)) || "")
+      : "";
+    let tailDone = 0;
+    const tailSettle = () => {
+      tailDone += 1;
+      if (!s.done) s.stage = "tail " + tailDone + "/" + tailList.length + " classes, collected " + s.rows.length + " rows";
+      signal();
+    };
+    const tailRejected = (slug, why) => {
+      if (s.tail) s.tail.categoriesFailed += 1;
+      if (!s.done) s.stage = "tail " + tailDone + "/" + tailList.length + " classes (" + slug + " " + why + "), collected " + s.rows.length + " rows";
+      signal();
+    };
+    const fetchTailCategory = async (slug) => {
+      const tailHandler = (handlers && handlers[tailSourceName]) || SOURCE_HANDLERS[tailSourceName];
+      // landed：本类新增行数（ModelScope 走 msOnPartial 提前落地，也记在同一本账上）。
+      let landed = 0;
+      let result = null;
+      try {
+        // query 一律空串：带关键词时上游会静默丢掉分类参数（extra-sources.js:1114），
+        // 逐类取数就退化成「同一份全目录取 N 遍」。
+        result = await tailHandler({
+          query: "", page: 1, pageSize: size, cache, sort: "", category: slug,
+          harvestBypass: true,
+          // 逐页增量此刻还没有正证（证明门在取数返回之后），所以这里刻意不传 provenClass：
+          // 提前落地的行只靠行内 category 自证 membership，证不了就不入账。
+          msOnPartial: tailSourceName === "modelscope"
+            ? (pageItems) => {
+                for (const it of pageItems) if (pushRow(it)) landed += 1;
+                signal();
+              }
+            : null,
+        });
+      } catch {
+        tailRejected(slug, "failed");
+        return;
+      }
+      if (!result || typeof result !== "object") { tailRejected(slug, "failed"); return; }
+      // I4 正向证明：逐类取数只认源自己的声明 —— 明说 serverFacet === true，或 facetUsed
+      // 归一（trim + 小写）后等于所请求的那个 slug。什么都不说（旧出参、旧缓存条目）一律
+      // 计 unproven：那批行是没按分类筛过的全目录，推进会话等于把谎继续传下去（I2），
+      // 把整源 total 记进该类合计同样是谎（I3）。旧写法只看「源主动声明了拒绝」的两条形，
+      // 对沉默形（无声明位的出参）整条判据是漏的 —— 沉默既不是成功也不是拒绝。
+      const proofSlug = String(slug).trim().toLowerCase();
+      const proofGiven = String(result.facetUsed == null ? "" : result.facetUsed).trim().toLowerCase();
+      const proven = result.serverFacet === true || (proofGiven !== "" && proofGiven === proofSlug);
+      if (!proven) { tailRejected(slug, "unproven"); return; }
+      if (s.tail) {
+        s.tail.categoriesFetched += 1;
+        s.tail.upstreamTotal += Number(result.total) || 0;
+        if (result.windowed === true) s.tail.windowed = true;
+      }
+      const srcItems = Array.isArray(result.items) ? result.items : [];
+      // 正证已过的类：整类归因成立，本类行即使不带 category 也放行（谓词第 (3) 档）。
+      for (const it of srcItems) if (pushRow(it, true)) landed += 1;
+      if (s.tail) s.tail.retrievedTotal += landed;
+      tailSettle();
+    };
+    const tailPool = (async () => {
+      if (!tailList.length) return;
+      if (!tailSourceName) {
+        // 该会话选中的源没有分类能力（skills.sh / browse.sh）：整批计失败，一次上游都不打。
+        for (const slug of tailList) tailRejected(slug, "unsupported");
+        return;
+      }
+      const want = Math.max(1, Math.min(8, Number(o.tailConcurrency) || TAIL_CONCURRENCY));
+      let cursor = 0;
+      const workers = [];
+      const n = Math.min(want, tailList.length);
+      for (let k = 0; k < n; k++) {
+        workers.push((async () => {
+          while (cursor < tailList.length) {
+            const slug = tailList[cursor];
+            cursor += 1;
+            await fetchTailCategory(slug);
+          }
+        })());
+      }
+      await Promise.all(workers);
+    })();
+    tailPool.catch(() => {});
     const finish = async () => {
       let res = null;
       try {
@@ -1124,13 +1289,50 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
         } else if (box.error) entries.push({ name, ok: false, result: null, error: box.error });
         else entries.push({ name, ok: true, result: box.result });
       }
+      // tail 与扇出并行，收口前必须等它跑完：否则 categories* 是半程数字（谎报进度）。
+      await tailPool;
       try {
         const folded = await foldFanResults({ entries, wanted, degraded: s.degraded, query, p, size, category, cache, effectiveSort });
-        s.final = folded.items.slice();
-        s.finalHints = folded.hints.slice();
+        let finalRows = folded.items.slice();
+        // 收口同样过谓词：folded.items 是折叠层按盒子重算的，没经过 pushRow 那道闸，
+        // 只在 push 侧过滤会把不可证的行从这条路漏进行集（两条路必须同口径）。
+        if (s.tail) finalRows = finalRows.filter((it) => tailAdmissible(it, tailProvenKeys.has(rowKeyOf(it))));
         // 分页/口径字段随收口包 meta 下发（与一次性 skills.search 同源同值）：面板 final
         // 整表替换时才有 total/pages/hasMore/serverFacet 可写缓存，分页器不必瞎猜。
-        s.finalMeta = {
+        if (s.tail) {
+          // tail 态分页口径 = 可取回行集，绝不等于 upstreamTotal、也绝不是 ceil(upstreamTotal/size)：
+          // 上游那个数是目录规模（skillsmp 单类自报 545885），不是本会话真能交付的行数。
+          const have = new Set(finalRows.map(rowKeyOf));
+          for (const it of s.rows) {
+            const key = rowKeyOf(it);
+            if (have.has(key)) continue;
+            if (!tailAdmissible(it, tailProvenKeys.has(key))) continue;
+            have.add(key);
+            finalRows.push(it);
+          }
+          if (s.tail.upstreamTotal > finalRows.length) {
+            // I6：合计口径的措辞跟着源自己的声明走，不能一句话糊过去 ——
+            // 窗口封顶的源（自报 totalAll + 固定可浏览窗口）能说「窗口之外取不到」；
+            // 本地过滤的源那个合计只是可达集合内的实测条数，既不写窗口话、也不冒充
+            // 上游全目录数。区别只在文案，绝不加第七个 tail 字段（面板消费口径不动）。
+            const caliber = s.tail.windowed
+              ? "（其余在上游窗口之外，取不到）"
+              : "（合计按各源自报口径相加：服务端已筛的记上游目录数，本地过滤的只记可达集合内实测）";
+            const line = "其他分类逐类取数：已取回 " + finalRows.length + " 条 / 上游合计 " + s.tail.upstreamTotal + " 条" + caliber;
+            if (!s.hints.includes(line)) s.hints.push(line);
+          }
+        }
+        s.final = finalRows;
+        s.finalMeta = s.tail ? {
+          total: finalRows.length,
+          pages: Math.max(1, Math.ceil(finalRows.length / size)),
+          hasMore: false,
+          // 这是本地按 covers 集合并出来的行集，不是上游单分类 facet（C5）。
+          serverFacet: false,
+          categoryNote: folded.categoryNote,
+          filteredOut: folded.filteredOut,
+          tail: s.tail,
+        } : {
           total: folded.total,
           pages: folded.pages,
           hasMore: folded.hasMore,
@@ -1182,7 +1384,9 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
       s.finalSent = true;
       return { rows: (s.final || []).slice(), meta: metaOf(s), done: true, final: true, hints: (s.finalHints || s.hints).slice() };
     }
-    return { rows, meta: metaOf(s), done: s.done, hints: s.hints.slice() };
+    // stage 随中间包下发：tail 逐类取数的进度（tail k/n classes）只有在这里才看得见，
+    // 面板与测试都靠它判断「按类推进」而不是最后一把砸完。
+    return { rows, meta: metaOf(s), done: s.done, stage: s.stage, hints: s.hints.slice() };
   };
 
   return { start, poll, size: () => sessions.size };

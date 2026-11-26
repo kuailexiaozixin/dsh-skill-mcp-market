@@ -1223,7 +1223,9 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
   // 这一页才是「上游已按分类筛过的集合」。聚合层只有收到 true 才敢关掉本地过滤——谎报等于
   // 把首屏那一页说成整目录已筛过（带关键词时 facet 根本不发，所以必为 false）。
   const serverFacet = facet !== "" && !facetRefused;
-  const payload = { source: "skillsmp", items, total, hasMore, totalPages, serverFacet, facetUsed };
+  // windowed：把「上游窗口硬封顶」这个事实随包声明出去（实测 skillsmp isCapped/maxResults/totalIsExact:false
+  // 三种形态都成立）。聚合侧（harvest tail）据此报 tail.windowed，不必再猜第二次。
+  const payload = { source: "skillsmp", items, total, hasMore, totalPages, serverFacet, facetUsed, windowed };
   if (hint) payload.hint = hint;
   // An empty page is never cached: one upstream hiccup must not blank the market for ten
   // minutes, and the next request should retry immediately.
@@ -1511,7 +1513,11 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
       : `ModelScope 上游分页深度上限约 ${rows.length.toLocaleString()} 条（目录共 ${total.toLocaleString()} 条），排序覆盖上游可返回的全部行`;
   }
   // 分类态/表外拒发的如实提示：过滤在本地做，行数与 total 都是已取回行内的实测值，跨页
-  // 有效；同时说明可达集合外的分类会漏（残余风险），不假装覆盖了全目录。绝不设 serverFacet。
+  // 有效；同时说明可达集合外的分类会漏（残余风险），不假装覆盖了全目录。
+  // facetUsed（0.5.177 I4）：词表内分类回该分类原文 = 「这一批行已按该分类过滤（词表内
+  // 表外/空/all 回空串 = 没筛过。它与「服务端已筛」是两种语义，这里绝不声明后者——
+  // 把本地过滤谎报成服务端筛过会连带打破聚合层的 facetConfirmed 计票与
+  // test-category-info-declaration 的 declaredCategoryInfo 口径（0.5.165 的诚实声明继续有效）。
   let msCatHint = "";
   if (catActive) {
     msCatHint = msInterrupt
@@ -1575,7 +1581,9 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   // 兜底反推，与 sources.js:833 的守卫同一口径。
   const resultTotal = catFiltered ? catTotal : (total || (items.length > 0 ? p * size + (rows.length >= size ? 1 : 0) : 0));
   const resultHasMore = catFiltered ? p * size < catTotal : (resultTotal ? p * size < resultTotal : rows.length >= size && items.length > 0);
-  const result = { source: "modelscope", items, categoryInfo, total: resultTotal, hasMore: resultHasMore, ...(msHint ? { hint: msHint } : {}), ...(msFailPages ? { msFetchFailures: msFetchFailures.length, msFetchFailedPages: msFailPages } : {}) };
+  const result = { source: "modelscope", items, categoryInfo, facetUsed: catActive, total: resultTotal, hasMore: resultHasMore, ...(msHint ? { hint: msHint } : {}), ...(msFailPages ? { msFetchFailures: msFetchFailures.length, msFetchFailedPages: msFailPages } : {}) };
+  // facetUsed 必须待在被缓存的那份 result 里（:1584 put 的就是这个对象，:1375 命中路径
+  // 原样回吐）：缓存键 :1373 已含分类 token，A 类的声明不会串到 B 类。
   // 行集不完整（取数失败或预算截断）时绝不把这一轮结果写进 5 分钟结果缓存：那会把「取数失败」
   // 的文案冻住 5 分钟，并让下一次搜索直接命中截断结果、把续暖通道堵死。
   const msPartial = useFull && (!msDone || msFetchFailures.length > 0 || msBudgetStop);

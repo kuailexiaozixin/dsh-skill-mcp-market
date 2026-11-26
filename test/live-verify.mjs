@@ -105,10 +105,10 @@ export function vocabOf(settings, source) {
 }
 
 /**
- * lobehub 窗外复算（与面板「窗外 N 类合计 M 条」逐位对账的算法；0.5.171 起展开态不再持久化）。
- * 0.5.169 起面板窗外入口不再叫「其他」（与上游真分类 lobehub general / modelscope 其他 撞名，
- * 见 CHANGELOG 0.5.169 段），这里的算术不变，只是文案口径跟着改。
- * 窗口取默认 32（client.js CAT_CHIP_FOLD），窗外 = 其余全部类的 count 之和。
+ * lobehub 合并入口复算（与面板「未列出的分类还有 N 类，上游合计 M 条」逐位对账的算法；0.5.171 起展开态不再持久化）。
+ * 0.5.169 起面板合并入口曾改叫「窗外」（与上游真分类 lobehub general / modelscope 其他 撞名，见 CHANGELOG 0.5.169 段），
+ * 0.5.177（用户 m23543/m23544）又叫回「其他」：撞名改由渲染层文本区分（入口恰好两字无数字、上游真桶经 categoryLabelLite 自带条数）。这里的算术不变，只是文案口径跟着改。
+ * 窗口取默认 32（client.js CAT_CHIP_FOLD），合并集合 = 其余全部类的 count 之和。
  */
 export function lobeWindowFold(cats, windowSize) {
   const w = Number(windowSize) > 0 ? Number(windowSize) : 32;
@@ -238,10 +238,10 @@ export async function runAll({ port, timeoutMs = 90000 }) {
   const b3 = shape(await rpc(port, { op: 'skills.search', query: 'pdf', source: 'modelscope', category: '\u79d1\u7814\u5de5\u5177', page: 1, pageSize: 12 }, timeoutMs));
   add('判据③ 分类过滤真生效（两类计数不同）', a3.http !== 200 || b3.http !== 200 ? 'NOT-TESTED' : a3.total !== b3.total ? 'PASS' : 'LIVE-FAIL', (a3.http !== 200 || b3.http !== 200) ? 'RPC 未连上：a3.http=' + a3.http + ' b3.http=' + b3.http + '（判据未执行）' : HARD_CATS[1] + '=' + a3.total + ' vs \u79d1\u7814\u5de5\u5177=' + b3.total);
 
-  // 判据④lobehub 窗外合并复算（自洽：sum=窗内+窗外，且窗外类数=总数-窗口）
+  // 判据④lobehub 合并集合复算（自洽：sum=窗内+合并集合，且合并类数=总数-窗口）
   const fold = lobeWindowFold(lh.cats, 32);
   const foldOk = settings.http === 200 && fold.total >= 26 && fold.outCount === fold.total - fold.winCount && fold.sumAll === fold.winSum + fold.outSum;
-  add('判据④ lobehub 窗口/窗外自洽复算', foldOk ? 'PASS' : settings.http !== 200 ? 'NOT-TESTED' : 'LIVE-FAIL', settings.http !== 200 ? 'RPC 未连上：词表未取得（判据未执行）' : 'total=' + fold.total + ' win=' + fold.winCount + '(' + fold.winSum + ') out=' + fold.outCount + '(' + fold.outSum + ') sum=' + fold.sumAll);
+  add('判据④ lobehub 窗口/合并集合自洽复算', foldOk ? 'PASS' : settings.http !== 200 ? 'NOT-TESTED' : 'LIVE-FAIL', settings.http !== 200 ? 'RPC 未连上：词表未取得（判据未执行）' : 'total=' + fold.total + ' win=' + fold.winCount + '(' + fold.winSum + ') out=' + fold.outCount + '(' + fold.outSum + ') sum=' + fold.sumAll);
 
   // 判据⑤空结果不造数 + 假分类 slug 不再下发
   const zz = shape(await rpc(port, { op: 'skills.search', query: 'zzqqxkvw9p', source: 'modelscope', category: HARD_CATS[0], page: 1, pageSize: 12 }, timeoutMs));

@@ -147,6 +147,12 @@ git / tar / sh / node 一律放行回真。否则「`git ls-remote` 结果被档
 
 ## 现状与待办
 
+- **2026-11-26 复核（0.5.177 批内，先看这条再看下面）**：下面那段是 0.5.166 当时的读数，链已从 69 段长到 **78 段**，整门绿数随之变化，历史数字保留不改。
+  档案实盘状态：`C:\Users\Public\dsh-scratch\replay-full2` **仍在**（实测 271 个文件 / 11,763,131 B，与本节记录的条数字节数逐字相符）；
+  而本节承诺的仓库内第二份 `test/replay/store-full2/` **已不存在**（store / store-full / store-full2 三目录实测 absent，`store*/` 被 gitignore 故不会被提交带回来）。
+  结论：所谓「档案必须留两份」在本机已退化成一份，换机/新克隆仍须自己 `DSH_REPLAY=record` 整门录一遍。判据不受影响——
+  `test-gate-replay.mjs:43` 用的是 `join(safeTempDir(), "dsh-replay-" + Date.now())` 自造临时档案，不依赖本节任何一份历史档案。
+
 - **全门可复现终数（07:05，69 套件、整门录制档案 replay-full2）：**
   · 录制轮 = 真网络整门一遍 `DSH_REPLAY=record` ⇒ `[GATE] 69/69 suites green` / `total 1076s`
   （`gate-all-record.txt`），档案 **271 条 / 11,763,131 B**。

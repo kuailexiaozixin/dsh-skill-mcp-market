@@ -36,7 +36,7 @@
 | `src/shipped.js` | 定位 `app.asar` 并 import 官方插件包 |
 | `src/http.js` | 取数三级通道：python → curl → fetch（绕 TLS 指纹与系统代理限制） |
 | `src/github.js` | jsDelivr 列树 + raw 取文件，失败回退 GitHub contents API / codeload tarball |
-| `src/sources.js` | 各技能源的聚合、排序与缓存；渐进式取数（startHarvest / pollHarvest），收口与一次性搜索共用 foldFanResults 同一口径 |
+| `src/sources.js` | 各技能源的聚合、排序与缓存；渐进式取数（makeHarvestStore 的 start / poll），收口与一次性搜索共用 foldFanResults 同一口径；「其他」逐类取数（`tailCategories` → 按 covers 逐类取回，只认正向 facet 证明） |
 | `src/skills.js` | 搜索 / 安装 / 列出 / 卸载 / 启停 |
 | `src/skillhub.js` | SkillHub 公共 API 适配 |
 | `src/extra-sources.js` | skillsmp 等需要特殊传输的源 |
@@ -46,6 +46,16 @@
 | `src/frontmatter.js` | `SKILL.md` frontmatter 解析（零依赖） |
 | `src/zip.js` | zip 解包（装 `zip` 来源的技能） |
 | `src/verify.js` | 安装前的内容体检（把可疑的「密钥外发 / 远程执行」模式标出来） |
+| `src/enrich.js` | 给只有站点的源补真实描述（`enrichSkillsShFast` / `enrichPageDescriptions`） |
+| `src/cli-install.js` | 走官方 CLI 的安装快路（`npxRun` 与 skills.sh / clawhub / SkillHub / browse.sh / trusttools） |
+| `src/lobehub-market.js` | LobeHub 作为第二个 MCP 市场（注册表条目、详情、manifest 适配） |
+| `src/sort-capability.js` | 排序能力矩阵的唯一事实源：`SORT_KEYS` / `supportsSort` / `sortKeysFor(Mcp)` |
+| `src/rpc-guard.js` | RPC 边界的破坏性操作确认（`DESTRUCTIVE_OPS` / `makeRpcGuard`） |
+| `src/env.js` | 把 MCP 密钥写进当前用户环境变量（`setUserEnvironmentVariable`）并回灌本进程 |
+| `src/tool-filter.js` | 工具级禁用（`createToolFilter` / `replaceServerDeny`），宿主 `ctx.tools.restrict` 的 scoped 包装 |
+| `src/toolcall-guard.js` | 空/残缺 tool-call 写入前哨（`installToolCallGuard`，幂等闩在 `Symbol.for`） |
+| `src/session-repair.js` | 会话日志的空 tool-call 损坏检测与修复（zstd 帧扫描 → 解码 → 重编码） |
+| `src/auto-repair.js` | 启动后浅扫会话日志，只自动修复已确认的那一类损坏 |
 
 ## 四、刻意不做的事
 

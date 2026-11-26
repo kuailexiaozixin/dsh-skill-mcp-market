@@ -255,7 +255,18 @@ window.__ModuleLoader__.load({
       const hints = (m.hints || []).filter(Boolean);
       // 未收口（中间包）：无论已到达几条都只说「陆续加载中」。0 条时绝不能提前讲
       // 「没有找到匹配的技能」—— 那是把还没到的结果说成不存在（诚实性红线）。
-      if (!settled) { d.setNotice(hints.length ? hints.join('；') : `（陆续加载中，已到达 ${count} 条）`); return; }
+      if (!settled) {
+        // 0.5.177 逐类取数：服务端在 meta.tail 里带逐类进度（C2/C3）就如实播报；label 经
+        // deps.tailLabel 注入（island 文本独立 exec，引用不到模块层常量），缺省用中性词。
+        if (m.tail && m.tail.categoriesTotal > 0) {
+          const tailLabel = String(d.tailLabel || '');
+          const tailHead = tailLabel ? tailLabel + '类' : '未列出分类';
+          d.setNotice(hints.length ? hints.join('；') : '（' + tailHead + '取数中：已取回 ' + Number(m.tail.categoriesFetched || 0) + ' / ' + m.tail.categoriesTotal + ' 类，陆续加载中，已到达 ' + count + ' 条）');
+          return;
+        }
+        d.setNotice(hints.length ? hints.join('；') : `（陆续加载中，已到达 ${count} 条）`);
+        return;
+      }
       if (!count) {
         const reasons = (m.sourceErrors || []).length
           ? m.sourceErrors
@@ -288,8 +299,13 @@ window.__ModuleLoader__.load({
           hints: m.hints || [],
           sourceErrors: m.sourceErrors || [],
           degraded: m.degraded || [],
+          // 0.5.177：tail 声明随结果入缓存（C3 字段逐字）；无 tail 的包记 null，缓存命中时据此恢复或清声明。
+          tail: m.tail || null,
         };
       }
+      // 0.5.177：服务端 tail 声明落会话 memo（P5：tail 态 visibleSkills 不做 covers 本地筛）。
+      // 只在 final 收口时写：中间包不声明、失败回落不写，memo 永远不会先于事实。
+      if (d.tailStateRef) d.tailStateRef.current = { src: env.src, q: env.q, cat: env.cat, tail: m.tail || null };
       d.setSkills(rows);
       d.setSkillsPage(env.pageNo);
       d.setSkillsTotalPages(m.pages || 0);
@@ -317,6 +333,9 @@ window.__ModuleLoader__.load({
         page: env.pageNo,
         pageSize: env.pageSize,
         sort: env.effSort,
+        // 0.5.177 逐类取数：合并态追加 tailCategories（covers=上游真 slug，服务端夹 400）。
+        // 非合并态无此键：body 与旧口径逐键一致（C1/S1 判据）。
+        ...(env.tailCovers ? { tailCategories: env.tailCovers } : {}),
       });
       if (!started.ok) { harvestDropSession(ctl, env.token); return { settled: false }; }
       if (!harvestIsLive(ctl, env)) { harvestDropSession(ctl, env.token); return { settled: true }; }
@@ -377,9 +396,9 @@ const CARD_BATCH = 48;
 // 246 类里 rank>32 的 214 类合计仅 743 条。取 12 时窗口只覆盖 80.5%，把用户点名要看的分类（金融服务、
 // 浏览器 & 自动化、游戏娱乐、智能家居…）全留在折叠外，报障在可见层面等于没修。
 // 「其他」合并是产品决策：窗口外的 214 类不再逐个铺开（展开态给 246 个按钮不是筛选，是倾倒），
-// 合并成一个「其他」chip 承接：条数=窗外合计（上游真数），点进去由已取到的集合本地过滤，
+// 合并成一个「其他」chip 承接：条数=合并集合合计（上游真数），点进去由已取到的集合本地过滤，
 // 上游没有可用的「其他」桶，这个 chip 是面板自造的合并入口，不代表任何一个上游分类。
-// 0.5.174（用户 m20051 两态入口 + m00001 单入口）：展开/收起哨兵只给「尾巴够小」的源——窗外类数
+// 0.5.174（用户 m20051 两态入口 + m00001 单入口）：展开/收起哨兵只给「尾巴够小」的源——合并类数
 // <= CAT_TAIL_EXPAND_MAX 时展开态才铺得下全部上游真类（依据：skillsmp 63 类 tail=31 落阈内，
 // 展开=真分类全集 + catsRow 限高纵向滚动）；lobehub 246 类 tail=214 落阈外，铺开既读不动也筛不动，
 // 两态成员就完全相同，「展开分类」退化成装饰假控件（0.5.165 假控件同判）⇒ 干脆不渲染这个入口。
@@ -399,7 +418,7 @@ function mergeCategoryVocab(derived, vocab) {
     .map((r, i) => ({ r, i }))
     .sort((a, b) => ((Number(b.r && b.r.totalAll) || 0) - (Number(a.r && a.r.totalAll) || 0)) || a.i - b.i)
     .map((x) => x.r);
-  // 用户 m18814：上游自造的杂项桶夹在真分类中间，读起来像「本市场就这些类」，还和面板的窗外入口撞名。
+  // 用户 m18814：上游自造的杂项桶夹在真分类中间，读起来像「本市场就这些类」，还和面板的合并入口撞名。
   // 桶一律沉到词表序末尾：条数降序只在真分类之间生效，桶始终垫底（同桶之间保持原相对顺序）。
   const isGenericBucket = (r) => {
     const s = String((r && r.slug) || '').trim().toLowerCase();
@@ -481,18 +500,21 @@ function categoryLabelLite(chip) {
   const n = Number(chip && chip.totalAll) || 0;
   return n > 0 ? label + ' ' + n.toLocaleString() : label;
 }
-// 窗外分类合并成一个「其他」入口（产品决策：246 类逐个铺开等于没做筛选）。
+// 窗内没列出的分类合并成一个「其他」入口（产品决策：246 类逐个铺开等于没做筛选）。
 // 上游没有可用的「其他」桶（lobehub 词表里 general/Others 各 1 条，是被挡的自由标签），所以这个
-// chip 是面板自造的：它不代表任何一个上游分类，条数也绝不从上游总量里编——只如实报「窗外还有 N 类
-// / 合计 M 条」，实际可列出的条目由已取到的集合本地过滤得出（见 visibleSkills）。
+// chip 是面板自造的：它不代表任何一个上游分类，条数也绝不从上游总量里编——只如实报「未列出的分类还有
+// N 类 / 合计 M 条」（入口本体不带数字，数字进 title 与说明行），实际可列出的条目由已取到的集合
+// 本地过滤得出（见 visibleSkills）；服务端按类逐个取数后改走 tail 口径。
 const CAT_OTHER = '__cat_other';
 // 展开态行尾的「收起分类」是渲染集合里的一个哨兵，不是分类值：它永远不进 category。
 const CATS_COLLAPSE = '__cats_collapse';
 
-// 窗外那一个入口的文案：它不是上游分类，是「把没列出的 N 类合起来」的合并入口，所以不写「其他」——
-// 写「其他」就和上游词表里真叫「其他」的类撞名（lobehub 第 190 类 general 的 label 就是「其他」1 条，
-// modelscope 第 6 类 slug=其他 2360 条），用户 m18787 撞上的正是这个歧义。
-const CAT_TAIL_LABEL = '窗外';
+// 尾巴合并入口的文案：0.5.177 起（用户 m23543/m23544）定名为「其他」，与上游词表里真叫「其他」的
+// 类（lobehub general 1 条、modelscope slug=其他 2360 条）确实撞名，撞名由渲染层文本区分而不是改词：
+// 面板入口 = 恰好「其他」二字、无数字无后缀（数字只在 title 与说明行）；上游自报杂项桶经
+// categoryLabelLite 渲染自带条数（如「其他 2360」），并由 genericBucket/splitBuckets 沉底。
+// 内部 value 仍是 __cat_other，任何情况下都不作为 category 下发。
+const CAT_TAIL_LABEL = '其他';
 
 function foldChips(vocabChips, limit, otherLabel) {
   const chips = [];
@@ -505,8 +527,9 @@ function foldChips(vocabChips, limit, otherLabel) {
   const covers = [];
   for (const c of tail) { otherTotal += Number(c.totalAll) || 0; covers.push(c.value); }
   const other = { value: CAT_OTHER, label: String(otherLabel || CAT_TAIL_LABEL), totalAll: otherTotal, fixed: true, covers };
-  // tail/head 外露：窗外类确实是上游真 slug，但 0.5.172（用户 m00001「不要每个类别单独显示」）起
-  // 不再逐个成 chip：head 供展开态铺窗内全集，tail 只是窗外筛选 chip 的 covers 来源。
+  // tail/head 外露：合并掉的类确实是上游真 slug，但 0.5.172（用户 m00001「不要每个类别单独显示」）起
+  // 不再逐个成 chip：head 供展开态铺窗内全集，tail 的 slug 集既是本地并集筛的 covers，也是 0.5.177 起
+  // 下发给服务端逐类取数的 tailCategories。
   return { window: head.concat([other]), head: head, tail: tail, other: other, otherCount: tail.length, otherTotal: otherTotal };
 }
 // 本地过滤空分类的出路（用户 m18814「部分类型标签的搜索结果为空」）：把分类名当关键词走全文搜索。
@@ -1089,6 +1112,9 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       // 统一清掉（助手在 factory 作用域，见 trustedTotal 附近），否则被超车或卸载后
       // 那个 250ms 定时器会一直转，把旧搜索的增量写进新视图。
       const harvestCtlRef = useRef({ timer: null, wake: null, token: null });
+      // 0.5.177 其他类逐个取数：未列出的分类的 slug 集合（下发用）与服务端 tail 声明（展示用）。
+      const tailCoversRef = useRef(null);
+      const tailStateRef = useRef(null);
       useEffect(() => () => {
         if (typeof harvestCancelSession === 'function') harvestCancelSession(harvestCtlRef.current);
       }, []);
@@ -1115,7 +1141,6 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
           else if (o.reason === 'samePage') setJumpNotice('已在第 ' + page + ' 页');
           else setJumpNotice('');
         };
-        // 页码窗口：windowed=true 时固定显示当前页前后各 5 页；windowed=false 时显示全部页码
         // 页码窗口：已知总数时显示当前页±5（省略号折叠）；未知总数时只显示±2
         // 页码窗口交给纯函数 pageWindow（module scope），行为与原 IIFE 完全一致。
         const pageItems = pageWindow(page, n, 5);
@@ -1226,6 +1251,8 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
           if (pageNo <= 1) totalBaseRef.current[skKeyCached] = Number(cached.total) || 0;
           setSkillsHasMore(Boolean(cached.hasMore));
           setServerFacet(Boolean(cached.serverFacet));
+          // 0.5.177：缓存命中恢复 tail 声明（cached.tail 由 applyHarvestFinal 写入）；无声明记 null。
+          if (typeof tailStateRef !== 'undefined' && tailStateRef) tailStateRef.current = cached.tail ? { src: src, q: q, cat: cat, tail: cached.tail } : null;
           // 缓存命中先恢复旧结果；失败披露必须跟着它解释的那份结果一起复述，否则「缓存一
           // 跳、披露就消失」——上一轮空列表的诚实文案会被这里无条件 setNotice("") 抹掉。
           const cachedSe = cached.sourceErrors || [];
@@ -1251,7 +1278,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         // typeof 防御（同 probeOpPresent 的用法）：解不了就回落旧通路，不判红。
         if (pageNo <= 1 && !append && typeof harvestGate === 'function' && harvestCtlRef && harvestCtlRef.current) {
           const hres = await harvestGate(harvestCtlRef.current, {
-            deps: { call, resultCacheRef, totalBaseRef, setSkills, setSkillsPage, setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setBusy },
+            deps: { call, resultCacheRef, totalBaseRef, setSkills, setSkillsPage, setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setBusy, ...(typeof tailStateRef !== 'undefined' ? { tailStateRef } : {}), ...(typeof CAT_TAIL_LABEL === 'string' ? { tailLabel: CAT_TAIL_LABEL } : {}) },
             seqRef: reqSeqRef,
             seq,
             text,
@@ -1263,6 +1290,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
             pageSize,
             effSort,
             cacheKey,
+            tailCovers: (cat === CAT_OTHER && typeof tailCoversRef !== 'undefined' && tailCoversRef && Array.isArray(tailCoversRef.current) && tailCoversRef.current.length) ? tailCoversRef.current.slice(0, 400) : undefined,
             token: {},
           });
           if (hres && hres.settled) {
@@ -2204,18 +2232,27 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const categories = [...new Set(skills.map((item) => item.category).filter(Boolean))].slice(0, 60);
       // 固定词表在前（上游条目数降序），当前页派生的串补在后：词表抓不到时入口不关，改版也不丢。
       const vocabChips = categoryChipsForSource(source, categories, categoryVocab);
-      // 默认窗口外的分类不再逐个铺开：合并成一个「其他」（窗内条数仍是上游真数，窗外合计如实标注）。
+      // 默认窗口外的分类不再逐个铺开：合并成一个「其他」（窗内条数仍是上游真数，合计如实标注）。
       // 声明顺序要紧：chipEntries 与 visibleSkills 都读 chipFold，写在后面会撞 TDZ（node --check 看不见）。
       const chipFold = foldChips(vocabChips, CAT_CHIP_FOLD, CAT_TAIL_LABEL);
+      // 0.5.177 逐类取数（消费侧）：covers 交给下发侧（tailCoversRef → env.tailCovers →
+      // harvest.start tailCategories）；服务端 tail 声明经 memo 核对当前 src|q|cat 后落到
+      // chipFold.other.tailDeclared，visibleSkills 据此豁免 covers 本地筛（P5）。
+      tailCoversRef.current = chipFold.other && Array.isArray(chipFold.other.covers) && chipFold.other.covers.length ? chipFold.other.covers.slice(0, 400) : null;
+      const tailMemo = tailStateRef && tailStateRef.current && tailStateRef.current.tail
+        && tailStateRef.current.src === source && tailStateRef.current.q === query && tailStateRef.current.cat === category
+        ? tailStateRef.current.tail
+        : null;
+      if (chipFold.other) chipFold.other.tailDeclared = !!tailMemo;
       // 渲染集合必须自己带上 'all' 首入口：chipFold.window 只有分类，照它铺开会让「全部分类」
       // 从面板上静默消失（用户没法取消筛选）。0.5.164 的中间量 chipBySlug/chipSlugs 在折叠改造后
       // 没有任何消费方——留着就是死量，判据（lobehub Test 8）直接锁这两行不再出现。
       // 展开/收起只换渲染集合，绝不换筛选值：category 里永远只出现上游真 slug 或 'all'。
       // 0.5.174（用户 m00001 + m20051）：展开态只在尾巴够小（tail<=CAT_TAIL_EXPAND_MAX=40，skillsmp 31）时
       // 才铺全部上游真类；大尾巴源（lobehub 214）两态同窗、连展开入口都不给（装饰假控件）。
-      // 窗外类永远只走一个筛选入口，成员身份只活在 covers 谓词里（D 防线：CAT_OTHER 仍在 upstreamCat 那一行
+      // 合并入口永远只走一个筛选入口，成员身份只活在 covers 谓词里（D 防线：CAT_OTHER 仍在 upstreamCat 那一行
       // 由 upstreamCat 降级为 'all' 才下发，面板自造 slug 绝不进上游）。
-      // 上游自造的杂项桶（其他/Other/general）沉到末尾，与面板自造的窗外入口分开放，不互相冒充（m18814）。
+      // 上游自造的杂项桶（其他/Other/general）沉到末尾，与面板自造的合并入口分开放，不互相冒充（m18814）。
       const realChip = (chip) => chip && chip.value && chip.value !== CAT_OTHER && chip.value !== CATS_COLLAPSE;
       const genericBucket = (chip) => {
         const s = String((chip && chip.value) || '').trim().toLowerCase();
@@ -2232,7 +2269,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       // 0.5.174：旧 allRealChips（窗内全集那一路）删除。展开集合改由下面的 tailExpandable 门控：
       // 小尾巴源用 expandedChips（全部上游真类，桶沉底），大尾巴源两态同用 chipFold.window。
       // 收缩/展开两态共用行尾同一个哨兵：label 与 next 都写在 chip 上，渲染块不需要新的自由
-      // 变量；它是展示态，永远不进 category，与窗外筛选态（catsExpanded 的邻居，不是它本身）互不顶替。
+      // 变量；它是展示态，永远不进 category，与合并筛选态（catsExpanded 的邻居，不是它本身）互不顶替。
       const tailExpandable = !!chipFold.other && chipFold.otherCount <= CAT_TAIL_EXPAND_MAX;
       const toggleChip = tailExpandable ? { value: CATS_COLLAPSE, label: catsExpanded ? '收起分类' : '展开分类', next: !catsExpanded, totalAll: 0, fixed: true } : null;
       // 展开态只活在本次面板（重挂载/刷新/重启回到收起态），不再落 localStorage。
@@ -2249,26 +2286,36 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       // 删掉 ⇒ 渲染比聚合层承诺少（实测：聚合 items=3/filteredOut=0，面板只剩 1 条）。少掉的条目不会
       // 出现在任何文案里，用户看不见这个丢失——正是 0.5.101 起反复判死的静默偷内容。无分类行放行，
       // 异类行仍严格剔除（判据在 test-category-info-declaration Test 6，真跑本行函数体）。
-      // 0.5.172（用户 m00001）：CAT_OTHER 是真筛选态——按下窗外，可见集合就是 covers（窗外全部 slug）的并集。
-      // serverFacet 不许绕过它：CAT_OTHER 在 upstreamCat 处已降级为 'all' 下发，拿回的是未按窗外筛的整页，
-      // 若让 facet 短路就会把整页都说成窗外（文案与结果不符，正是设计 B 要挡的谎报）。
-      // 条目无分类字段 ⇒ 不算窗外：unknown 不是杂项桶，宁缺毋滥，也不吃 !item.category 那条放行。
+      // 0.5.172（用户 m00001）：CAT_OTHER 是真筛选态——按下合并入口，可见集合就是 covers（合并全部 slug）的并集。
+      // serverFacet 不许绕过它：CAT_OTHER 在 upstreamCat 处已降级为 'all' 下发，拿回的是未按合并集合筛的整页，
+      // 若让 facet 短路就会把整页都说成合并集合全部（文案与结果不符，正是设计 B 要挡的谎报）。
+      // 条目无分类字段 ⇒ 不算合并集合成员：unknown 不是杂项桶，宁缺毋滥，也不吃 !item.category 那条放行。
       // 空分类的出路只在「本市场确实一条都没筛出来」时给：上游 facet 说的 0（serverFacet）、取数失败
       // （sourceErrors/error）、正在加载（busy）都不算——那三种给「近似搜索」按钮是转移视线。
       const nearbyChip = (category === 'all' || serverFacet || busy || error || skills.length > 0)
         ? null
         : vocabChips.find((chip) => chip && chip.value === category);
       const nearbyNeedle = nearbyChip ? nearbySearchNeedle(nearbyChip) : '';
-      const visibleSkills = orderedSkills.filter((item) => category === CAT_OTHER ? (chipFold.other && Array.isArray(chipFold.other.covers) && !!item.category && chipFold.other.covers.indexOf(item.category) >= 0) : serverFacet || category === 'all' || !item.category || item.category === category);
+      const visibleSkills = orderedSkills.filter((item) => category === CAT_OTHER ? (chipFold.other && (chipFold.other.tailDeclared || (Array.isArray(chipFold.other.covers) && !!item.category && chipFold.other.covers.indexOf(item.category) >= 0))) : serverFacet || category === 'all' || !item.category || item.category === category);
       // 诚实口径（设计 B）：并集只能作用在**已取回**的条目上——本次搜索取回多少就只筛多少，
-      // 所以这里报「已取回 X / 属于这些类 Y」，绝不说成整个窗外集合都已经在页面上。
+      // 所以这里报「已取回 X / 属于这些类 Y」，绝不说成整个合并集合都已经在页面上。
       const tailNote = (category !== CAT_OTHER || !chipFold.other)
         ? ''
-        : '窗外并集：窗内之外还有 ' + chipFold.otherCount + ' 类，上游合计 ' + Number(chipFold.other.totalAll || 0).toLocaleString() + ' 条。'
-          + '本次已取回 ' + skills.length + ' 条，其中属于这些类的 ' + visibleSkills.length + ' 条就是上面这些'
-          + (serverFacet ? '（上游这一页没有按窗外筛：CAT_OTHER 不下发，靠本地并集筛出）' : '')
-          + '；窗外类没有逐个列成标签，翻页才会取回更多。'
-          + '分页器里的「共约」是整个来源的总数，不是窗外条数；窗外集合以本行为准。';
+        : (tailMemo
+          // 服务端已按类逐个取数（C3）：报真实口径——已取回条数、逐类进度、上游总量；
+          // 分页器同口径（P4/P6），不再出现整源「共约」数字。
+          ? '已取回 ' + Number(tailMemo.retrievedTotal || 0).toLocaleString() + ' 条（'
+            + Number(tailMemo.categoriesFetched || 0) + '/' + Number(tailMemo.categoriesTotal || 0) + ' 类完成'
+            + (Number(tailMemo.categoriesFailed || 0) ? '，失败 ' + Number(tailMemo.categoriesFailed) + ' 类' : '')
+            + '；上游合计 ' + Number(tailMemo.upstreamTotal || 0).toLocaleString() + ' 条）'
+            + (tailMemo.windowed === true ? '。该来源各类均受上游窗口限制，部分类取不全' : '')
+            + '。分页器数字就是这一口径，不是整个来源的总数。'
+          // 旧服务端（未声明 tail）：维持本地并集口径（诚实：只报已取回的集合）。
+          : '未列出的分类还有 ' + chipFold.otherCount + ' 类，上游合计 ' + Number(chipFold.other.totalAll || 0).toLocaleString() + ' 条。'
+            + '本次已取回 ' + skills.length + ' 条，其中属于这些类的 ' + visibleSkills.length + ' 条就是上面这些'
+            + (serverFacet ? '（上游这一页没有按集合筛：CAT_OTHER 不下发，靠本地并集筛出）' : '')
+            + '；这些类没有逐个列成标签，翻页才会取回更多。'
+            + '分页器里的「共约」是整个来源的总数，不是这些类的条数；集合以本行为准。');
       const skillCards = shownCards(visibleSkills, cardBatch).map((item) =>
         h('div', { key: item.id, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
@@ -2760,23 +2807,25 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                     const cat = chip && chip.value;
                     const foldChip = chipFold.other && chip === chipFold.other;
                     const collapseHere = chip && chip.value === CATS_COLLAPSE;
-                    // 窗外入口必须把自己的身份写进文案：只报「其他 743 条」会被读成上游
-                    // 那个真叫「其他」的分类（0.5.169 撞名依据：modelscope 第 7 位、lobehub 第 190 位）。
+                    // 入口本体恰好「其他」二字（用户 m23543/m23544 定名）：数字与合计不拼进
+                    // chip 文本，只进 title 与说明行；上游真叫「其他」的分类经 categoryLabelLite
+                    // 自带条数（如「其他 2360」），文本层面天然区分（0.5.169 撞名教训仍在）。
                     const chipText = foldChip
-                      ? chipFold.other.label + ' ' + chipFold.otherCount + ' 类合计 ' + Number(chip.totalAll || 0).toLocaleString() + ' 条'
+                      ? chipFold.other.label
                       : categoryLabelLite(chip);
                     if (collapseHere) {
-                      // 哨兵只把渲染集合在两态之间换，不参与任何筛选（与窗外筛选态互不顶替）。
+                      // 哨兵只把渲染集合在两态之间换，不参与任何筛选（与合并筛选态互不顶替）。
                       return h('button', { key: 'cat_collapse', style: { ...S.chip(false), whiteSpace: 'nowrap' }, onClick: () => toggleCats(chip.next === true) }, chip.label);
                     }
                     if (foldChip) {
-                      // 窗外入口不再兼任展开：收缩/展开由行尾哨兵负责（m20051）。
-                      // 窗外入口 = 真筛选态（0.5.172 用户 m00001）：按下把 CAT_OTHER 放进 category，
+                      // 合并入口不再兼任展开：收缩/展开由行尾哨兵负责（m20051）。
+                      // 合并入口 = 真筛选态（0.5.172 用户 m00001）：按下把 CAT_OTHER 放进 category，
                       // 可见集合换成 covers 并集。防线没退：CAT_OTHER 仍由 upstreamCat 降级为
                       // 'all' 才下发（面板自造 slug 绝不进上游），key 是字面量、不含 CAT_OTHER 子串。
                       return h('button', {
                         key: 'cat_tail',
                         style: S.chip(category === cat),
+                        title: '未列出的分类还有 ' + chipFold.otherCount + ' 类，合计约 ' + Number(chip.totalAll || 0).toLocaleString() + ' 条',
                         onClick: () => { setCategory(cat); searchSkills(query, { source, size, category: cat, page: 1, sort }); window.scrollTo({ top: 0, behavior: 'smooth' }); },
                       }, chipText);
                     }

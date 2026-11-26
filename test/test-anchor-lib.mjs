@@ -118,9 +118,20 @@ console.log('Test 6: absent() —— 否定断言的非冲突判定（子串冒�
   }).join(String.fromCharCode(10));
   check('真实 client.js 含 pageWindow（冒充面存在）', c.includes('pageWindow'), '');
   check('但 absent(pageWin) 仍为真（旧助手确实不在）', absent(c, 'pageWin'), '');
-  check('absent(windowed) 为真（签名死参数已删）', absent(c, 'windowed'), '');
-  // client.js:593 仍有一句过时注释描述 windowed 参数语义 —— 散文不算命中，
-  // 但它是真实的注释缺陷，随下一个 shipped 批次（src/skillhub.js 修正）一并删除。
+  // 断言范围必须是 pageWindow 的函数体，不能是整个 client.js：0.5.177 的 tail 说明行
+  // （client.js tailMemo.windowed）是一个真存在的同名属性，整文件判定会把一次合法
+  // 的新增读成「死参数复活」。pageWindow 的参数表 (page, n, span) 里没有 windowed，
+  // 这才是本判据要锁的东西。
+  const pwStart = c.indexOf('const pageWindow = (');
+  check('client.js 里 pageWindow 定义可定位', pwStart >= 0, String(pwStart));
+  const pwEndRaw = c.indexOf('    };', pwStart);
+  const pwBody = pwStart >= 0 && pwEndRaw > pwStart ? c.slice(pwStart, pwEndRaw) : '';
+  check('pageWindow 函数体可取到（非退化空串）', pwBody.length > 80, String(pwBody.length));
+  check('absent(windowed) 为真（pageWindow 签名死参数已删）', absent(pwBody, 'windowed'), '');
+  // 反向自证：把死参数塞回签名必须让上面那条转红，否则是 vacuous 断言。
+  check('注入 windowed 后正证门仍会红（自证非 vacuous）', absent(pwBody.replace('(page, n, span)', '(page, n, span, windowed)'), 'windowed') === false, '');
+  // client.js:1144 仍有一句过时注释描述 windowed 参数语义（散文，不算命中）——
+  // 那句字样与本批 tail 文案里合法的 tailMemo.windowed 相同，随本批一并删除。
 }
 
 

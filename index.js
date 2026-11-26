@@ -25,7 +25,7 @@ import { createMcpManager, missingEnv, normalizeServerName } from "./src/mcp.js"
 import { createToolFilter, replaceServerDeny } from "./src/tool-filter.js";
 import { REGISTRY_PAGE_SIZE, fallbackCards, registryCatalogueCacheKey, registryDefinitionByName, searchMcpRegistryPage } from "./src/mcp-registry.js";
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
-import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCache, makeHarvestStore } from "./src/sources.js";
+import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCache, makeHarvestStore, normalizeTailCategories } from "./src/sources.js";
 import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js";
 // 技能市场分类词表（skillsmp /zh/categories 实测抓取）只随 settings.get 走：读缓存 + 后台补取，
 // 面板首屏的 RPC 不等外网抓取。
@@ -1893,6 +1893,9 @@ function needsConfirmFor(patch, current) {
       case "harvest.start": {
         // 渐进式取数首包：已经落地的源立刻随行返回，慢源留给 harvest.poll。
         // 出参与 skills.search 完全不同形（rows 而不是 items），互不串味：旧面板继续用 skills.search。
+        // tailCategories（C1）：面板点「其他」标签时下发的其他分类 slug 列表。口径只在
+        // src/sources.js 的 normalizeTailCategories 一处（数组、逐项 String+trim、去空、去重、上限 400），
+        // 这里只做透传，避免两侧各写一份归一化。
         const firstPackage = await harvestStore.start({
           query: body.query || "",
           source: String(body.source || "all"),
@@ -1900,6 +1903,7 @@ function needsConfirmFor(patch, current) {
           page: body.page || 1,
           pageSize: body.pageSize || 24,
           sort: body.sort || "",
+          tailCategories: normalizeTailCategories(body.tailCategories),
         });
         const harvestedTaken = new Set((await installedCache.list(settings.skillDirs)).map((item) => item.slug));
         // final 随 spread 原样透传（只有收口包才有这个键）：面板契约 —— 看到 final:true 就把

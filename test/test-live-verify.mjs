@@ -120,7 +120,7 @@ console.log('\nTest 6: \u8bcd\u8868\u5f62\u72b6\u9501\uff08\u8bfb categories\uff
   check('\u6e90\u7f3a\u5931\u4e0d\u629b', vocabOf({}, 'modelscope').count === 0 && vocabOf(null, 'x').count === 0);
 }
 
-console.log('\nTest 7: lobehub \u7a97\u53e3/\u7a97\u5916\u590d\u7b97\uff08\u4e0e\u9762\u677f\u6587\u6848\u5bf9\u8d26\u7684\u7b97\u6cd5\uff09');
+console.log('\nTest 7: lobehub \u7a97\u53e3/\u672a\u5217\u51fa\u7684\u5206\u7c7b\u590d\u7b97\uff08\u4e0e\u9762\u677f\u6587\u6848\u5bf9\u8d26\u7684\u7b97\u6cd5\uff09');
 {
   const cats = [];
   for (let i = 0; i < 40; i++) cats.push({ slug: 'c' + i, count: 100 - i });

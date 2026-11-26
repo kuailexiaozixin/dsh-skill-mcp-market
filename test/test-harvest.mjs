@@ -97,6 +97,7 @@ console.log('Test 1: start 首包有行且 done=false；连续 poll 的行集与
   check('done=true 之后再 poll 返回空数组', (() => { const p2 = store.poll(start.id); return p2 && p2.done === true && Array.isArray(p2.rows) && p2.rows.length === 0; })(), JSON.stringify(store.poll(start.id)).slice(0, 140));
 }
 
+
 console.log('');
 console.log('Test 2: 未知 id 与过期 id ⇒ poll 给出 null（dispatch 据此报 ok:false）');
 {
@@ -500,6 +501,462 @@ console.log('Test 10: ModelScope 大源逐页推入 harvest（渐进式加载）
   check('G4 归一只有一处口径且调用点传数组（msMapItems(pageRows) 而非 .map(msMapItems)）', (srcF.match(/msMapItems\(pageRows\)/g) || []).length === 1 && !/\.map\(msMapItems\)/.test(srcF), 'arr=' + (srcF.match(/msMapItems\(pageRows\)/g) || []).length + ' callback=' + /\.map\(msMapItems\)/.test(srcF));
   check('G5 收口唯一口径未被复制：sources.js 里 await foldFanResults 仍为 2', (srcS.match(/await foldFanResults\(/g) || []).length === 2, '');
   check('G6 harvest 会话行入口只有一份 pushRow（onSettled 与 msOnPartial 共用）', (srcS.match(/const pushRow = /g) || []).length === 1, '');
+}
+// ---------- Test 11: D1 页数谎言（源声明了有限 totalPages 且 hasMore=false，聚合 pages 不得越过声明深度） ----------
+{
+  const mkRows = (src, n) => Array.from({ length: n }, (_, i) => mkItem(src, i));
+  const one = async (name, result, opts) => searchSkills(Object.assign({
+    query: '',
+    page: 1,
+    pageSize: 24,
+    category: '',
+    source: name,
+    cache: null,
+    handlers: { [name]: async () => result }
+  }, opts || {}));
+
+  const w = await one('skillsmp', { items: mkRows('skillsmp', 24), total: 545885, totalPages: 20, hasMore: false, serverFacet: true, facetUsed: 'debugging' });
+  check('D1 windowed 单源：pages 夹到声明深度 20（改前 22746）', w.pages === 20 && w.totalPages === 20, 'pages=' + w.pages);
+  check('D1 windowed 单源：total 仍是上游目录数 545885', w.total === 545885, 'total=' + w.total);
+  check('D1 windowed 单源：hasMore 仍为 false', w.hasMore === false, String(w.hasMore));
+  check('D1 windowed 单源：items 条数不变', Array.isArray(w.items) && w.items.length === 24, 'n=' + (w.items || []).length);
+
+  const e = await one('lobehub', { items: mkRows('lobehub', 24), total: 3074, totalPages: 615, hasMore: true, serverFacet: true });
+  check('D1 对照：hasMore=true 的声明深度原样保留（615）', e.pages === 615, 'pages=' + e.pages);
+
+  const m = await searchSkills({
+    query: '', page: 1, pageSize: 24, source: 'all', cache: null,
+    handlers: {
+      clawhub: async () => ({ items: mkRows('a', 2), total: 2, totalPages: 1, hasMore: false }),
+      lobehub: async () => ({ items: mkRows('b', 24), total: 3074, totalPages: 615, hasMore: true })
+    }
+  });
+  check('D1 对照：含未闭合源时 ceil 口径不变（616）', m.pages === 616, 'pages=' + m.pages);
+
+  const s2 = await searchSkills({
+    query: '', page: 1, pageSize: 24, source: 'all', cache: null,
+    handlers: {
+      clawhub: async () => ({ items: mkRows('a', 24), total: 545885, totalPages: 20, hasMore: false }),
+      lobehub: async () => ({ items: mkRows('b', 24), total: 480, totalPages: 20, hasMore: false })
+    }
+  });
+  check('D1 多源闭合：声明深度求和 20+20=40', s2.pages === 40, 'pages=' + s2.pages);
+
+  const c = await one('clawhub', { items: mkRows('clawhub', 24), total: undefined, totalPages: undefined, hasMore: true });
+  check('D1 对照 cappedNoTotal：total/pages/totalPages 依旧缺省', c.total === undefined && c.pages === undefined && c.totalPages === undefined, 'total=' + String(c.total) + ' pages=' + String(c.pages));
+
+  const lf = await one('skills.sh', { items: [
+    { slug: 'x1', name: 'x1', source: 'skills.sh', category: 'dev' },
+    { slug: 'x2', name: 'x2', source: 'skills.sh', category: 'dev' },
+    { slug: 'x3', name: 'x3', source: 'skills.sh', category: 'ops' }
+  ], total: 3, totalPages: 1 }, { category: 'dev' });
+  check('D1 对照本地过滤形态不变：pages=1 total=2 filteredOut=1', lf.pages === 1 && lf.total === 2 && lf.filteredOut === 1 && lf.items.length === 2, 'pages=' + lf.pages + ' total=' + lf.total + ' fo=' + lf.filteredOut);
+
+  // 真实上游形态（实调实测 2026-11-26）：skillsmp facet 首页 windowed=true、hasMore=true、
+  // totalPages=20、total=545885。只认 hasMore===false 的夹取条件在真机上是漏的 —— 首屏仍会
+  // 报 22746 页。windowed 声明本身即「可浏览深度权威封顶」，必须参与夹取。
+  const wl = await one('skillsmp', { items: mkRows('skillsmp', 24), total: 545885, totalPages: 20, hasMore: true, serverFacet: true, facetUsed: 'debugging', windowed: true });
+  check('D1 真机形态 windowed+hasMore=true：pages 仍夹到 20', wl.pages === 20 && wl.totalPages === 20, 'pages=' + wl.pages);
+  check('D1 真机形态：total 不被改写、hasMore 不被改写', wl.total === 545885 && wl.hasMore === true, 'total=' + wl.total + ' hasMore=' + String(wl.hasMore));
+
+  const p2 = await one('skills.sh', { items: mkRows('skills.sh', 2), total: 2, totalPages: 1, hasMore: false });
+  check('C6 对照：小目录闭合态 pages=1 total=2 hasMore=false', p2.pages === 1 && p2.total === 2 && p2.hasMore === false, 'pages=' + p2.pages);
+  check('C6 一次性出参键序逐字不变（13 键）', Object.keys(w).join(',') === 'items,categoryNote,serverFacet,filteredOut,page,pageSize,pages,totalPages,total,hasMore,degraded,hints,sourceErrors', Object.keys(w).join(','));
+}
+
+// ---------- Test 12: harvest tailCategories（C1-C5 + E1/E2） ----------
+{
+  const drain12 = async (store, first, rounds) => {
+    const pkgs = [first];
+    let fin = first;
+    for (let i = 0; i < rounds && !fin.done; i++) { await sleep(15); const q = store.poll(first.id); if (!q) break; pkgs.push(q); fin = q; }
+    return { pkgs, fin };
+  };
+
+  const mkTail = (log) => ({
+    skillsmp: async (opts) => {
+      log.push(opts);
+      const cat = String(opts.category || '');
+      if (cat === 'gamma') { await sleep(30); throw new Error('boom'); }
+      if (cat === 'delta') { await sleep(20); return { source: 'skillsmp', items: [], total: 0, serverFacet: false, facetUsed: '' }; }
+      if (cat === 'alpha') {
+        await sleep(240);
+        return { source: 'skillsmp', items: [mkItem('skillsmp', 0), mkItem('skillsmp', 1)], total: 1000, totalPages: 20, hasMore: false, serverFacet: true, facetUsed: 'alpha', windowed: true };
+      }
+      if (cat === 'beta') {
+        await sleep(110);
+        return { source: 'skillsmp', items: [mkItem('skillsmp', 1), mkItem('skillsmp', 2)], total: 2, totalPages: 1, hasMore: false, serverFacet: true, facetUsed: 'beta', windowed: false };
+      }
+      return { source: 'skillsmp', items: [], total: 0, totalPages: 1, hasMore: false, serverFacet: true, facetUsed: cat };
+    }
+  });
+
+  const store = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const log = [];
+  const first = await store.start({
+    query: '', source: 'skillsmp', category: '', page: 1, pageSize: 2,
+    tailCategories: ['alpha', 'alpha', '', '  ', 'beta', 'gamma', 'delta', 'epsilon'],
+    tailConcurrency: 2,
+    handlers: {
+      skillsmp: async (opts) => {
+        if (opts.category) return mkTail(log).skillsmp(opts);
+        // run 3 成员集合：默认页三行各有归属 —— alpha 属 covers（合法成员）、
+        // window-slug 属窗内别类（拒收）、无分类那行不可证（拒收）。
+        return { source: 'skillsmp', items: [
+          { slug: 'a1-member', name: 'a1-member', source: 'skillsmp', category: 'alpha', installs: 5 },
+          { slug: 'w-window', name: 'w-window', source: 'skillsmp', category: 'window-slug', installs: 6 },
+          { slug: 'u-unknown', name: 'u-unknown', source: 'skillsmp', installs: 7 },
+        ], total: 3, totalPages: 1, hasMore: false, serverFacet: false };
+      }
+    }
+  });
+  // tail 态成员集合：默认页 3 行里只有 alpha 那行是可证成员，首包因此只带 1 行
+  // （窗内别类与无分类两行在 push 那一刻就被拒收，见 Test 14）。
+  check('C2 首包只带扇出的合法成员行，不待任何 tail 类落地', first.done !== true && first.rows.length === 1 && first.rows[0].slug === 'a1-member' && (!first.meta || first.meta.tail === undefined), 'rows=' + JSON.stringify(first.rows.map((r) => r.slug)) + ' done=' + String(first.done));
+
+  const seen = [];
+  let last = first;
+  const deadline = Date.now() + 9000;
+  while (Date.now() < deadline) {
+    last = store.poll(first.id);
+    seen.push(last);
+    if (last.done) break;
+    await sleep(25);
+  }
+  const tailMids = seen.filter((p) => !p.done && /tail/.test(String(p.stage || '')));
+  check('C2 tail 中间包按类推进 stage', tailMids.length >= 1, 'tailMids=' + tailMids.length);
+  // 逐批到达：把轮询到的 rowCount 压成「不同批」序列 —— 同一批内多次 poll 数值相同，
+  // 不同的 poll 周期拿到相同计数不算新的一批；序列必须严格递增且至少 2 批。
+  const rcs = seen.filter((p) => !p.done && (p.meta || {}).rowCount > 0).map((p) => p.meta.rowCount);
+  const batches = [...new Set(rcs)];
+  const grows = batches.length >= 2 && batches.every((v, i) => i === 0 || v > batches[i - 1]);
+  check('C2 逐类增量：中间包 rowCount 逐批递增', grows, JSON.stringify(rcs));
+
+  const fm = last.meta || {};
+  const t = fm.tail || {};
+  check('C3 收口 tail 恰好六个字段', Object.keys(t).sort().join(',') === 'categoriesFailed,categoriesFetched,categoriesTotal,retrievedTotal,upstreamTotal,windowed', Object.keys(t).join(','));
+  check('C1 categoriesTotal=去空去重后的 5', t.categoriesTotal === 5, String(t.categoriesTotal));
+  check('C3 categoriesFetched=3（0 行成功类也算）', t.categoriesFetched === 3, String(t.categoriesFetched));
+  check('E2 categoriesFailed=2（抛错 + facet 被拒）', t.categoriesFailed === 2, String(t.categoriesFailed));
+  check('C3 upstreamTotal=成功类自报 total 之和 1002', t.upstreamTotal === 1002, String(t.upstreamTotal));
+  check('C3 windowed=true（任一上游窗口封顶）', t.windowed === true, String(t.windowed));
+  check('C3 retrievedTotal=跨类去重后 3（alpha+beta 重叠 1 行）', t.retrievedTotal === 3, String(t.retrievedTotal));
+  check('C4 收口 total=可取回行数 4，既非 upstreamTotal 也非 ceil(upstreamTotal/size)', fm.total === 4 && fm.total !== t.upstreamTotal && fm.pages !== Math.ceil(t.upstreamTotal / 2), 'total=' + fm.total + ' pages=' + fm.pages);
+  check('C4 收口 pages=ceil(4/2)=2 且 hasMore=false', fm.pages === 2 && fm.hasMore === false, 'pages=' + fm.pages + ' hasMore=' + String(fm.hasMore));
+  check('C5 tail 态收口 serverFacet=false', fm.serverFacet === false, String(fm.serverFacet));
+  check('C2 收口行集=扇出 1 行 + tail 去重 3 行', last.rows.length === 4, 'n=' + last.rows.length);
+  check('C2 tail 逐类 query 一律空串', log.length === 5 && log.every((o) => String(o.query || '') === ''), 'calls=' + log.length);
+
+  const store2 = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const calls2 = [];
+  const first2 = await store2.start({
+    query: '', source: 'skills.sh', category: '', page: 1, pageSize: 24,
+    tailCategories: ['whatever'],
+    handlers: { 'skills.sh': async (opts) => { calls2.push(opts); return { source: 'skills.sh', items: [mkItem('skills.sh', 0)], total: 1, totalPages: 1, hasMore: false }; } }
+  });
+  const run2 = await drain12(store2, first2, 60);
+  check('E1 无分类参数的源不逐类调上游，计入 categoriesFailed', (run2.fin.meta.tail || {}).categoriesFailed === 1 && (run2.fin.meta.tail || {}).categoriesFetched === 0 && calls2.every((o) => !o.category), 'failed=' + JSON.stringify(run2.fin.meta.tail) + ' calls=' + calls2.length);
+
+  const store3 = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  // 402 个互不相同的 slug（+1 重复 +1 空串 = 404 项入参）：截断点必须是 400，
+  // 写 401 的变异要能被抓到，所以 slug 数量本身超过上限。
+  const big = [];
+  for (let i = 0; i < 402; i++) big.push('cat-' + i);
+  big.push('cat-1');
+  big.push('');
+  const first3 = await store3.start({
+    query: '', source: 'skillsmp', category: '', page: 1, pageSize: 24, tailCategories: big,
+    handlers: { skillsmp: async (opts) => ({ source: 'skillsmp', items: [], total: 0, serverFacet: true, facetUsed: String(opts.category || '') }) }
+  });
+  const run3 = await drain12(store3, first3, 400);
+  check('C1 上限 400：402 项去空去重 401 截断为 400', (run3.fin.meta.tail || {}).categoriesTotal === 400, JSON.stringify(run3.fin.meta.tail));
+
+  const store4 = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const first4 = await store4.start({
+    query: '', source: 'skillsmp', category: '', page: 1, pageSize: 24, tailCategories: 'not-an-array',
+    handlers: { skillsmp: async () => ({ source: 'skillsmp', items: [], total: 0 }) }
+  });
+  const run4 = await drain12(store4, first4, 60);
+  check('C1 非数组 tailCategories 按空处理（收口不带 tail 对象）', run4.fin.done && run4.fin.meta.tail === undefined, JSON.stringify(run4.fin.meta.tail));
+
+  const idx12 = await fs.promises.readFile(path.join(W, 'index.js'), 'utf8');
+  const hsPos = idx12.indexOf('case "harvest.start": {');
+  check('C1 index.js harvest.start 归一并透传 tailCategories', hsPos >= 0 && /tailCategories/.test(idx12.slice(hsPos, hsPos + 1400)), '');
+}
+
+// ---------- Test 13: I1–I7 tail 正向证明（无证即拒：什么都不声明的源不得把未过滤行洗进会话） ----------
+{
+  const drain13 = async (store, first, rounds) => {
+    const pkgs = [first];
+    let fin = first;
+    for (let i = 0; i < rounds && !fin.done; i++) { await sleep(15); const q = store.poll(first.id); if (!q) break; pkgs.push(q); fin = q; }
+    return { pkgs, fin };
+  };
+  const esMod13 = await import('../src/extra-sources.js');
+  const KEY13 = 'items,categoryNote,serverFacet,filteredOut,page,pageSize,pages,totalPages,total,hasMore,degraded,hints,sourceErrors';
+
+  // A. 真机形（lead 探针 ms177-tailbogus / ms177-msref）：handler 无 serverFacet、无 facetUsed，
+  // 行是没按分类筛过的混合行，整源 total 被当成「该类目录数」。
+  const leakRows = () => ([
+    { slug: 'leak-1', name: 'leak-1', source: 'modelscope', category: '开发工具' },
+    { slug: 'leak-2', name: 'leak-2', source: 'modelscope', category: '媒体处理' },
+  ]);
+  const storeA = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstA = await storeA.start({
+    query: '', source: 'modelscope', category: '', page: 1, pageSize: 24, cache: null,
+    tailCategories: ['__bogus_category__', '__bogus_slow__'],
+    // 两个沉默类错时返回：快的那个先落地，才能被轮询到「unproven」这一程的 stage
+    // （慢的那个还在跑，会话未收口）。单类会话里拒证与收口同 tick，中间态不可观测。
+    handlers: { modelscope: async (opts) => { if (!opts.category) return { source: 'modelscope', items: [mkItem('modelscope', 9)], total: 1, hasMore: true, categoryInfo: true }; await sleep(String(opts.category).indexOf('slow') < 0 ? 30 : 320); return { source: 'modelscope', items: leakRows(), total: 89063, hasMore: true, categoryInfo: true }; } },
+  });
+  const runA = await drain13(storeA, firstA, 120);
+  const tA = (runA.fin.meta || {}).tail || {};
+  check('I4 什么都不声明的 handler 不算成功（缺证 ⇒ unproven）', tA.categoriesTotal === 2 && tA.categoriesFetched === 0 && tA.categoriesFailed === 2, JSON.stringify(tA));
+  check('I2 未过滤的行一条都不许进会话（retrievedTotal=0 且 leak 行不在行集）', tA.retrievedTotal === 0 && !runA.fin.rows.some((r) => String(r.slug).indexOf('leak-') === 0), JSON.stringify(runA.fin.rows.map((r) => r.slug)));
+  check('I3 整源 total 不得冒充该类合计（upstreamTotal=0）', tA.upstreamTotal === 0, String(tA.upstreamTotal));
+  // 拒因可见性另开一个会话测：A 会话里没有任何可证行（扇出无分类行被谓词拒收、
+  // 逐类又全无正证），首包循环只能一路等到 done，中间包根本不存在——那不是缺证，
+  // 是会话本来就没有可推的东西。A2 用一行「category 命中 covers」的合法扇出行打开
+  // 首包，unproven 这一程的 stage 才真的可观测（run 3 谓词后 A 会话只剩这条能拆出来测）。
+  const storeA2 = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstA2 = await storeA2.start({
+    query: '', source: 'modelscope', category: '', page: 1, pageSize: 24, cache: null,
+    tailCategories: ['__bogus_category__', '__bogus_slow__'],
+    handlers: { modelscope: async (opts) => { if (!opts.category) return { source: 'modelscope', items: [{ slug: 'fan-member', name: 'fan-member', source: 'modelscope', category: '__bogus_category__' }], total: 1, hasMore: true, categoryInfo: true }; await sleep(String(opts.category).indexOf('slow') < 0 ? 30 : 320); return { source: 'modelscope', items: leakRows(), total: 89063, hasMore: true, categoryInfo: true }; } },
+  });
+  const runA2 = await drain13(storeA2, firstA2, 120);
+  const tA2 = (runA2.fin.meta || {}).tail || {};
+  check('I4 拒因可见：中间包 stage 带 unproven', runA2.pkgs.some((p) => p.done !== true && /unproven/.test(String(p.stage || ''))), JSON.stringify(runA2.pkgs.map((p) => p.stage).slice(0, 6)));
+  check('T14b(甲) 谓词放行后首包即带合法成员行，不待逐类落地（A2 缺证类仍不计 fetched）', runA2.fin.rows.map((r) => r.slug).includes('fan-member') && tA2.categoriesFetched === 0 && tA2.categoriesFailed === 2 && tA2.retrievedTotal === 0 && (runA2.fin.meta || {}).total === 1, JSON.stringify({ slugs: runA2.fin.rows.map((r) => r.slug), tail: tA2, total: (runA2.fin.meta || {}).total }));
+  // run 3：tail 态那条扇出默认页行没有分类，成员身份不可证 ⇒ 一并拒收（total=0）。
+  check('I2 缺证态收口 total 只数可信行（tail 态无分类扇出行不入账 ⇒ 0）', (runA.fin.meta || {}).total === 0 && !runA.fin.rows.some((r) => r.slug === 'modelscope-9'), 'total=' + (runA.fin.meta || {}).total + ' rows=' + JSON.stringify(runA.fin.rows.map((r) => r.slug)));
+
+  // B. 行「看着像」该分类也不作数：正证只能来自源的声明，不能从行反推（I4 字面）。
+  const storeB = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstB = await storeB.start({
+    query: '', source: 'lobehub', category: '', page: 1, pageSize: 24, cache: null,
+    tailCategories: ['pdf'],
+    handlers: { lobehub: async (opts) => (opts.category
+      ? { source: 'lobehub', items: [{ slug: 'row-pdf', name: 'row-pdf', source: 'lobehub', category: String(opts.category) }], total: 4210, hasMore: false, categoryInfo: true }
+      : { source: 'lobehub', items: [mkItem('lobehub', 9)], total: 1, hasMore: false }) },
+  });
+  const runB = await drain13(storeB, firstB, 120);
+  const tB = (runB.fin.meta || {}).tail || {};
+  check('I4 只凭行内分类反推不算证明（仍计 unproven，行数不入账）', tB.categoriesFetched === 0 && tB.categoriesFailed === 1 && tB.retrievedTotal === 0, JSON.stringify(tB));
+
+  // C. facetUsed 与 slug 的大小写/空格差异必须仍算正证（归一化比较，不是逐字节比较）。
+  const storeC = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstC = await storeC.start({
+    query: '', source: 'skillsmp', category: '', page: 1, pageSize: 24, cache: null,
+    tailCategories: ['alpha'],
+    handlers: { skillsmp: async (opts) => (opts.category
+      ? { source: 'skillsmp', items: [mkItem('skillsmp', 1)], total: 5, hasMore: false, facetUsed: '  ALPHA ' }
+      : { source: 'skillsmp', items: [mkItem('skillsmp', 9)], total: 1, hasMore: false }) },
+  });
+  const runC = await drain13(storeC, firstC, 120);
+  const tC = (runC.fin.meta || {}).tail || {};
+  check('I4 facetUsed 归一后与 slug 相等即算正证（免 serverFacet）', tC.categoriesFetched === 1 && tC.retrievedTotal === 1 && tC.upstreamTotal === 5, JSON.stringify(tC));
+
+  // D. 只有 serverFacet=true 的源（lobehub 形，无 facetUsed）同样是正证 —— 两个途径都要成立。
+  const storeD = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstD = await storeD.start({
+    query: '', source: 'lobehub', category: '', page: 1, pageSize: 24, cache: null,
+    tailCategories: ['design'],
+    handlers: { lobehub: async (opts) => (opts.category
+      ? { source: 'lobehub', items: [mkItem('lobehub', 2)], total: 3074, totalPages: 615, hasMore: true, serverFacet: true }
+      : { source: 'lobehub', items: [mkItem('lobehub', 9)], total: 1, hasMore: false }) },
+  });
+  const runD = await drain13(storeD, firstD, 120);
+  const tD = (runD.fin.meta || {}).tail || {};
+  check('I4 serverFacet===true 单独成立（lobehub 形无 facetUsed）', tD.categoriesFetched === 1 && tD.retrievedTotal === 1 && tD.upstreamTotal === 3074, JSON.stringify(tD));
+
+  // E. I6：本地过滤源的合计口径与窗口封顶源不同，只能写在 hint 里，不得加第七个字段。
+  const storeE = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstE = await storeE.start({
+    query: '', source: 'modelscope', category: '', page: 1, pageSize: 2, cache: null,
+    tailCategories: ['dev'], tailConcurrency: 1,
+    handlers: { modelscope: async (opts) => (opts.category
+      ? { source: 'modelscope', items: [mkItem('modelscope', 1), mkItem('modelscope', 2)], total: 900, hasMore: false, categoryInfo: true, facetUsed: 'dev' }
+      : { source: 'modelscope', items: [mkItem('modelscope', 9)], total: 1, hasMore: false, categoryInfo: true }) },
+  });
+  const runE = await drain13(storeE, firstE, 120);
+  const hintE = String((runE.fin.meta || {}).hints || []);
+  check('I6 本地过滤源的合计口径写进 hint（不谎称上游目录数，也不写窗口话）', tA && (runE.fin.meta || {}).tail && (runE.fin.meta || {}).tail.categoriesFetched === 1 && /可达集合|本地过滤/.test(hintE) && !/窗口之外/.test(hintE), hintE.slice(0, 240));
+  const storeF = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstF = await storeF.start({
+    query: '', source: 'skillsmp', category: '', page: 1, pageSize: 2, cache: null,
+    tailCategories: ['win'], tailConcurrency: 1,
+    handlers: { skillsmp: async (opts) => (opts.category
+      ? { source: 'skillsmp', items: [mkItem('skillsmp', 1)], total: 545885, totalPages: 20, hasMore: true, serverFacet: true, facetUsed: 'win', windowed: true }
+      : { source: 'skillsmp', items: [mkItem('skillsmp', 9)], total: 1, hasMore: false }) },
+  });
+  const runF = await drain13(storeF, firstF, 120);
+  check('I6 窗口封顶源仍说窗口（两种口径不混写）', /窗口之外/.test(String((runF.fin.meta || {}).hints || [])), JSON.stringify((runF.fin.meta || {}).tail));
+
+  // G. I7-1 串台：命中缓存条目带来的声明只能证明它自己那一类；换分类必须落到不同键。
+  const readsG = [];
+  const cacheG = {
+    get: async (k) => { readsG.push(k); return { source: 'modelscope', items: [{ slug: 'cached-a', name: 'cached-a', source: 'modelscope', category: '开发工具' }], categoryInfo: true, facetUsed: '开发工具', total: 300, hasMore: false }; },
+    put: async () => {},
+  };
+  const storeG = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstG = await storeG.start({
+    query: '', source: 'modelscope', category: '', page: 1, pageSize: 24, cache: cacheG,
+    tailCategories: ['开发工具', '媒体处理'], tailConcurrency: 1,
+    handlers: { modelscope: async (opts) => esMod13.searchModelScope(Object.assign({}, opts, { transport: async () => { throw new Error('不该打上游'); } })) },
+  });
+  const runG = await drain13(storeG, firstG, 120);
+  const tG = (runG.fin.meta || {}).tail || {};
+  check('I7 A 分类的缓存声明不得替 B 分类作证（B 计 unproven）', tG.categoriesFetched === 1 && tG.categoriesFailed === 1 && tG.retrievedTotal === 1, JSON.stringify(tG));
+  check('I7 换分类必须读到不同的缓存键（键含分类维度）', readsG.length >= 2 && new Set(readsG).size === readsG.length, JSON.stringify(readsG));
+  const esBody13 = fs.readFileSync(path.join(W, 'src/extra-sources.js'), 'utf8');
+  const msKeyLine13 = String(esBody13.split(/\r?\n/).find((l) => /const cacheKey = .modelscope:search:/.test(l)) || '');
+  check('I7 源码锁：modelscope cacheKey 带分类 token', /modelscopeCategoryCacheToken\(category\)/.test(msKeyLine13), msKeyLine13.trim().slice(0, 160));
+
+  // H. I7-2：旧版本写的、不带声明字段的缓存条目命中 ⇒ 计 rejected、不计 fetched（宁可少不可谎）。
+  const cacheH = {
+    get: async () => ({ source: 'modelscope', items: [{ slug: 'old-cache', name: 'old-cache', source: 'modelscope', category: '开发工具' }], categoryInfo: true, total: 300, hasMore: false }),
+    put: async () => {},
+  };
+  const storeH = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstH = await storeH.start({
+    query: '', source: 'modelscope', category: '', page: 1, pageSize: 24, cache: cacheH,
+    tailCategories: ['开发工具'], tailConcurrency: 1,
+    // 扇出那次不走缓存桩（否则 old-cache 行会从扇出合法进会话，判定就测不到东西）：
+    // 只有带 category 的逐类调用命中「旧版本写的、无声明键」的缓存条目。
+    handlers: { modelscope: async (opts) => (opts.category
+      ? esMod13.searchModelScope(Object.assign({}, opts, { transport: async () => { throw new Error('不该打上游'); } }))
+      : { source: 'modelscope', items: [mkItem('modelscope', 9)], total: 1, hasMore: true, categoryInfo: true }) },
+  });
+  const runH = await drain13(storeH, firstH, 120);
+  const tH = (runH.fin.meta || {}).tail || {};
+  check('I7 缓存里的无声明条目 ⇒ rejected（不得为旧缓存开后门）', tH.categoriesFetched === 0 && tH.categoriesFailed === 1 && tH.retrievedTotal === 0 && !runH.fin.rows.some((r) => r.slug === 'old-cache'), JSON.stringify(tH));
+
+  // I. 源侧声明（extra-sources.js 范围内）：modelscope 词表内分类回 facetUsed=该分类，绝不声明 serverFacet。
+  const mkTr = (cat) => async (_u, init) => {
+    const b = JSON.parse(String(init.body));
+    const rows = [];
+    if (b.PageNumber <= 2) for (let i = 0; i < 3; i++) rows.push({ Name: 'm-p' + b.PageNumber + '-i' + i, DisplayName: 'M' + i, Path: 'o' + b.PageNumber, L1: { ChineseName: cat } });
+    return { ok: true, json: async () => ({ Data: { SkillList: rows, TotalCount: 3500 } }) };
+  };
+  const directOk = await esMod13.searchModelScope({ query: '', page: 1, pageSize: 24, category: '开发工具', sort: '', cache: null, transport: mkTr('开发工具'), harvestBypass: true });
+  check('源侧声明：modelscope 词表内分类 facetUsed === 该分类', directOk.facetUsed === '开发工具', JSON.stringify(directOk.facetUsed));
+  check('I7 modelscope 的 serverFacet 不得为 true（本地过滤≠服务端已筛）', directOk.serverFacet === undefined && directOk.categoryInfo === true, JSON.stringify(directOk.serverFacet));
+  const directBad = await esMod13.searchModelScope({ query: '', page: 1, pageSize: 24, category: '__bogus_category__', sort: '', cache: null, transport: mkTr('开发工具'), harvestBypass: true });
+  check('源侧声明：表外分类 facetUsed 必须是空串（让 tail 判定拒掉）', directBad.facetUsed === '' && directBad.serverFacet === undefined, JSON.stringify({ f: directBad.facetUsed, s: directBad.serverFacet }));
+  const msStart13 = esBody13.indexOf('export async function searchModelScope');
+  const msEnd13 = esBody13.indexOf('export async function modelScopeSkill');
+  check('I7 源码锁：searchModelScope 体内不出现 serverFacet 字样', msStart13 > 0 && msEnd13 > msStart13 && esBody13.slice(msStart13, msEnd13).indexOf('serverFacet') < 0, msStart13 + '/' + msEnd13);
+
+  // J. skillhub 源侧声明本批不做（lead m00836 裁定，列 0.5.178）：src/skillhub.js 出参无 facetUsed/serverFacet
+  // ⇒ 词表内成功类也只能走 unproven。这是刻意的过渡态，本条锁住「不许在聚合层凭空替 skillhub 作证」。
+  const storeJ = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstJ = await storeJ.start({
+    query: '', source: 'skillhub', category: '', page: 1, pageSize: 24, cache: null,
+    tailCategories: ['office-efficiency'],
+    handlers: { skillhub: async (opts) => (opts.category
+      ? { source: 'skillhub', items: [mkItem('skillhub', 3)], total: 13966, hasMore: false }
+      : { source: 'skillhub', items: [mkItem('skillhub', 9)], total: 1, hasMore: false }) },
+  });
+  const runJ = await drain13(storeJ, firstJ, 120);
+  const tJ = (runJ.fin.meta || {}).tail || {};
+  check('过渡态：skillhub 未自述 facet ⇒ 成功类也计 unproven（0.5.178 源侧自描述后翻正）', tJ.categoriesFetched === 0 && tJ.categoriesFailed === 1 && tJ.retrievedTotal === 0, JSON.stringify(tJ));
+
+  // K. I5：收紧判定后，一次性 skills.search 出参键序仍逐字不变。
+  const oneK13 = await searchSkills({ query: '', source: 'modelscope', page: 1, pageSize: 24, category: '', cache: null, handlers: { modelscope: async () => ({ source: 'modelscope', items: [mkItem('modelscope', 1)], total: 1, hasMore: false, categoryInfo: true, facetUsed: '开发工具' }) } });
+  check('I5 modelscope 形一次性出参键序仍为 13 键', Object.keys(oneK13).join(',') === KEY13, Object.keys(oneK13).join(','));
+  const oneK13b = await searchSkills({ query: '', source: 'skillhub', page: 1, pageSize: 24, category: '', cache: null, handlers: { skillhub: async () => ({ source: 'skillhub', items: [mkItem('skillhub', 1)], total: 1, hasMore: false }) } });
+  check('I5 skillhub 形一次性出参键序仍为 13 键', Object.keys(oneK13b).join(',') === KEY13, Object.keys(oneK13b).join(','));
+  const oneK13c = await searchSkills({ query: '', source: 'modelscope', page: 1, pageSize: 24, category: '开发工具', cache: null, handlers: { modelscope: async () => ({ source: 'modelscope', items: [mkItem('modelscope', 1)], total: 1, hasMore: false, categoryInfo: true, facetUsed: '开发工具' }) } });
+  check('I5 分类态一次性通路不因 facetUsed 而跳服（facetUsed 不参与聚合 facet 计票）', oneK13c.serverFacet === false && oneK13c.items.length === 1, JSON.stringify({ sf: oneK13c.serverFacet, n: oneK13c.items.length }));
+  check('I5 六字段口径未扩（tail 仍是 C3 的六个键）', Object.keys(tG).sort().join(',') === 'categoriesFailed,categoriesFetched,categoriesTotal,retrievedTotal,upstreamTotal,windowed', Object.keys(tG).join(','));
+  // L. I7-1：声明必须写在「被缓存的那个对象」里。命中路径原样返回缓存条目 ⇒ 证明穿过缓存存活；
+  //    把 facetUsed 挪到 return 之后再现造（缓存对象里没有）就会被这条抓到。
+  const spyL = new Map();
+  const cacheL = { get: async (k) => spyL.get(k), put: async (k, v) => { spyL.set(k, v); } };
+  await esMod13.searchModelScope({ query: '', page: 1, pageSize: 24, category: '开发工具', sort: '', cache: cacheL, transport: mkTr('开发工具'), harvestBypass: true });
+  const storedL = [...spyL.entries()].filter(([k]) => k.indexOf('modelscope:search:') === 0);
+  check('I7 写进缓存的条目自带 facetUsed（声明不在 return 之后现造）', storedL.length === 1 && Boolean(storedL[0][1]) && storedL[0][1].facetUsed === '开发工具', JSON.stringify(storedL.map(([k, v]) => [k, v && v.facetUsed])));
+  const hitL = await esMod13.searchModelScope({ query: '', page: 1, pageSize: 24, category: '开发工具', sort: '', cache: cacheL, transport: async () => { throw new Error('不该打上游'); }, harvestBypass: true });
+  check('I7 命中路径带出 facetUsed 且不越权声明 serverFacet', hitL.facetUsed === '开发工具' && hitL.serverFacet === undefined, JSON.stringify({ f: hitL.facetUsed, s: hitL.serverFacet }));
+  const storeL = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstL = await storeL.start({
+    query: '', source: 'modelscope', category: '', page: 1, pageSize: 24, cache: cacheL,
+    tailCategories: ['开发工具'], tailConcurrency: 1,
+    handlers: { modelscope: async (opts) => esMod13.searchModelScope(Object.assign({}, opts, { transport: async () => { throw new Error('不该打上游'); } })) },
+  });
+  const runL = await drain13(storeL, firstL, 120);
+  const tL = (runL.fin.meta || {}).tail || {};
+  check('I7 缓存命中的声明足以作证（tail 计 fetched，行集非空）', tL.categoriesFetched === 1 && tL.categoriesFailed === 0 && tL.retrievedTotal >= 1, JSON.stringify(tL));
+  const msBody13 = esBody13.slice(esBody13.indexOf('export async function searchModelScope'), esBody13.indexOf('export async function modelScopeSkill'));
+  check('I7 源码锁：facetUsed 写在 result 字面量内（缓存 put 的同一个对象）', /const result = \{[\s\S]{0,240}facetUsed: catActive/.test(msBody13), msBody13.slice(msBody13.indexOf('const result ='), msBody13.indexOf('const result =') + 120).replace(/\r/g, ''));
+}
+
+// ---------- Test 14: tail 态成员集合（一条谓词管住 push 与收口；不可证的行不许挂到「其他」下） ----------
+{
+  const drain14 = async (store, first, rounds) => {
+    const pkgs = [first];
+    let fin = first;
+    for (let i = 0; i < rounds && !fin.done; i++) { await sleep(15); const q = store.poll(first.id); if (!q) break; pkgs.push(q); fin = q; }
+    return { pkgs, fin };
+  };
+  const R = (slug, cat) => {
+    const it = { slug: slug, name: slug, source: 'skillsmp', installs: 1 };
+    if (cat !== null) it.category = cat;
+    return it;
+  };
+  // covers = alpha + gamma。扇出默认页三行：f-cover(alpha 属合并集，合法成员)、
+  // f-out(beta 是窗内别类，拒收)、f-plain(无分类，成员身份不可证，拒收)。
+  // 逐类取数：alpha 作证后回 2 行（含一行无分类 —— 该类已被上游接受，整类归因成立）、
+  // gamma 作证后回 1 行、delta 被 facet 拒 ⇒ 计 failed 且不推行。
+  const tailStore14 = () => makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const handlers14 = {
+    skillsmp: async (opts) => {
+      if (!opts.category) return { source: 'skillsmp', items: [R('f-cover', 'alpha'), R('f-out', 'beta'), R('f-plain', null)], total: 3, totalPages: 1, hasMore: false };
+      if (opts.category === 'alpha') return { source: 'skillsmp', items: [R('t-a1', 'alpha'), R('t-plain', null)], total: 10, hasMore: false, serverFacet: true, facetUsed: 'alpha' };
+      if (opts.category === 'gamma') return { source: 'skillsmp', items: [R('t-g1', 'gamma')], total: 20, hasMore: false, facetUsed: 'gamma' };
+      return { source: 'skillsmp', items: [R('t-d1', 'alpha')], total: 99, hasMore: false, facetUsed: '' };
+    },
+  };
+  const store14 = tailStore14();
+  const first14 = await store14.start({
+    query: '', source: 'skillsmp', category: '', page: 1, pageSize: 2, cache: null,
+    tailCategories: ['alpha', 'gamma', 'delta'], tailConcurrency: 1, handlers: handlers14,
+  });
+  const run14 = await drain14(store14, first14, 160);
+  const slugs14 = run14.fin.rows.map((r) => r.slug);
+  const t14 = (run14.fin.meta || {}).tail || {};
+  check('T14a 扇出里 category 不属于 covers 的行不进收口行集', !slugs14.includes('f-out'), JSON.stringify(slugs14));
+  check('T14a 扇出里 category 不属于 covers 的行也不进任何中间包', run14.pkgs.every((p) => (p.rows || []).every((r) => r.slug !== 'f-out')), JSON.stringify(run14.pkgs.map((p) => (p.rows || []).map((r) => r.slug))));
+  check('T14c 扇出的无分类行被拒收（收口与中间包都不含）', !slugs14.includes('f-plain') && run14.pkgs.every((p) => (p.rows || []).every((r) => r.slug !== 'f-plain')), JSON.stringify(slugs14));
+  check('T14b 扇出里 category 属于 covers 的行照常进（不许一刀切丢默认页）', slugs14.includes('f-cover'), JSON.stringify(slugs14));
+  check('T14c 逐类取数返回的无分类行被放行（两类来源不同答案）', slugs14.includes('t-plain') && slugs14.includes('t-a1') && slugs14.includes('t-g1'), JSON.stringify(slugs14));
+  check('T14 被 facet 拒的类一行都不进（t-d1 不入账）', !slugs14.includes('t-d1'), JSON.stringify(slugs14));
+  check('T14d 收口 meta.total === 行集条数 === tail.retrievedTotal + 扇出合法成员数', run14.fin.meta.total === run14.fin.rows.length && run14.fin.meta.total === t14.retrievedTotal + 1, JSON.stringify({ total: run14.fin.meta.total, n: run14.fin.rows.length, retrieved: t14.retrievedTotal }));
+  check('T14d 可加性读数：retrievedTotal=3（逐类）／扇出合法成员=1／total=4', t14.retrievedTotal === 3 && run14.fin.rows.length === 4 && run14.fin.meta.total === 4, JSON.stringify({ retrieved: t14.retrievedTotal, rows: run14.fin.rows.length, total: run14.fin.meta.total }));
+  check('T14 谓词拒收不改 categories* 口径（fetched=2／failed=1／upstream=30）', t14.categoriesTotal === 3 && t14.categoriesFetched === 2 && t14.categoriesFailed === 1 && t14.upstreamTotal === 30 && t14.windowed === false, JSON.stringify(t14));
+  check('T14 六字段仍冻结（一个不加一个不改名）', Object.keys(t14).sort().join(',') === 'categoriesFailed,categoriesFetched,categoriesTotal,retrievedTotal,upstreamTotal,windowed', Object.keys(t14).join(','));
+  check('T14 收口分页口径与行集自洽（pages=ceil(4/2)=2、hasMore=false、serverFacet=false）', run14.fin.meta.pages === 2 && run14.fin.meta.hasMore === false && run14.fin.meta.serverFacet === false, JSON.stringify({ pages: run14.fin.meta.pages, hasMore: run14.fin.meta.hasMore, sf: run14.fin.meta.serverFacet }));
+
+  // T14e 谓词只作用于 tail 态：非 tail 会话（单类态 / all 态）行集逐条不变。
+  const store14b = tailStore14();
+  const first14b = await store14b.start({
+    query: '', source: 'skillsmp', category: '', page: 1, pageSize: 2, cache: null, handlers: handlers14,
+  });
+  const run14b = await drain14(store14b, first14b, 60);
+  check('T14e 非 tail 会话（浏览态）行集与 meta 逐条不变（pages=1 由 D1 夹深度口径给出，谓词不改它）', run14b.fin.rows.map((r) => r.slug).join(',') === 'f-cover,f-out,f-plain' && run14b.fin.meta.total === 3 && run14b.fin.meta.pages === 1 && run14b.fin.meta.tail === undefined, JSON.stringify({ slugs: run14b.fin.rows.map((r) => r.slug), total: run14b.fin.meta.total, pages: run14b.fin.meta.pages, tail: run14b.fin.meta.tail }));
+  const store14c = tailStore14();
+  const first14c = await store14c.start({
+    query: '', source: 'all', category: 'alpha', page: 1, pageSize: 2, cache: null,
+    handlers: {
+      skillsmp: async () => ({ source: 'skillsmp', items: [R('s-plain', null), R('s-out', 'beta')], total: 2, hasMore: false }),
+      lobehub: async () => ({ source: 'lobehub', items: [{ slug: 'l-1', name: 'l-1', source: 'lobehub', category: 'alpha', installs: 2 }], total: 1, hasMore: false }),
+    },
+  });
+  const run14c = await drain14(store14c, first14c, 60);
+  const got14c = run14c.fin.rows.map((r) => r.slug).sort().join(',');
+  check('T14e all 态单类浏览不因谓词丢行（本地过滤口径照旧：s-out 被旧有过滤剔掉，非谓词所为）', got14c === 'l-1,s-plain' && run14c.fin.meta.tail === undefined, got14c);
+  check('T14e 非 tail 会话收口 meta 仍取折叠口径（本地过滤重算 total=2，谓词不改它）', run14c.fin.meta.total === 2 && run14c.fin.meta.tail === undefined, JSON.stringify({ total: run14c.fin.meta.total, tail: run14c.fin.meta.tail }));
 }
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

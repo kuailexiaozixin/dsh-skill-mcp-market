@@ -81,7 +81,7 @@ const buildRunner = (islandSrc, bodySrc) => new Function('deps', 'extra', 'trust
   'return async (text, options) => {' + NL +
   '  const { liveRef, resultCacheRef, reqSeqRef, size, sort, call, setSkills, setSkillsPage,' +
   '    setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setError, setBusy,' +
-  '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight, trustedTotal, totalBaseRef, CAT_OTHER } = deps;' +
+  '    skillCacheKey, resolvePageSize, inflightRef, shouldSkipInflight, trustedTotal, totalBaseRef, CAT_OTHER, tailCoversRef } = deps;' +
   '  const { keepSortForForm } = extra;' + NL + bodySrc + NL + '};');
 
 // 假服务端：poll 会校验 id（与真服务端一致：id 不对 ⇒ 顶层 ok:false）；polls 越界回空增量包，
@@ -93,6 +93,7 @@ const makeEnv = (islandSrc, plan, opts) => {
   const reqSeqRef = { current: 0 };
   const totalBaseRef = { current: {} };
   const inflightRef = { current: new Set() };
+  const tailCoversRef = { current: opts.tailCovers === undefined ? null : opts.tailCovers };
   const logs = { skills: [], busy: [], notice: [], error: [], page: [], totalPages: [], total: [], hasMore: [], serverFacet: [] };
   const ops = [];
   const bodies = [];
@@ -125,6 +126,7 @@ const makeEnv = (islandSrc, plan, opts) => {
     reqSeqRef,
     totalBaseRef,
     inflightRef,
+    tailCoversRef,
     size: 24,
     sort: 'default',
     call,
@@ -195,7 +197,17 @@ const S1 = async (mk, ck) => {
   ck('S1 每次 poll 都携带 start 返回的会话 id（响应不回传 id）', e.bodies.filter((b) => b.op === 'harvest.poll').every((b) => b.p.id === 'h1'), JSON.stringify(e.bodies.filter((b) => b.op === 'harvest.poll').map((b) => b.p)));
   ck('S1 结束后 inflight 放行、ctl 三清（timer/wake/token）', e.inflightRef.current.size === 0 && e.ctl.current.timer === null && e.ctl.current.wake === null && e.ctl.current.token === null, JSON.stringify([e.inflightRef.current.size, e.ctl.current.timer, e.ctl.current.wake, e.ctl.current.token]));
   ck('S1 全程无实质报错（harvest 失败不当搜索失败；门前的 setError(\'\') 复位合法）', e.logs.error.every((v) => v === ''), JSON.stringify(e.logs.error));
-  ck('S1 harvest.start 入参与 skills.search 六参完全一致', e.bodies.length > 0 && canon(e.bodies[0].p) === canon({ category: '', page: 1, pageSize: 24, query: 'pdf', sort: 'installCount', source: 'clawhub' }), canon(e.bodies[0] ? e.bodies[0].p : null));
+  ck('S1 窗内/全部分类态 harvest.start 入参六键逐键一致（不得多出 tailCategories 键）', e.bodies.length > 0 && canon(e.bodies[0].p) === canon({ category: '', page: 1, pageSize: 24, query: 'pdf', sort: 'installCount', source: 'clawhub' }), canon(e.bodies[0] ? e.bodies[0].p : null));
+  // 0.5.177 C1 另一半：只有合并态（CAT_OTHER + covers 非空）才追加 tailCategories，六参仍同旧口径。
+  const eT = mk({
+    start: { id: 'ht', rows: [R1], meta: interimMeta, done: false },
+    polls: [{ rows: [R2, R3, R4], meta: fm(4), done: true, final: true }],
+    search: SEARCH_OK,
+  }, { category: '__cat_other', tailCovers: ['ai-programming', 'office', 'design'] });
+  await eT.run('pdf', {});
+  const tb = (eT.bodies.find((b) => b.op === 'harvest.start') || {}).p || {};
+  ck('S1 合并态 harvest.start 六参仍逐键同旧口径（category 照旧降级为空串）', canon({ category: tb.category, page: tb.page, pageSize: tb.pageSize, query: tb.query, sort: tb.sort, source: tb.source }) === canon({ category: '', page: 1, pageSize: 24, query: 'pdf', sort: 'installCount', source: 'clawhub' }), canon(tb));
+  ck('S1 合并态 tailCategories 为非空字符串数组且每项是上游真 slug（C1，绝不含 __cat_other）', Array.isArray(tb.tailCategories) && tb.tailCategories.length === 3 && tb.tailCategories.every((x) => typeof x === 'string' && x.length > 0 && x !== '__cat_other' && /^[a-z0-9][a-z0-9-]*$/.test(x)), JSON.stringify(tb.tailCategories));
 };
 
 // S2：中间包去重 —— 同键覆盖、新键追加；两种行键（source|slug 与 id）都参与。
@@ -234,6 +246,14 @@ const S3 = async (mk, ck, mode) => {
   const sb = e.bodies.find((b) => b.op === 'skills.search');
   ck(tag + ' 回落请求与 harvest.start 六参完全一致（同参改走旧通路）', Boolean(hb) && Boolean(sb) && canon(hb.p) === canon(sb.p), canon(hb ? hb.p : null) + ' vs ' + canon(sb ? sb.p : null));
   ck(tag + ' 结束后 ctl 三清', e.ctl.current.timer === null && e.ctl.current.wake === null && e.ctl.current.token === null, JSON.stringify([e.ctl.current.timer, e.ctl.current.wake, e.ctl.current.token]));
+  // 0.5.177 合并态回落：start 按 C1 带 tailCategories，一次性 skills.search 不带（C6 逐字段不变）
+  // ⇒ 比较口径 = 剥掉 tailCategories 后与 sb.p 逐键一致。
+  const eTx = mk(PLAN, { category: '__cat_other', tailCovers: ['ai-programming', 'office'] });
+  await eTx.run('pdf', {});
+  const thb = eTx.bodies.find((b) => b.op === 'harvest.start');
+  const tsb = eTx.bodies.find((b) => b.op === 'skills.search');
+  ck(tag + ' 合并态回落：harvest.start 确实带 tailCategories（合并集合请求按 C1 发过）', Boolean(thb) && Array.isArray(thb.p.tailCategories) && thb.p.tailCategories.length === 2, thb ? JSON.stringify(thb.p.tailCategories) : 'no start');
+  ck(tag + ' 合并态回落：一次性 skills.search 无 tailCategories，剥键后与 start 逐键一致（C6）', Boolean(thb) && Boolean(tsb) && !Object.prototype.hasOwnProperty.call(tsb.p, 'tailCategories') && canon(Object.assign({}, thb.p, { tailCategories: undefined })) === canon(tsb.p), (thb ? canon(thb.p) : 'no hb') + ' vs ' + (tsb ? canon(tsb.p) : 'no sb'));
 };
 
 // S3B：poll 中途 ok:false ⇒ 停轮询、回落恰好一次。
@@ -375,11 +395,17 @@ const m1Island = swapLine(lineIdx('if (pkg.final === true) { applyHarvestFinal',
 const m2Island = swapLine(lineIdx('if (at.has(k)) out[at.get(k)] = x;'), (l) => l.replace('if (at.has(k))', 'if (false)'));
 const m3Island = swapLine(lineIdx('if (!started.ok) { harvestDropSession(ctl, env.token); return { settled: false }; }'), (l) => l.replace('{ settled: false }', '{ settled: true }'));
 const m4Island = swapLine(lineIdx("category: env.upstreamCat === 'all' ? '' : env.upstreamCat,"), () => '        category: env.cat,');
+// M6：删掉 tailCategories 条件展开 ⇒ 合并态拿不到 tailCategories（新判据必红）
+const m6Island = swapLine(lineIdx('...(env.tailCovers ? { tailCategories: env.tailCovers } : {}),'), () => '');
+// M7：换成无条件下发 ⇒ 窗内/全部分类态多出第七键（S1 窗内态逐键判据必红）
+const m7Island = swapLine(lineIdx('...(env.tailCovers ? { tailCategories: env.tailCovers } : {}),'), (l) => '        tailCategories: env.tailCovers || [],');
 if (islandText) {
   await probe('M1', m1Island, S1, 'final 整表替换');
   await probe('M2', m2Island, S2, '同键覆盖');
   await probe('M3', m3Island, (mk, ck) => S3(mk, ck, 'okfalse'), '回落恰好一次');
   await probe('M4', m4Island, S4, 'CAT_OTHER 绝不下发');
+  await probe('M6', m6Island, S1, 'tailCategories 为非空字符串数组');
+  await probe('M7', m7Island, S1, '窗内/全部分类态 harvest.start 入参六键逐键一致');
   const wi = islandLines.findIndex((l) => l.includes('while (true) {'));
   let m5Island = islandText;
   if (wi >= 0) {
@@ -391,6 +417,7 @@ if (islandText) {
   mres.M5 = { targetedRed: !noCutoff(m5Island), restored: noCutoff(islandText), bad: ['注入 Date.now/超时 setTimeout'], rbad: [] };
 } else {
   mres.M1 = { targetedRed: false, restored: false, bad: ['抽取失败'], rbad: [] };
+  mres.M6 = mres.M7 = mres.M1;
   mres.M2 = mres.M3 = mres.M4 = mres.M5 = mres.M1;
 }
 check('变异 M1（final 不整表替换=旧写法）目标判据红', mres.M1.targetedRed, JSON.stringify(mres.M1.bad));
@@ -398,10 +425,12 @@ check('变异 M2（upsert 只追加=旧写法）目标判据红', mres.M2.target
 check('变异 M3（start 失败不回落=旧写法）目标判据红', mres.M3.targetedRed, JSON.stringify(mres.M3.bad));
 check('变异 M4（CAT_OTHER 直接下发=旧写法）目标判据红', mres.M4.targetedRed, JSON.stringify(mres.M4.bad));
 check('变异 M5（注入 Date.now/超时 setTimeout）判红', mres.M5.targetedRed, JSON.stringify(mres.M5.bad));
-const reds = ['M1', 'M2', 'M3', 'M4', 'M5'].filter((k) => mres[k].targetedRed).length;
-const greens = ['M1', 'M2', 'M3', 'M4', 'M5'].filter((k) => mres[k].restored).length;
-check('变异自证汇总：还原旧写法必红（红=5/5）', reds === 5, '红=' + reds + ' 缺:' + JSON.stringify(['M1', 'M2', 'M3', 'M4', 'M5'].filter((k) => !mres[k].targetedRed)));
-check('变异自证汇总：改回原文必绿（绿=5/5）', greens === 5, '绿=' + greens + ' 缺:' + JSON.stringify(['M1', 'M2', 'M3', 'M4', 'M5'].filter((k) => !mres[k].restored)));
+check('变异 M6（合并态不发 tailCategories=旧行为）目标判据红', mres.M6.targetedRed, JSON.stringify(mres.M6.bad));
+check('变异 M7（tailCategories 无条件下发=越界写 C1）目标判据红', mres.M7.targetedRed, JSON.stringify(mres.M7.bad));
+const reds = ['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7'].filter((k) => mres[k].targetedRed).length;
+const greens = ['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7'].filter((k) => mres[k].restored).length;
+check('变异自证汇总：还原旧写法必红（红=7/7）', reds === 7, '红=' + reds + ' 缺:' + JSON.stringify(['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7'].filter((k) => !mres[k].targetedRed)));
+check('变异自证汇总：改回原文必绿（绿=7/7）', greens === 7, '绿=' + greens + ' 缺:' + JSON.stringify(['M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7'].filter((k) => !mres[k].restored)));
 
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
