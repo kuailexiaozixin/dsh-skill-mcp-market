@@ -68,6 +68,20 @@ console.log('\nTest 3: \u5224\u636e B \u56db\u6001\uff08PASS / LIVE-FAIL / GAP /
   check('0 \u6761\u4f46\u6587\u6848\u81ea\u627f\u53d6\u6570\u4e2d\u65ad \u2192 LIVE-FAIL\uff08\u8f6f\u62a5\u4e5f\u4e0d\u653e\u8fc7\u9a97\u8bcd\uff09', verdictB({ http: 200, total: 0, hint: HINT_165_INTR }, { hard: false }).verdict === 'LIVE-FAIL');
   check('RPC \u975e 200 \u2192 LIVE-FAIL', verdictB({ http: 500 }, { hard: false }).verdict === 'LIVE-FAIL');
   check('RPC 连不上（http=0 无状态码）→ NOT-TESTED（判据未执行，不判红）', verdictB({ http: 0 }, { hard: true }).verdict === 'NOT-TESTED' && verdictB({ http: 0 }, { hard: false }).verdict === 'NOT-TESTED' && verdictB(null, { hard: true }).verdict === 'NOT-TESTED');
+  // ── 0.5.179 遗留①（冷缓存抖动误报）──
+  // 凭据：0.5.178 台账里同一条「监控」判据两轮 LIVE-FAIL（wall=30.1s/53.6s）、一轮 GAP（wall=2ms），
+  // 差别只在服务端这一轮是否正在拉整份行集。冷态不是回归，判红就是把抖动当故障；
+  // 但「未定性」也不是通过，所以单列 NOT-WARM 态：不判红、也绝不写 PASS。
+  const coldRow = { http: 200, total: 0, categoryNote: '', degraded: [], hint: HINT_165_INTR, wall: 53625 };
+  check('冷态形状（0 条 + 中断措辞 + wall 53625ms）→ NOT-WARM（不判红）', verdictB(coldRow, { hard: true, browse: okBrowse }).verdict === 'NOT-WARM', JSON.stringify(verdictB(coldRow, { hard: true, browse: okBrowse })));
+  check('冷态行 kind=WARM（不参与「一行红就全红」的 HARD 取容）', verdictB(coldRow, { hard: true, browse: okBrowse }).kind === 'WARM', JSON.stringify(verdictB(coldRow, { hard: true, browse: okBrowse })));
+  check('冷态 why 说实话（点明冷缓存与「不写 PASS」）', /COLD/.test(verdictB(coldRow, { hard: true, browse: okBrowse }).why) && /PASS/.test(verdictB(coldRow, { hard: true, browse: okBrowse }).why), verdictB(coldRow, { hard: true, browse: okBrowse }).why);
+  check('热态仍自承中断（wall 300ms）→ LIVE-FAIL（真取数失败不放过）', verdictB({ http: 200, total: 0, hint: HINT_165_INTR, wall: 300 }, { hard: false }).verdict === 'LIVE-FAIL', JSON.stringify(verdictB({ http: 200, total: 0, hint: HINT_165_INTR, wall: 300 }, { hard: false })));
+  check('wall 缺失 + 中断措辞 → LIVE-FAIL（无从定冷态时守旧口径判红）', verdictB({ http: 200, total: 0, hint: HINT_165_INTR }, { hard: false }).verdict === 'LIVE-FAIL');
+  check('中断措辞但有条目（拉到一半）→ PASS，冷态只看 0 条分支', verdictB({ http: 200, total: 2100, hint: HINT_165_INTR, wall: 53625 }, { hard: true, browse: okBrowse }).verdict === 'PASS');
+  check('冷阈值边界：wall=25000 不算冷、25001 算冷', verdictB({ http: 200, total: 0, hint: HINT_165_INTR, wall: 25000 }, { hard: false }).verdict === 'LIVE-FAIL' && verdictB({ http: 200, total: 0, hint: HINT_165_INTR, wall: 25001 }, { hard: false }).verdict === 'NOT-WARM');
+  check('非中断措辞的 0 条不受冷态分支影响（软报仍 GAP）', verdictB({ http: 200, total: 0, hint: HINT_165, wall: 53625 }, { hard: false }).verdict === 'GAP');
+  check('谎文案/降级仍然优先于冷态豁免', verdictB({ http: 200, total: 0, categoryNote: '所选来源不提供分类信息，已忽略分类筛选', hint: HINT_165_INTR, wall: 53625 }, { hard: true, browse: okBrowse }).verdict === 'LIVE-FAIL' && verdictB({ http: 200, total: 0, degraded: ['modelscope|timeout'], hint: HINT_165_INTR, wall: 53625 }, { hard: true, browse: okBrowse }).verdict === 'LIVE-FAIL');
 }
 
 console.log('\nTest 4: \u6c47\u603b\u2014\u2014\u672a\u6d4b\u6210\u7edd\u4e0d\u5199 PASS\uff0cGAP \u4e0d\u62c9\u4f4e\u7ed3\u8bba');
@@ -82,6 +96,13 @@ console.log('\nTest 4: \u6c47\u603b\u2014\u2014\u672a\u6d4b\u6210\u7edd\u4e0d\u5
   // GAP \u884c\u4e0d\u5f97\u628a\u300c\u5176\u4f59\u5168\u672a\u6d4b\u6210\u300d\u63fd\u6210 PASS\uff08\u5426\u5219\u6574\u8f6e\u7a7a\u8dd1\u4e5f\u4f1a\u62a5\u7eff\uff09
   check('GAP + \u5176\u4f59\u5168 NOT-TESTED \u2192 NOT-RUN', summarize([G, H('NOT-TESTED'), H('NOT-TESTED')], 'new') === 'NOT-RUN');
   check('GAP + \u4e00\u6761\u771f\u76ee\u51fb \u2192 PASS', summarize([G, H('PASS')], 'new') === 'PASS');
+  // 0.5.179 遗留①：冷态行绝不许把整轮兜成 PASS，也不许掩掉真红。
+  const W = { verdict: 'NOT-WARM', kind: 'WARM' };
+  check('NOT-WARM + 其余 PASS → NOT-WARM（未定性不写 PASS）', summarize([H('PASS'), H('PASS'), W], 'new') === 'NOT-WARM', summarize([H('PASS'), H('PASS'), W], 'new'));
+  check('NOT-WARM + 真 LIVE-FAIL → LIVE-FAIL（真失败压过冷态告警）', summarize([H('LIVE-FAIL'), W], 'new') === 'LIVE-FAIL', summarize([H('LIVE-FAIL'), W], 'new'));
+  check('全部 NOT-WARM → NOT-WARM（既不是 PASS 也不是 NOT-RUN）', summarize([W, W], 'new') === 'NOT-WARM');
+  check('NOT-WARM + 其余 NOT-TESTED → NOT-WARM（目击过一轮就比没测成强）', summarize([W, H('NOT-TESTED')], 'new') === 'NOT-WARM');
+  check('GAP + NOT-WARM → NOT-WARM（覆盖缺口可放行，未定性不能放行）', summarize([G, W], 'new') === 'NOT-WARM');
 }
 
 console.log('\nTest 4b: \u5899\u949f\u9884\u7b97\uff080.5.165 \u5206\u9875\u63d0\u901f\u7684\u670d\u52a1\u7aef\u5224\u636e\uff09');
@@ -158,6 +179,15 @@ console.log('\nTest 8: \u811a\u672c\u81ea\u8eab\u7684\u5f62\u72b6\u9501\uff08\u4
   // 双重防线：即使分支落到文本打印，消费者截取第一个 '{' 也会吞进 RESULT 尾巴；正确形状只能是单份完整文档
   const single = render(rep, true);
   check('--json 单份文档且无 RESULT 尾巴', JSON.parse(single).rows[0].name === 'a' && !/RESULT:/.test(single));
+  // 0.5.179 遗留①：防抖必须落在脚本里，且只重试一次（无限等热会把回归藏成慢）。
+  check('冷态常量在位（COLD_MARK / COLD_WALL_MS）', /COLD_MARK/.test(v) && /COLD_WALL_MS/.test(v));
+  check('同轮重试有预算上限（MAX_WARM_RETRIES）且无 while(true) 等热循环', /MAX_WARM_RETRIES/.test(v) && !/while\s*\(\s*true\s*\)/.test(v));
+  check('重试等待可用 --retry-wait 覆盖', /--retry-wait/.test(v));
+  check('重试次数留在 shape 里可审计（warmRetries 记账）', /warmRetries/.test(v));
+  check('退出码新增 NOT-WARM=5，旧码 3/4 仍在位', /NOT-WARM' \? 5/.test(v) && /STALE-SERVER' \? 4/.test(v) && /process\.exit\(3\)/.test(v));
+  check('计数行带 NOT-WARM 计数', /NOT-WARM=' \+ /.test(v));
+  const repW = { port: 1, fp: 'new', hint: 'x', rows: [{ name: 'a', verdict: 'NOT-WARM', why: 'w', kind: 'WARM' }] };
+  check('render 计数含 NOT-WARM=1', /NOT-WARM=1/.test(render(repW, false)), render(repW, false).split('\n').slice(-1)[0]);
 }
 
 
@@ -191,5 +221,49 @@ console.log('\nTest 9: 端到端 —— RPC 打不通 ⇒ exit=3 + NOT-RUN 行�
   check('死端口 --json result=NOT-RUN 且 rows 非空', !!doc && doc.result === 'NOT-RUN' && Array.isArray(doc.rows) && doc.rows.length > 0, doc ? String(doc.result) + ' rows=' + (doc.rows || []).length : 'unparsable');
 }
 
+
+// Test 10：冷态判据自证 —— 每条静态锁都要能被一次内存变异打掉，否则它是空转的装饰。
+// 变异只作用于 readFileSync 得到的字符串副本，绝不写盘（本仓另有真写 client.js 的变异针，这里不需要）。
+console.log('\nTest 10: 冷态判据自证（内存变异，不落盘）');
+{
+  const v10 = readFileSync(path.join(process.cwd(), 'test', 'live-verify.mjs'), 'utf8');
+  const RE = /while\s*\(\s*true\s*\)/;
+  const ln2 = (txt, frag) => new RegExp(frag.replace(/[().*+?^${}|\\]/g, '\\  const ln = (pred) =>'));
+  const ln = (pred) => v10.split('\n').filter((l) => !l.trimStart().startsWith('//')).find(pred) || '';
+  // L1：NOT-WARM 必须同时被 COLD_MARK 与 COLD_WALL_MS 守护
+  const coldLine = ln((l) => l.includes("verdict: 'NOT-WARM'") && l.includes('if (hint.includes(COLD_MARK)'));
+  check('L1 冷态行在位且带 COLD_MARK/COLD_WALL_MS 双守护', coldLine.includes('COLD_MARK') && coldLine.includes('> COLD_WALL_MS'), coldLine.trim().slice(0, 90));
+  check('L1 变异：删掉墙钟守护后该锁必红（否则热态真失败会被放过）', !!coldLine && !coldLine.replace(' && numOr(cat.wall, 0) > COLD_WALL_MS', '').includes('> COLD_WALL_MS'));
+  // L2：重试循环必须有预算上限
+  const loopLine = ln((l) => l.includes('while (tried < MAX_WARM_RETRIES'));
+  check('L2 重试走有界 while 且全文件无 while(true) 等热', !!loopLine && !RE.test(v10), loopLine.trim().slice(0, 70));
+  const loopMut = loopLine.replace('tried < MAX_WARM_RETRIES && isCold(c)', 'true');
+  check('L2 变异一：上限退化成 while (true) 后 RE 必命中（锁会红）', !!loopLine && RE.test(loopMut), loopLine.trim().slice(0, 58) + '  ==>  ' + loopMut.trim());
+  const findIn = (txt) => (frag) => txt.split('\n').filter((l) => !l.trimStart().startsWith('//')).find((l) => l.includes(frag)) || '';
+  const noLoop = v10.split('\n').filter((l) => !l.includes('while (tried < MAX_WARM_RETRIES')).join('\n');
+  check('L2 变异二：删掉整条有界 while 后 loopLine 取空 ⇒ 主锁 !!loopLine 会红', findIn(noLoop)('while (tried < MAX_WARM_RETRIES') === '' && findIn(v10)('while (tried < MAX_WARM_RETRIES') === loopLine);
+  // L3：重试触发面必须窄
+  const isColdLine = ln((l) => l.includes('const isCold ='));
+  check('L3 isCold 四条件齐备', isColdLine.includes('c.http === 200') && isColdLine.includes('c.total, 0) === 0') && isColdLine.includes('COLD_MARK') && isColdLine.includes('COLD_WALL_MS'), isColdLine.trim().slice(0, 130));
+  check('L3 变异：放宽到不看 http 后该锁必红', !!isColdLine && !isColdLine.replace('c.http === 200 &&', '').includes('c.http === 200'));
+  // L4：WARM 不混进 HARD 取容，且冷态结论排在真红之后
+  const hardLine = ln((l) => l.includes('const hard = rows.filter'));
+  check('L4 hard 取容排除 GAP 与 WARM', hardLine.includes("!== 'GAP'") && hardLine.includes("!== 'WARM'"), hardLine.trim());
+  const iFail = v10.indexOf("r.verdict === 'LIVE-FAIL')) return 'LIVE-FAIL'");
+  const iWarm = v10.indexOf("if (warm) return 'NOT-WARM'");
+  check('L4 冷态结论排在真红之后（冷不许掩红）', iFail >= 0 && iWarm > iFail, 'LIVE-FAIL@' + iFail + ' warm@' + iWarm);
+  // L5：NOT-WARM=5 必须排在兜底 :3 之前，否则冷态被误报成 NOT-RUN
+  const ex = v10.split('\n').filter((l) => l.includes("process.exit(v === 'PASS'"));
+  check('L5 两处 exit 都是 PASS0/STALE4/FAIL1/WARM5/兜底3 次序', ex.length === 2 && ex.every((l) => l.indexOf("'NOT-WARM' ? 5") > l.indexOf("'LIVE-FAIL' ? 1") && l.indexOf("'NOT-WARM' ? 5") < l.lastIndexOf(': 3)')), ex.join(' ~ ').slice(0, 170));
+  // L6：RPC 连不上时绝不判冷（端到段 NOT-RUN 通路不被重试拖慢）
+  const coldOff = verdictB({ http: 0, total: 0, hint: HINT_165_INTR, wall: 60000 }, { hard: false });
+  check('L6 http=0 即便带中断措辞也不判冷', coldOff.verdict === 'NOT-TESTED', JSON.stringify(coldOff));
+  // L7：render 的行内标记与计数同源
+  const repW7 = { port: 1, fp: 'new', hint: 'x', rows: [{ name: 'a', verdict: 'NOT-WARM', why: 'w', kind: 'WARM' }, { name: 'b', verdict: 'PASS', why: 'w', kind: 'HARD' }] };
+  const t7 = render(repW7, false);
+  check('L7 render 同时给出 (冷态) 标记与 NOT-WARM=1', t7.includes('(冷态)') && /rows=2 LIVE-FAIL=0 NOT-TESTED=0 GAP=0 NOT-WARM=1/.test(t7), t7.split('\n').pop());
+  // L8：冷态不改指纹优先级（STALE-SERVER 仍先于一切）
+  check('L8 fp=old 压过冷态（服务端没换就是没换）', summarize([{ verdict: 'NOT-WARM', kind: 'WARM' }], 'old') === 'STALE-SERVER');
+}
 console.log('\n' + passed + ' passed, ' + failed + ' failed, ' + skipped + ' skipped');
 process.exit(failed ? 1 : 0);
