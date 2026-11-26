@@ -163,6 +163,8 @@ const FB2 = { id: 'fb2', name: 'Fallback 2', installed: false };
 const SEARCH_OK = { items: [FB1, FB2], pages: 1, total: 2, hasMore: false, hints: [], degraded: [], sourceErrors: [] };
 const interimMeta = { hints: [], degraded: [], sourceErrors: [] };
 const fm = (total) => ({ hints: [], degraded: [], sourceErrors: [], total, pages: 1, hasMore: false, serverFacet: false });
+// 0.5.178：只有 tail 收口的 meta 才带「该视图全集」语义；翻页据此在本地切片。
+const fmT = (total) => Object.assign({}, fm(total), { tail: { categoriesTotal: 3, categoriesFetched: 3, categoriesFailed: 0, upstreamTotal: total, windowed: true, retrievedTotal: total } });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const withTimeout = (p, ms) => new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('withTimeout ' + ms + 'ms 超时')), ms); if (t && typeof t.unref === 'function') t.unref(); p.then((v) => { clearTimeout(t); res(v); }, (e) => { clearTimeout(t); rej(e); }); });
 const until = async (fn, tries) => { for (let i = 0; i < (tries || 400); i += 1) { if (fn()) return true; await sleep(10); } return false; };
@@ -317,17 +319,24 @@ const S6 = async (mk, ck) => {
   ck('S6 渐进正常收口（final 落地）', (lastOf(e.logs.skills) || []).join(',') === FINAL_KEYS, JSON.stringify(lastOf(e.logs.skills)));
 };
 
-// S7：翻页（pageNo>1）维持现通路 —— 零 harvest RPC。
+// S7：尾会话收口后翻页 = 本地真分页（零 RPC）；非整集收口仍走一次性通路。
 const S7 = async (mk, ck) => {
   const PLAN = {
     start: { id: 'h7', rows: [R1], meta: interimMeta, done: false, stage: 'first' },
-    polls: [{ rows: [], meta: fm(4), done: true, final: true }],
+    polls: [{ rows: [R1, R2, R3, R4], meta: fmT(4), done: true, final: true }],
     search: { items: [{ id: 'p2a' }, { id: 'p2b' }], pages: 3, total: 60, hasMore: true, page: 2, hints: [], degraded: [], sourceErrors: [] },
   };
   const e = mk(PLAN);
-  await e.run('pdf', { page: 2 });
-  ck('S7 翻页（pageNo>1）维持现通路：零 harvest RPC', !e.ops.includes('harvest.start') && !e.ops.includes('harvest.poll') && e.ops[0] === 'skills.search', e.ops.join(','));
-  ck('S7 翻页按一次性路径渲染（items+page 原样）', (lastOf(e.logs.skills) || []).join(',') === 'p2a,p2b' && lastOf(e.logs.page) === 2, JSON.stringify([lastOf(e.logs.skills), lastOf(e.logs.page)]));
+  await e.run('pdf', { size: 2 });
+  const after = e.ops.length;
+  await e.run('pdf', { page: 2, size: 2 });
+  ck('S7 尾会话收口后翻页零 RPC（不打 skills.search、不开新 harvest）', e.ops.length === after && !e.ops.includes('skills.search'), e.ops.join(','));
+  ck('S7 翻页渲染整集的第 2 页切片（final 全集按 pageSize 切片，不是再来一页）', (lastOf(e.logs.skills) || []).join(',') === 'pdf-sign,pdf-split', JSON.stringify(lastOf(e.logs.skills)));
+  ck('S7 翻页页数按已取回行集算 ceil(4/2)=2 且页码=2', lastOf(e.logs.totalPages) === 2 && lastOf(e.logs.page) === 2, JSON.stringify([lastOf(e.logs.totalPages), lastOf(e.logs.page)]));
+  ck('S7 首页收口同样只上屏第 1 页两行（tail 态不再整表灌屏）', e.logs.skills.some((a) => a.join(',') === 'pdf-merge,pdf-ocr'), JSON.stringify(e.logs.skills));
+  const e2 = mk({ search: PLAN.search }, {});
+  await e2.run('pdf', { page: 2 });
+  ck('S7 无整集可切（缓存里没有 wholeView）⇒ 翻页仍走一次性通路并按当页渲染', e2.ops[0] === 'skills.search' && (lastOf(e2.logs.skills) || []).join(',') === 'p2a,p2b', e2.ops.join(',') + ' ' + JSON.stringify(lastOf(e2.logs.skills)));
 };
 
 // S7b：append 追加维持现通路。
@@ -370,7 +379,7 @@ await runMain('Test 3c: poll 中途 ok:false ⇒ 停轮询、回落恰好一次'
 await runMain('Test 4: CAT_OTHER 绝不下发', S4);
 await runMain('Test 5: 被新搜索接管 —— 旧会话停写、timer 三清', S5);
 await runMain('Test 6: 渐进期间同条件在途去重（第二次调用不发 RPC）', S6);
-await runMain('Test 7: 翻页（pageNo>1）/ append 维持现通路 —— 零 harvest RPC', S7);
+await runMain('Test 7: 尾会话收口后翻页=本地真分页（零 RPC）；无整集时仍走一次性通路', S7);
 await runMain('Test 7b: append 追加维持现通路', S7b);
 await runMain('Test 8: 翻页超车（seq 过期）—— 旧 harvest 停轮询不覆盖新页', S8);
 

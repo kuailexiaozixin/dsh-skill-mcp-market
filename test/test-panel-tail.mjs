@@ -39,7 +39,7 @@ const PRISTINE = Buffer.from(readFileSync(CLIENT));
 
 let passed = 0, failed = 0;
 const REDS = [];
-const SECT_WANT = { A: 10, B: 12, C: 10, D: 10, E: 13, F: 3, G: 7, H: 8 };
+const SECT_WANT = { A: 11, B: 12, C: 12, D: 12, E: 18, F: 3, G: 7, H: 8 };
 const SECT_GOT = {};
 let CURSECT = null;
 const check = (n, cond, d) => { if (CURSECT) SECT_GOT[CURSECT] = (SECT_GOT[CURSECT] || 0) + 1; if (cond) { passed += 1; console.log("  PASS " + n); } else { failed += 1; REDS.push(n); console.log("  FAIL " + n + (d ? "  [" + String(d).slice(0, 170) + "]" : "")); } };
@@ -209,6 +209,7 @@ const drive = async (label, kit, plan, opts) => {
 
 // ── A. 静态锁（C1 形状 / 计数锁 / N1 改名 / 旧词零硬编码） ──
 CURSECT = "A";
+check("N1 client.js 零旧词「翻页才会取回更多」（尾会话收口后翻页已是本地真分页，再说这句就是谎）", KIT.ls.filter((l) => String(l).indexOf(String(0x7ffb) + String(0x9875) + String(0x624d) + String(0x4f1a) + String(0x53d6) + String(0x56de) + String(0x66f4) + String(0x591a)) >= 0).length === 0, JSON.stringify(KIT.ls.map((l, i) => [i + 1, String(l).trim().slice(0, 70)]).filter((x2) => String(x2[1]).length > 0 && x2[1].indexOf(String.fromCharCode(0x7ffb, 0x9875, 0x624d, 0x4f1a, 0x53d6, 0x56de, 0x66f4, 0x591a)) >= 0)));
 check("A 装置定位成功（island 与 searchSkills 体都能抽出来）", KIT.located && !!KIT.islandText && !!KIT.bodyText, "located=" + KIT.located);
 check("N1 CAT_TAIL_LABEL 恰好是「其他」（用户 m23543/m23544 定名，代码引用常量）", KIT.LABEL === "其他", "LABEL=" + KIT.LABEL);
 check("C1/P1 island 的 harvest.start 体内有 tailCategories 条件展开", KIT.islandText.includes("...(env.tailCovers ? { tailCategories: env.tailCovers } : {}),"), "(spread missing)");
@@ -265,8 +266,12 @@ const eE1 = await drive('empty-covers', KIT, planTail, { category: KIT.OTHER, ta
 check("P1 合并态但 covers 为空数组 ⇒ 无 tailCategories 键", !has(startBody(eE1), 'tailCategories'), canon(startBody(eE1)));
 const eE2 = await drive('null-covers', KIT, planTail, { category: KIT.OTHER, tailCovers: null });
 check("P1 合并态但 coversRef 为 null ⇒ 无 tailCategories 键（covers 为空/无合并入口）", !has(startBody(eE2), 'tailCategories'), canon(startBody(eE2)));
-const eP2 = await drive('page2', KIT, { search: SEARCH_OK }, { category: KIT.OTHER, tailCovers: COVERS.slice(), arg: { page: 2 } });
-check("P1 翻页（pageNo>1）走一次性通路且 body 无 tailCategories", eP2.ops.join(',') === 'skills.search' && searchBodies(eP2).every((p) => !has(p, 'tailCategories')) && canon(searchBodies(eP2)[0] || {}) === canon({ query: 'pdf', source: 'clawhub', category: '', page: 2, pageSize: 24, sort: 'installCount' }), eP2.ops.join(',') + ' ' + canon(searchBodies(eP2)[0] || {}));
+const ckLocal = 'sk|clawhub|pdf|' + KIT.OTHER + '|1|2|installCount';
+const ePB = await drive('local-page', KIT, { search: SEARCH_OK }, { category: KIT.OTHER, tailCovers: COVERS.slice(), arg: { page: 2, size: 2 }, cache: { [ckLocal]: { items: [K1, K2, K3, K4], pages: 2, total: 4, hasMore: false, serverFacet: false, hints: [], sourceErrors: [], degraded: [], tail: TAILF, wholeView: true } } });
+check("P1 尾会话收口后翻页零 RPC（既不打 skills.search，也不开新 harvest）", ePB.ops.length === 0, ePB.ops.join(','));
+check("P1 翻页渲染本地第 2 页切片、页数按已取回行集算、tail 声明不被清", (lastOf(ePB.logs.skills) || []).join(',') === 'k-c,k-d' && lastOf(ePB.logs.page) === 2 && lastOf(ePB.logs.totalPages) === 2 && lastOf(ePB.logs.total) === 4 && lastOf(ePB.logs.hasMore) === false && !!ePB.tailStateRef.current && canon(ePB.tailStateRef.current.tail) === canon(TAILF), JSON.stringify([lastOf(ePB.logs.skills), lastOf(ePB.logs.page), lastOf(ePB.logs.totalPages), lastOf(ePB.logs.total), ePB.tailStateRef.current]));
+const eP2 = await drive('page2-nostore', KIT, { search: SEARCH_OK }, { category: KIT.OTHER, tailCovers: COVERS.slice(), arg: { page: 2 } });
+check("P1 未收口（缓存里没有 wholeView 整集）⇒ 翻页仍走一次性通路且 body 无 tailCategories", eP2.ops.join(',') === 'skills.search' && searchBodies(eP2).every((p) => !has(p, 'tailCategories')) && canon(searchBodies(eP2)[0] || {}) === canon({ query: 'pdf', source: 'clawhub', category: '', page: 2, pageSize: 24, sort: 'installCount' }), eP2.ops.join(',') + ' ' + canon(searchBodies(eP2)[0] || {}));
 const eAP = await drive('append', KIT, { search: SEARCH_OK }, { category: KIT.OTHER, tailCovers: COVERS.slice(), arg: { append: true } });
 check("P1 append 追加态零 harvest 且 body 无 tailCategories", eAP.ops.join(',') === 'skills.search' && searchBodies(eAP).every((p) => !has(p, 'tailCategories')), eAP.ops.join(','));
 const eFB = await drive('fallback', KIT, { startThrow: 'unknown operation "harvest.start"', search: SEARCH_OK }, { category: KIT.OTHER, tailCovers: COVERS.slice() });
@@ -295,6 +300,10 @@ const nO = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, ski
 check("P3 tail 缺失（旧服务端）⇒ 保留本地筛口径兜底（已取回 4 条 / 属于这些类 2 条）", nO.indexOf('本次已取回 4 条') >= 0 && nO.indexOf('其中属于这些类的 2 条') >= 0 && nO.indexOf('未列出的分类还有 3 类') >= 0, nO);
 check("P3 兜底态零「窗」字（改回「窗外」或「窗内之外」都必红）", nO.indexOf('窗') < 0, nO);
 check("P3 兜底态仍诚实：整源「共约」不是这些类的条数", nO.indexOf('是整个来源的总数') >= 0 && nO.indexOf('集合以本行为准') >= 0, nO);
+const nO2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
+check("P3 兜底态诚实句：分页器只在已取回的条里翻、不再打上游", nO2.indexOf('不会再去上游取回更多') >= 0 && nO2.indexOf('翻页才会取回更多') < 0 && nO2.indexOf('已取回的 4 条里翻页') >= 0, nO2);
+const nW2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
+check("P3 tail 声明态补上本地翻页句（就在这已取回的 4 条里翻）", nW2.indexOf('本地翻') >= 0 && nW2.indexOf('已取回的 4 条') >= 0, nW2);
 check("P3 非合并态 tailNote 恒空", runNote(KIT, { category: 'ai', chipFold: CF, tailMemo: TAILF }) === '' && runNote(KIT, { category: KIT.OTHER, chipFold: { other: null, otherCount: 0, otherTotal: 0 }, tailMemo: TAILF }) === '', 'not empty');
 
 // ── E. P5 谓词真跑 + P6 整源数字不复用 + 缓存续命 ──
@@ -315,6 +324,9 @@ check("P5 未声明态（旧服务端）：无 category 行仍不算成员（宁
 check("P5 未声明态：covers 外分类仍被筛掉", runVisible(KIT, { source: 'clawhub', slug: 'k-x', category: '开发工具' }, { category: KIT.OTHER, chipFold: CF5(false) }) === false, 'foreign row leaked');
 check("P5 未声明态：covers 内分类保留（兜底筛仍生效）", runVisible(KIT, K1, { category: KIT.OTHER, chipFold: CF5(false) }) === true && runVisible(KIT, K4, { category: KIT.OTHER, chipFold: CF5(false) }) === true, 'covers member dropped');
 check("P5 声明态不得被 serverFacet 短路成整页（facet 只作用在非合并集合分支）", vline(KIT).indexOf('tailDeclared') < vline(KIT).indexOf(' : serverFacet ||'), 'branch order moved');
+check("P6 final 收口按已取回行集切片上屏（island 有 wholeView 切片调用点）", KIT.islandText.includes('d.setSkills(wholeView ? harvestSliceOf(rows, env.pageSize, env.pageNo) : rows);'), '(slice call missing)');
+check("P6 final 总页数按已取回行集算（island 有 harvestPagesOf 调用点）", KIT.islandText.includes('harvestPagesOf(rows.length, env.pageSize)'), '(pagesOf call missing)');
+check("P1 searchSkills 体有尾会话本地翻页分支且走 typeof 防御", KIT.bodyText.includes("typeof harvestSliceOf === 'function'") && KIT.bodyText.includes('wholeView'), '(local-page branch missing)');
 const staleKey = KIT.OTHER + '|clawhub|pdf|installCount|24';
 const staleViewKey = 'clawhub|pdf|' + KIT.OTHER + '|installCount|24';
 const eP6 = await drive('stale-total', KIT, planTail, { category: KIT.OTHER, tailCovers: COVERS.slice(), totalBase: { [staleViewKey]: 361758 } });
@@ -326,6 +338,9 @@ check("旧服务端（meta 无 tail）收口 ⇒ 声明为空，P5/P3 走兜底�
 const ePL = await drive('plain-notice', KIT, planPlain, { category: KIT.OTHER, tailCovers: COVERS.slice() });
 check("旧服务端中间包仍是原文案（陆续加载中 + 已到达 N 条，无假逐类进度）", String(ePL.logs.notice[0]).indexOf('陆续加载中，已到达 1 条') >= 0 && String(ePL.logs.notice[0]).indexOf('类，') < 0, JSON.stringify(ePL.logs.notice));
 const ck = 'sk|clawhub|pdf|' + KIT.OTHER + '|1|24|installCount';
+const eSL = await drive('slice', KIT, planTail, { category: KIT.OTHER, tailCovers: COVERS.slice(), arg: { size: 2 } });
+check("P6 每页 2 条时 final 只上屏第 1 页两行（不再整表灌屏=虚构页码）", (lastOf(eSL.logs.skills) || []).join(',') === 'k-a,k-b', JSON.stringify(lastOf(eSL.logs.skills)));
+check("P6 每页 2 条时总页数=ceil(4/2)=2、总数仍是已取回 4 条", lastOf(eSL.logs.totalPages) === 2 && lastOf(eSL.logs.total) === 4, JSON.stringify([lastOf(eSL.logs.totalPages), lastOf(eSL.logs.total)]));
 const eCH = await drive('cache-hit', KIT, planTail, { category: KIT.OTHER, tailCovers: COVERS.slice(), cache: { [ck]: { items: [K1, K2], pages: 1, total: 2, hasMore: false, serverFacet: false, hints: [], sourceErrors: [], degraded: [], tail: TAILF } } });
 check("缓存续命：命中带 tail 的旧包 ⇒ tailStateRef 恢复声明（P5 memo 不因刷新丢失）", !!eCH.tailStateRef.current && canon(eCH.tailStateRef.current.tail) === canon(TAILF), JSON.stringify(eCH.tailStateRef.current));
 const eCH2 = await drive('cache-plain', KIT, { search: SEARCH_OK }, { noHarvest: true, category: KIT.OTHER, tailCovers: COVERS.slice(), tailState: { src: 'clawhub', q: 'pdf', cat: KIT.OTHER, tail: TAILF }, cache: { [ck]: { items: [K1], pages: 1, total: 1, hasMore: false, serverFacet: false, hints: [], sourceErrors: [], degraded: [] } } });
@@ -333,7 +348,7 @@ check("缓存续命：命中不带 tail 的旧包 ⇒ 清声明（不把旧声�
 
 // ── F. G2 总账：本套跑过的每一次请求体，category 都不许是 __cat_other ──
 CURSECT = "F";
-const ENVS = [eT, eN, eC, eE1, eE2, eP2, eAP, eFB, eNoH, eCL, eP6, ePT, eCH, eCH2];
+const ENVS = [eT, eN, eC, eE1, eE2, eP2, ePB, eAP, eFB, eNoH, eCL, eP6, ePT, eCH, eCH2];
 const ALLP = [];
 for (const e of ENVS) for (const b of e.bodies) ALLP.push({ op: b.op, cat: b.p.category });
 check("G2 全通路请求体无一携带 __cat_other（对拍 S4 语义）", ALLP.length > 20 && ALLP.every((x) => x.cat !== KIT.OTHER && x.cat !== '__cat_other'), 'bodies=' + ALLP.length + ' leak=' + JSON.stringify(ALLP.filter((x) => x.cat === KIT.OTHER)));
@@ -416,6 +431,8 @@ const CASES = [
   { name: "X5 声明态本地筛回归（P5 又把无分类行错杀）", needle: "chipFold.other.tailDeclared || ", to: "" },
   { name: "X6 windowed 句写反（取不全时说不受窗口限制）", needle: "(tailMemo.windowed === true ?", to: "(tailMemo.windowed === false ?" },
   { name: "X7 D 防线拆除（upstreamCat 不再降级 CAT_OTHER）", needle: "const upstreamCat = cat === CAT_OTHER ? 'all' : cat;", to: "const upstreamCat = cat;" },
+  { name: "X9 尾会话本地翻页分支被短路（收口后翻页又打网络）", needle: "const tailView = pageNo > 1 && !append && typeof harvestSliceOf === 'function' ? resultCacheRef.current[tailViewKey] : null;", to: "const tailView = false && pageNo > 1 && !append && typeof harvestSliceOf === 'function' ? resultCacheRef.current[tailViewKey] : null;" },
+  { name: "X10 final 不切片（整表灌屏=虚构页码回归）", needle: "d.setSkills(wholeView ? harvestSliceOf(rows, env.pageSize, env.pageNo) : rows);", to: "d.setSkills(rows);" },
   { name: "X8 合并入口 title 回退旧比喻（零「窗内之外」锁必须咬合）", needle: "title: '未列出的分类还有 '", to: "title: '窗内之外还有 '" },
 ];
 const runCounts = (label) => {

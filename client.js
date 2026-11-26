@@ -247,6 +247,23 @@ window.__ModuleLoader__.load({
     // 与一次性通路同口径的视图键：totalBaseRef 用它记首页报告的 total 基准。
     const harvestViewKey = (env) => String(env.src) + '|' + String(env.q) + '|' + String(env.cat) + '|' + String(env.effSort) + '|' + String(env.pageSize);
 
+    // 0.5.178 尾会话真分页（修「引入渐进式加载后，分页导航器失效」）——两个纯函数放在 island 区，
+    // 让 harvest 消费者与组件的翻页分支共用同一份口径，不可能两处各算一套。
+    // harvestPagesOf：总页数只按「已取回的行集」算，绝不按 upstreamTotal 算 —— 那个数是目录规模，
+    // 不是本会话真能交付、真能翻页的行数。
+    const harvestPagesOf = (count, pageSize) => {
+      const n = Math.max(0, Math.trunc(Number(count) || 0));
+      const s = Math.max(1, Math.trunc(Number(pageSize) || 1));
+      return Math.max(1, Math.ceil(n / s));
+    };
+    // harvestSliceOf：取某一页。页码越界给空数组（诚实：那一页确实没有行），不复制末页冒充。
+    const harvestSliceOf = (rows, pageSize, page) => {
+      const list = Array.isArray(rows) ? rows : [];
+      const s = Math.max(1, Math.trunc(Number(pageSize) || 1));
+      const p = Math.max(1, Math.trunc(Number(page) || 1));
+      return list.slice((p - 1) * s, p * s);
+    };
+
     // 「等待不焦虑」的写法：渐进期间不挂 busy（列表持续变长本身就是进度），notice
     // 只在有 hints/降级/空表时披露原因；中间包最多说「陆续加载中」，绝不说完成；
     // final 之后按一次性通路同一口径收尾（真空表才给「没有找到匹配的技能。」）。
@@ -301,18 +318,24 @@ window.__ModuleLoader__.load({
           degraded: m.degraded || [],
           // 0.5.177：tail 声明随结果入缓存（C3 字段逐字）；无 tail 的包记 null，缓存命中时据此恢复或清声明。
           tail: m.tail || null,
+          // 0.5.178：tail 收口的行集是该视图全集（服务端 src/sources.js:1326-1334 的 finalMeta 口径），
+          // 记 wholeView 让翻页在本地切片；非 tail 收口的行集只是当页结果，绝不冒充全集。
+          wholeView: Boolean(m.tail),
         };
       }
       // 0.5.177：服务端 tail 声明落会话 memo（P5：tail 态 visibleSkills 不做 covers 本地筛）。
       // 只在 final 收口时写：中间包不声明、失败回落不写，memo 永远不会先于事实。
       if (d.tailStateRef) d.tailStateRef.current = { src: env.src, q: env.q, cat: env.cat, tail: m.tail || null };
-      d.setSkills(rows);
+      // 0.5.178：整表上屏会让分页器报「第 1/N 页」而内容却是全集 —— 虚构页码（用户 m25083 的第二个根因）。
+      // tail 收口是全集，必须按页切片；非 tail 收口本来就是当页结果，原样上屏。
+      const wholeView = Boolean(m.tail);
+      d.setSkills(wholeView ? harvestSliceOf(rows, env.pageSize, env.pageNo) : rows);
       d.setSkillsPage(env.pageNo);
-      d.setSkillsTotalPages(m.pages || 0);
+      d.setSkillsTotalPages(wholeView ? harvestPagesOf(rows.length, env.pageSize) : (m.pages || 0));
       const k = harvestViewKey(env);
       d.setSkillsTotal(Number(trustedTotal(m.total, d.totalBaseRef.current[k], env.pageNo)) || 0);
       if (env.pageNo <= 1) d.totalBaseRef.current[k] = Number(m.total) || 0;
-      d.setSkillsHasMore(Boolean(m.hasMore));
+      d.setSkillsHasMore(wholeView ? false : Boolean(m.hasMore));
       d.setServerFacet(Boolean(m.serverFacet));
       setHarvestNotice(d, pkg, rows.length, true);
     };
@@ -1232,6 +1255,27 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         const reqSort = options && options.sort !== undefined ? options.sort : keepSortForForm(sort, capsNow && capsNow.skills ? capsNow.skills[src] : null, Boolean(String(text || '').trim()));
         const effSort = reqSort === 'default' ? 'installCount' : reqSort;
         const cacheKey = skillCacheKey({ source: src, query: q, category: cat, page: pageNo, size: pageSize, sort: effSort, append: Boolean(options && options.append) });
+        // 0.5.178 尾会话真分页：harvest 收口时把该视图整集写进首页缓存并记 wholeView:true。这种状态下
+        // 翻页绝不能再走一次性 skills.search —— 那条请求体不带 tailCategories，服务端把 category 降级成
+        // 整源浏览，缓存命中分支于是把 tailStateRef 清成 null，visibleSkills 便把「其他」的无分类行全滤掉
+        // （实测：翻页后列表空，用户 m25083 的第一个根因）。整集已在本地，就在本地翻。
+        // 未收口 / 非整集（wholeView 不为 true）一律不接管，维持现通路；新自由名走 typeof 防御，
+        // 摘录体测试桩拿不到 island 助手时自动回落旧通路（同 harvestGate 的用法）。
+        const tailViewKey = skillCacheKey({ source: src, query: q, category: cat, page: 1, size: pageSize, sort: effSort });
+        const tailView = pageNo > 1 && !append && typeof harvestSliceOf === 'function' ? resultCacheRef.current[tailViewKey] : null;
+        if (tailView && tailView.wholeView === true && Array.isArray(tailView.items)) {
+          const localSeq = ++reqSeqRef.current;
+          setSkills(harvestSliceOf(tailView.items, pageSize, pageNo));
+          setSkillsPage(pageNo);
+          setSkillsTotalPages(harvestPagesOf(tailView.items.length, pageSize));
+          setSkillsTotal(Number(tailView.total) || tailView.items.length || 0);
+          setSkillsHasMore(false);
+          setServerFacet(Boolean(tailView.serverFacet));
+          if (typeof tailStateRef !== 'undefined' && tailStateRef && tailView.tail) tailStateRef.current = { src: src, q: q, cat: cat, tail: tailView.tail };
+          if (typeof totalBaseRef !== 'undefined' && totalBaseRef) totalBaseRef.current[src + '|' + q + '|' + cat + '|' + effSort + '|' + pageSize] = Number(tailView.total) || tailView.items.length || 0;
+          if (localSeq === reqSeqRef.current) setBusy('');
+          return;
+        }
         // 同条件已在途 → 这次直接不发（连按两次回车不该各打一次上游）。
         // 必须在取序号之前判定：若先 ++seq，这次被跳过的请求会把真正在途的那次
         // 标成「已过期」，它的结果反而被丢弃 —— 去重就变成了丢结果。
@@ -2309,13 +2353,13 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
             + (Number(tailMemo.categoriesFailed || 0) ? '，失败 ' + Number(tailMemo.categoriesFailed) + ' 类' : '')
             + '；上游合计 ' + Number(tailMemo.upstreamTotal || 0).toLocaleString() + ' 条）'
             + (tailMemo.windowed === true ? '。该来源各类均受上游窗口限制，部分类取不全' : '')
-            + '。分页器数字就是这一口径，不是整个来源的总数。'
+            + '。分页器数字就是这一口径，不是整个来源的总数；翻页就在这已取回的 ' + Number(tailMemo.retrievedTotal || 0) + ' 条里本地翻，不再打上游。'
           // 旧服务端（未声明 tail）：维持本地并集口径（诚实：只报已取回的集合）。
           : '未列出的分类还有 ' + chipFold.otherCount + ' 类，上游合计 ' + Number(chipFold.other.totalAll || 0).toLocaleString() + ' 条。'
             + '本次已取回 ' + skills.length + ' 条，其中属于这些类的 ' + visibleSkills.length + ' 条就是上面这些'
             + (serverFacet ? '（上游这一页没有按集合筛：CAT_OTHER 不下发，靠本地并集筛出）' : '')
-            + '；这些类没有逐个列成标签，翻页才会取回更多。'
-            + '分页器里的「共约」是整个来源的总数，不是这些类的条数；集合以本行为准。');
+            + '；这些类没有逐个列成标签。'
+            + '分页器里的「共约」是整个来源的总数，不是这些类的条数；分页器只会在这次已取回的 ' + skills.length + ' 条里翻页，不会再去上游取回更多；集合以本行为准。');
       const skillCards = shownCards(visibleSkills, cardBatch).map((item) =>
         h('div', { key: item.id, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
