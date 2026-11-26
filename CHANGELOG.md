@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.178
+
+- 修「引入渐进式加载后，分页导航器失效」（用户 m25083）。两处叠加根因，均已钉死并落码：**根因①翻页走了一次性通路** —— 渐进式门只让 `pageNo <= 1 && !append` 进 harvest（client.js:1323），`gotoPage`（client.js:1145）的翻页打到**不带 `tailCategories`** 的 `skills.search`，服务端把 category 降级成整源浏览，缓存命中分支（client.js:1299）于是把 `tailStateRef` 清成 `null`，`visibleSkills` 便把「其他」的无分类行全部滤掉 ⇒ 翻页后列表空。**根因②final 整表灌屏** —— `applyHarvestFinal` 原先 `setSkills(rows)` 不切片，分页器报「第 1/N 页」而内容是该视图全集（虚构页码）。
+- 尾会话真分页（本地切片，翻页零额外 RPC）：harvest 收口时在缓存记录上打 `wholeView: Boolean(m.tail)`（client.js:323）。依据服务端语义（src/sources.js:1326-1334）——**只有 tail 会话的 final 行集才是该视图全集**（`total=finalRows.length`、`pages=ceil(·/size)`、`hasMore=false`），非 tail 收口的行集只是折叠层当页结果，绝不冒充全集。
+- 两个模块级纯函数放在 island 区（消费者与组件共用同一口径，不可能两处各算一套）：`harvestPagesOf(count, pageSize)`（client.js:254，总页数只按**已取回行集**算，绝不按 `upstreamTotal` 那个目录规模算）、`harvestSliceOf(rows, pageSize, page)`（client.js:260，页码越界给空数组 —— 诚实：那一页确实没有行，不复制末页冒充）。
+- final 上屏改按页切片：`d.setSkills(wholeView ? harvestSliceOf(rows, env.pageSize, env.pageNo) : rows)`（client.js:332）、总页数 `harvestPagesOf(rows.length, env.pageSize)`（client.js:334）、整集态 `hasMore` 恒 false；非 tail 态逐字维持 0.5.177 行为不动。
+- `searchSkills` 新增本地翻页分支（client.js:1258-1278，21 行）：`pageNo > 1` 且非 append 且首页缓存记录 `wholeView === true` ⇒ 直接本地切片上屏，页码/页数/总数/hasMore/serverFacet/`tailStateRef`/`totalBaseRef` 全套本地落，**不发 `skills.search`、不开新 harvest、不清 tailStateRef**。未收口 / 非整集一律不接管（维持现通路）；新自由名走 `typeof harvestSliceOf === 'function'` 防御（client.js:1265），摘录体测试桩拿不到 island 助手时自动回落旧通路（同 `harvestGate` 用法，不给真跑装置新增未注入自由名）。
+- tailNote 两态文案同步诚实（不留成谎的句子）：tail 态补「翻页就在这已取回的 N 条里本地翻，不再打上游」（client.js:2356）；旧服务端兜底态删掉已成谎的「翻页才会取回更多」，改为「分页器只会在这次已取回的 M 条里翻页，不会再去上游取回更多；集合以本行为准」（client.js:2361-2362）。client.js 全文件「翻页才会取回更多」清零（A 段新增 N1 零旧词锁）。
+- 判据同步（冲突的旧断言按新语义**改写并加严**，不是放松）：test-panel-tail.mjs C 段原「P1 翻页走一次性通路」拆成两判据（收口整集态翻页零 RPC／未收口态仍走一次性通路且 body 无 tailCategories），E 段补 final 切片与页数调用点在场锁、每页 2 条时只上屏第 1 页两行、D 段补两态诚实句锁；SECT_WANT 段内判据 73⇒83（A 10⇒11、C 10⇒12、D 10⇒12、E 13⇒18），加 8 条条数自证共 **91 passed / 0 failed**。
+- 磁盘态变异针 8⇒10 例：X9 把本地翻页分支短路成 `false &&` ⇒ 收口后翻页又打网络，必红；X10 把 final 切片退回 `d.setSkills(rows)` ⇒ 虚构页码回归，必红。两例各自跑红/还原跑绿/逐字节还原全过（该套单趟含 20 次子进程全跑，运行期间独占 `dsh-panel-tail.mut.lock`，不得并发编辑 client.js）。
+- test-panel-harvest.mjs：静态锁「门只在 `pageNo <= 1 && !append` 接管」**保留不动**（门本身未改，翻页不走门）；S7 由 2 判据改写为 4 判据 + 1 条无整集对照（收口后翻页零 RPC／渲染整集第 2 页切片／页数 ceil(4/2)=2 且页码=2／首页收口只上屏第 1 页两行／缓存无 wholeView 时仍走一次性通路），夹具新增 `fmT(total)` 只对 tail 收口给整集语义；78⇒**81 passed / 0 failed**。
+- 文案锁同步翻面（改判据而非回滚生产码）：test-lobehub-category-vocab.mjs:819-826 的 B3 两句由「翻页才会取回更多」改为新诚实句 —— 锁的仍是「兜底态必须说实话」，只是实话变了；126 passed / 0 failed。
+- 本地测据：`npm run test:chain` 79 段全绿 npmexit=0（日志 C:/Users/Public/dsh-scratch/chain178d.log 4898 行）。chain 期间两处红的处置：① test-profile-sync「no stale copies」红 = profile 镜像 client.js 陈旧 ⇒ 按原样字节同步镜像（252071B，identical=0）后 7/0；② test-lobehub-category-vocab B3 红 = 文案锁钉住已成谎的旧句 ⇒ 见上一条。
+- 本批新增纪律（写进门里）：test/test-profile-sync.mjs Test4（:74-83）要求 profile 镜像 `C:\Users\贺新\.dsh\profiles\desktop\node_modules\dsh-skill-mcp-market` 的 package.json version 与工作树一致 ⇒ **bump 版本号必须同步 profile 镜像**，否则 test:chain 必红（本批 0.5.178 bump 后即同步，Test3 的 26 个跟踪 .js 三方对拍 stale=0）。
+
 ## 0.5.177
 
 - 「其他」分类真筛选（用户三连报障 m23333 全修）：点合并入口不再是本地筛已取回的那一页，而是**服务端按 covers 逐类取数 + 面板走既有 harvest 渐进通路**。harvest.start 新增入参 tailCategories（slug 数组，normalizeTailCategories src/sources.js:553 单点清洗：String+trim、去空、去重、上限 400），index.js:1906 只透传不解释；收口新增 meta.tail 六字段 {categoriesTotal, categoriesFetched, categoriesFailed, upstreamTotal, windowed, retrievedTotal}；一次性 skills.search 出参逐字段不变（test-harvest Test 11 锁 13 键键序逐字）。
