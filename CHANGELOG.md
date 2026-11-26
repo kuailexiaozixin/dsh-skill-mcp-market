@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.179
+
+- 修 0.5.178 台账遗留①「live-verify 把冷缓存抖动误报成回归」。缺陷形状有现网凭据：同一条判据②「监控」在 0.5.178 的三轮复验里两轮 LIVE-FAIL（C:/Users/Public/dsh-scratch/ms178-live2.log，wall=30122ms / 53625ms）、一轮 GAP（ms178-live3.log，wall=2ms）——两轮之间服务端代码没变，唯一变量是那一轮有没有正在拉整份 30,000 行 ⇒ 判据把「本轮未定性」当成「取数坏了」，回归结论是造出来的。
+- RED 先行：test/test-live-verify.mjs 先加 15 条冷态判据（Test 3 形状 9 条 + Test 4 汇总取容 5 条 + Test 8 脚本形态里的冷态部分），落码前实测 **77 passed / 15 failed / 0 skipped、exit=1**，15 条红全部落在新判据上、老判据零红 ⇒ 红灯钉的是缺陷，不是手抖。
+- 实现落 test/live-verify.mjs（纯 CRLF 保持，写后 350 行 / 22892B / crlf=349 / loneLF=0），八个改动点：①常量 `COLD_MARK`（:31）、`COLD_WALL_MS = 25000`（:32）、`MAX_WARM_RETRIES = 1`（:34）、`WARM_RETRY_WAIT_MS = 15000`（:35），:27-30 注释引上面那组现网读数；:16 退出码行加 `5=NOT-WARM（冷缓存本轮未定性）`、:15 用法行加 `--retry-wait <ms>`。
+- ②`verdictB` 把旧「0 条 + 自承取数中断 ⇒ LIVE-FAIL」一行拆两行：**冷分支在前**（:95）http=200 且 total=0 且 hint 含 `COLD_MARK` 且 `wall > COLD_WALL_MS` ⇒ `{ verdict: 'NOT-WARM', kind: 'WARM' }`，why 里写明冷缓存抖动与「不写 PASS」；**:96 保留热态 LIVE-FAIL**（wall 缺失或 ≤25000 ⇒ 热态下的真取数失败绝不放过）。:94 的 `n > 0 ⇒ PASS` 仍排在冷判之前（拉到一半也算真取回）。
+- ③`summarize` 的 HARD 取容排除 `kind === 'WARM'`（:151），冷态结论 `if (warm) return 'NOT-WARM'` 排在真红之后（:152/:154）：冷态既不许掩红，也不许把整轮兜成 PASS；:149 的 fp=old ⇒ STALE-SERVER 仍先于一切。
+- ④`runAll` 新增同轮重试助手 `fetchCat`（:226-237）：只在 `isCold`（:225，http=200 + 0 条 + `COLD_MARK` + 超冷阈值四条件齐备）时等 `waitMs` 再取一次，循环带 `tried < MAX_WARM_RETRIES` 上限（:230），**全文件 `while (true)` 出现 0 次**；RPC 连不上或 http!==200 一律不重试 ⇒ 端到段打 127.0.0.1 死端口仍秒退 exit=3（Test 9 实测未变慢）。
+- ⑤`shape` 留 `warmRetries`（:211）使重试次数可审计，⑥`render` 冷态行标 `(冷态)`（:302）、计数行追加 `NOT-WARM=n`（:307，旧 `rows=… LIVE-FAIL=… NOT-TESTED=… GAP=…` 前缀逐字未动），⑦两处退出码表达式加 `'NOT-WARM' ? 5`（:344/:348）且排在兜底 `: 3` 之前 —— 次序写反冷态就被误报成 NOT-RUN，⑧`--retry-wait` 覆盖等待预算（:318-319）。
+- 每条静态锁都自带反证（新增 Test 10 十三判据，**内存变异不落盘**，与本仓那个真写 client.js 的磁盘变异针区分）：L1 删 `> COLD_WALL_MS` 守护 ⇒ 锁必红；L2 把上限退化成 `while (true)` ⇒ 无界正则命中、整行删掉 ⇒ 主锁取空；L3 `isCold` 放宽不看 http ⇒ 必红；L4 冷态结论排到真红之前 ⇒ 必红；L5 断言两处 exit 的 PASS0/STALE4/FAIL1/WARM5/兜底3 次序；L6–L8 用真函数跑形状（http=0 不判冷、render 标记与计数同源、fp=old 压过冷态）。落码后 **105 passed / 0 failed / 0 skipped**。
+- 定性口径变化（对使用者是行为变更）：冷缓存轮的整轮结论由 LIVE-FAIL 改为 **NOT-WARM / exit=5** —— 既不是 PASS 也不是 NOT-RUN。`test:chain` 不含现网复验（只跑 test/test-live-verify.mjs），此变更不影响闸门；台账里读 exit 的人要认得 5。
+- 本地测据：`npm run test:chain` 79 段全绿 chainexit=0（C:/Users/Public/dsh-scratch/chain179b.log；Test 10 增补后再复跑 chain179c.log 仍全绿）。bump 后同步 profile 镜像 package.json（:74-83 的 Test4 钉版本号）⇒ test-profile-sync 7 passed / 0 failed「mirrors report 0.5.179」。
+
 ## 0.5.178
 
 - 修「引入渐进式加载后，分页导航器失效」（用户 m25083）。两处叠加根因，均已钉死并落码：**根因①翻页走了一次性通路** —— 渐进式门只让 `pageNo <= 1 && !append` 进 harvest（client.js:1323），`gotoPage`（client.js:1145）的翻页打到**不带 `tailCategories`** 的 `skills.search`，服务端把 category 降级成整源浏览，缓存命中分支（client.js:1299）于是把 `tailStateRef` 清成 `null`，`visibleSkills` 便把「其他」的无分类行全部滤掉 ⇒ 翻页后列表空。**根因②final 整表灌屏** —— `applyHarvestFinal` 原先 `setSkills(rows)` 不切片，分页器报「第 1/N 页」而内容是该视图全集（虚构页码）。
