@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.180
+
+- 修 0.5.178 台账遗留②「TAIL_CATEGORY_SOURCES（src/sources.js:549 硬编码名单）改成源侧自描述分类能力」。名单只活一份：能按分类取数、声明是服务端口径（declared）还是本地过滤口径（local-filter），唯一事实源搬进新模块 **src/category-capability.js**（56 行，照 src/sort-capability.js 的实测纪律；缺表键按「不支持」保守处理，known:false）。表值：clawhub/skillsmp/trusttools/lobehub/skillhub = declared，modelscope = local-filter，skills.sh/browse.sh = none（handler 签名无 category 入参，逐类调用等于把同一份全目录重取 N 次）。skillhub 的 declared 有现网实测背书：cat="" total=241196，office-efficiency=14070、dev-programming=23695（行内 category 全等），表外 slug 直接 HTTP 400。
+- src/sources.js 四点：①:10 新增 import；②:548-549 注释改指能力模块，TAIL_CATEGORY_SOURCES 全仓 0 次；③:567-576 新增 `pickTailCategorySource(picked, capableOf)`（逐类取数选源唯一入口；capableOf 注入是给判据的自证通路）替代 :1194 的 picked.find；④两处 msOnPartial 决策由写死 `=== "modelscope"` 改能力表驱动 `isLocalFilterSource(...)`（:1167 扇出/一次性通路、:1220 tail 通路）。tail 正证门未动（:1239 proven、:1240 unproven 拒收、:1254-1256 无能力源整批 unsupported 零上游调用）。
+- src/skillhub.js 加 facet 声明位（:148 catSent 基准；:173 行集自证 `facetUsed = catSent && rows.length && rows.every(...) ? catSent : ""`——只有取回行集的 category 全等于本次实发的分类才作证，混进别类就闭嘴；:184-185 出参末尾追加 facetUsed 与 serverFacet: facetUsed !== ""，前六键序 source/items/total/page/pageSize/hasMore 不动）。上游对表外 slug 回 400，声明不会为谎话背书。
+- RED 先行：test/test-harvest.mjs Test 15（:963-1080，21 条 K1-K8）在改动落盘前对 HEAD 树重放两轮实证红：树里缺 src/category-capability.js 时套件连加载都过不去（ERR_MODULE_NOT_FOUND，强红）；补上模块、保留旧 sources.js 时主锚 K1 红「残留次数=2」。（此前一轮 202/1 的红记录被 K4 判据自身笔误遮蔽——把基础扇出的 category="" 浏览调用误计入逐类调用，已改为只数带分类的调用，判据修正不属实现让步。）
+- 判据面 K1-K8：K1 名单已删 + 八源逐字覆盖；K2 逐格能力与口径 + 派生名单=旧名单逐字；K3 表外保守 false/空串 undefined 不抛/默认谓词/注入谓词可达/非数组空串；K4 无能力源 failed=2 fetched=0 零逐类调用；K5 六源各起 tail 正证通过且六字段口径不扩；K6 modelscope 本地过滤口径写 hint + 源码锁两处 msOnPartial 不含源名；K7 skillhub 桩测四形（全等⇒作证/不带类⇒空 false/混别类⇒闭嘴/前六键序未动）；K8 J 段过渡态翻正 fetched=1/failed=0/retrieved=1。变异自证 9 例（C:/Users/Public/dsh-scratch/t180mut.mjs，跑前快照/跑后逐字节还原）：能力格改错（M1-M4）、选源无视谓词（M5）、msOnPartial 写死回源名（M6）、自证退化一律作证（M7）、serverFacet 恒真（M8）各自至少抓到一条判据；M0 旧硬名单+旧选源回插⇒套件 ReferenceError 死在汇总前（exit=1 强红）。
+- 判据自身的两处修正（不属实现让步）：K4 改为只数带分类的逐类调用（category="" 是浏览页本身）；K1 的裸 `!src.includes(...)` 被 test-anchor-lib.mjs 守卫判红（0.5.129 后纪律：否定断言用边界感知 absent()），改 `absent(src15, ...)`。链上其余 78 段不受影响。
+- 验证：test-harvest 203 passed / 0 failed（基线 165）；完整 npm run test:chain 79 段全绿（首两轮红均为本批自证出的问题：anchor-lib 守卫抓裸否定断言、test-profile-sync 抓镜像 stale——各按其纪律处置后复跑，chain180c.log NPMEXIT=0）。profile 镜像 P 已同步 sources.js/skillhub.js/category-capability.js（逐字节 identical，test-profile-sync 7 passed / 0 failed）。
+
 ## 0.5.179
 
 - 修 0.5.178 台账遗留①「live-verify 把冷缓存抖动误报成回归」。缺陷形状有现网凭据：同一条判据②「监控」在 0.5.178 的三轮复验里两轮 LIVE-FAIL（C:/Users/Public/dsh-scratch/ms178-live2.log，wall=30122ms / 53625ms）、一轮 GAP（ms178-live3.log，wall=2ms）——两轮之间服务端代码没变，唯一变量是那一轮有没有正在拉整份 30,000 行 ⇒ 判据把「本轮未定性」当成「取数坏了」，回归结论是造出来的。
