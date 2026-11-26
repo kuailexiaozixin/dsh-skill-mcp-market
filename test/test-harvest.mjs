@@ -11,6 +11,7 @@ import path from 'node:path';
 import { safeTempDir } from '../src/home.js';
 import { pathToFileURL } from 'node:url';
 import { makeHarvestStore, searchSkills, HARVEST_BUDGET_MS, DEFAULT_BUDGET_MS_FOR_TEST } from '../src/sources.js';
+import { absent } from './anchor-lib.mjs';
 
 const W = path.resolve(import.meta.dirname, '..');
 let passed = 0, failed = 0;
@@ -958,6 +959,126 @@ console.log('Test 10: ModelScope 大源逐页推入 harvest（渐进式加载）
   check('T14e all 态单类浏览不因谓词丢行（本地过滤口径照旧：s-out 被旧有过滤剔掉，非谓词所为）', got14c === 'l-1,s-plain' && run14c.fin.meta.tail === undefined, got14c);
   check('T14e 非 tail 会话收口 meta 仍取折叠口径（本地过滤重算 total=2，谓词不改它）', run14c.fin.meta.total === 2 && run14c.fin.meta.tail === undefined, JSON.stringify({ total: run14c.fin.meta.total, tail: run14c.fin.meta.tail }));
 }
+
+// ---------- Test 15: 分类能力自描述（category-capability）—— 名单只活一份，声明只认正证 ----------
+{
+  const cc15 = await import('../src/category-capability.js');
+  const sources15 = await import('../src/sources.js');
+  const cap15 = await import('../src/skillhub.js');
+  // Test 13/14 的 drain 是块级作用域，本块自带一份（轮询节奏一致）。
+  const drain15 = async (store, first, rounds) => {
+    const pkgs = [first];
+    let fin = first;
+    for (let i = 0; i < rounds && !fin.done; i++) { await sleep(15); const q = store.poll(first.id); if (!q) break; pkgs.push(q); fin = q; }
+    return { pkgs, fin };
+  };
+
+  // K1 名单只活一份：sources.js 里不得再出现硬编码 TAIL_CATEGORY_SOURCES（主锚，改前必红）。
+  const src15 = fs.readFileSync(path.join(W, 'src/sources.js'), 'utf8');
+  check('K1 TAIL_CATEGORY_SOURCES 硬名单已删（选源唯一入口 pickTailCategorySource）', absent(src15, 'TAIL_CATEGORY_SOURCES') && src15.includes('pickTailCategorySource(picked)'), '残留次数=' + (src15.split('TAIL_CATEGORY_SOURCES').length - 1));
+  const cc15Body = fs.readFileSync(path.join(W, 'src/category-capability.js'), 'utf8');
+  check('K1 能力表覆盖 ALL_SOURCES 八源逐字（一份表，零名单抄写）', ['skills.sh', 'clawhub', 'skillsmp', 'trusttools', 'browse.sh', 'lobehub', 'skillhub', 'modelscope'].every((n) => cc15Body.includes('"' + n + '"')), '');
+
+  // K2 逐源能力判读：八源各自的能力与口径，与实测记录一致（改表先重新实测）。
+  const wantK2 = [
+    ['skills.sh', false, 'none'], ['clawhub', true, 'declared'], ['skillsmp', true, 'declared'],
+    ['trusttools', true, 'declared'], ['browse.sh', false, 'none'], ['lobehub', true, 'declared'],
+    ['skillhub', true, 'declared'], ['modelscope', true, 'local-filter'],
+  ];
+  for (const pair of wantK2) {
+    const got = cc15.categoryCapability(pair[0]);
+    check('K2 ' + pair[0] + ' => supportsCategory=' + pair[1] + ' facetProof=' + pair[2], got.supportsCategory === pair[1] && got.facetProof === pair[2], JSON.stringify(got));
+  }
+  const capList15 = cc15.categoryCapableSources(['skills.sh', 'clawhub', 'skillsmp', 'trusttools', 'browse.sh', 'lobehub', 'skillhub', 'modelscope']);
+  check('K2 categoryCapableSources 派生名单 = 旧硬名单逐字（不存在第二份名单）', capList15.join(',') === 'clawhub,skillsmp,trusttools,lobehub,skillhub,modelscope', capList15.join(','));
+  check('K2 modelscope 属 local-filter（合计口径写 hint，不冒充服务端已筛）', cc15.isLocalFilterSource('modelscope') === true && cc15.isLocalFilterSource('clawhub') === false && cc15.isLocalFilterSource('') === false, '');
+
+  // K3 保守回落 + 注入谓词的自证通路。
+  check('K3 表外源 github 保守 false（unknown 不是 capability）', cc15.categoryCapability('github').supportsCategory === false && cc15.categoryCapability('github').known === false, JSON.stringify(cc15.categoryCapability('github')));
+  check('K3 空串与 undefined 同为 false 且不抛', cc15.categoryCapability('').supportsCategory === false && cc15.categoryCapability(undefined).supportsCategory === false, '');
+  check('K3 pickTailCategorySource 默认谓词取首个有能力源', sources15.pickTailCategorySource(['skills.sh', 'clawhub', 'skillsmp']) === 'clawhub', String(sources15.pickTailCategorySource(['skills.sh', 'clawhub', 'skillsmp'])));
+  check('K3 pickTailCategorySource 注入谓词可达（判据自证注入通路）', sources15.pickTailCategorySource(['a', 'b', 'c'], (n) => n === 'b') === 'b' && sources15.pickTailCategorySource(['x'], () => false) === '', '');
+  check('K3 非数组 picked 返回空串不抛', sources15.pickTailCategorySource(undefined) === '' && sources15.pickTailCategorySource(null) === '', '');
+
+  // K4 无能力源整批计失败，一次上游都不打（旧名单语义由能力表接住）。
+  const callsK4 = [];
+  const storeK4 = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstK4 = await storeK4.start({
+    query: '', source: 'github', category: '', page: 1, pageSize: 2, cache: null,
+    tailCategories: ['c1', 'c2'],
+    handlers: { github: async (opts) => { callsK4.push(String(opts.category || '')); return { source: 'github', items: [mkItem('github', 1)], total: 1, hasMore: false }; } },
+  });
+  const runK4 = await drain15(storeK4, firstK4, 60);
+  const tK4 = (runK4.fin.meta || {}).tail || {};
+  check('K4 无能力源 failed=2/fetched=0/retrieved=0', tK4.categoriesFailed === 2 && tK4.categoriesFetched === 0 && tK4.retrievedTotal === 0, JSON.stringify(tK4));
+  // 只数「带分类的逐类调用」：基础扇出那次 category='' 是浏览页本身，不属于 tail 通路。
+  const tailCallsK4 = callsK4.filter((c) => c !== '');
+  check('K4 无能力源零逐类调用（一次分类请求都不发）', tailCallsK4.length === 0, JSON.stringify(callsK4));
+
+  // K5 六源各起一次 tail：按各源真实声明形回包，fetched=1 且行集非空、六字段口径不扩。
+  const handlersK5 = {
+    clawhub: async (opts) => (opts.category ? { source: 'clawhub', items: [mkItem('clawhub', 1)], total: 100, hasMore: false, facetUsed: opts.category } : { source: 'clawhub', items: [mkItem('clawhub', 9)], total: 1, hasMore: false }),
+    skillsmp: async (opts) => (opts.category ? { source: 'skillsmp', items: [mkItem('skillsmp', 1)], total: 200, hasMore: false, serverFacet: true, facetUsed: opts.category } : { source: 'skillsmp', items: [mkItem('skillsmp', 9)], total: 1, hasMore: false }),
+    trusttools: async (opts) => (opts.category ? { source: 'trusttools', items: [mkItem('trusttools', 1)], total: 300, hasMore: false, serverFacet: true } : { source: 'trusttools', items: [mkItem('trusttools', 9)], total: 1, hasMore: false }),
+    lobehub: async (opts) => (opts.category ? { source: 'lobehub', items: [mkItem('lobehub', 1)], total: 400, totalPages: 5, hasMore: false, serverFacet: true } : { source: 'lobehub', items: [mkItem('lobehub', 9)], total: 1, hasMore: false }),
+    skillhub: async (opts) => (opts.category ? { source: 'skillhub', items: [mkItem('skillhub', 1)], total: 500, hasMore: false, facetUsed: opts.category, serverFacet: true } : { source: 'skillhub', items: [mkItem('skillhub', 9)], total: 1, hasMore: false }),
+    modelscope: async (opts) => (opts.category ? { source: 'modelscope', items: [{ slug: 'ms-k5', name: 'ms-k5', source: 'modelscope', category: opts.category, installs: 1 }], total: 600, hasMore: false, categoryInfo: true, facetUsed: opts.category } : { source: 'modelscope', items: [mkItem('modelscope', 9)], total: 1, hasMore: false, categoryInfo: true }),
+  };
+  const slugsK5 = [['clawhub', 'c-cat'], ['skillsmp', 's-cat'], ['trusttools', 't-cat'], ['lobehub', 'l-cat'], ['skillhub', 'office-efficiency'], ['modelscope', '开发工具']];
+  for (const pair of slugsK5) {
+    const storeK5 = makeHarvestStore({ ttlMs: 30000, maxSessions: 8 });
+    const firstK5 = await storeK5.start({
+      query: '', source: pair[0], category: '', page: 1, pageSize: 2, cache: null,
+      tailCategories: [pair[1]], handlers: handlersK5,
+    });
+    const runK5 = await drain15(storeK5, firstK5, 120);
+    const tK5 = (runK5.fin.meta || {}).tail || {};
+    check('K5 ' + pair[0] + ' 正证通过（fetched=1/failed=0/行集非空）', tK5.categoriesFetched === 1 && tK5.categoriesFailed === 0 && tK5.retrievedTotal >= 1, JSON.stringify(tK5));
+    check('K5 ' + pair[0] + ' 六字段口径不扩', Object.keys(tK5).sort().join(',') === 'categoriesFailed,categoriesFetched,categoriesTotal,retrievedTotal,upstreamTotal,windowed', Object.keys(tK5).join(','));
+  }
+
+  // K6 本地过滤口径只走 isLocalFilterSource：源名字面量不再出现在决策行。
+  const storeK6 = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstK6 = await storeK6.start({
+    query: '', source: 'modelscope', category: '', page: 1, pageSize: 2, cache: null,
+    tailCategories: ['开发工具'], tailConcurrency: 1, handlers: handlersK5,
+  });
+  const runK6 = await drain15(storeK6, firstK6, 120);
+  const hintK6 = String((runK6.fin.meta || {}).hints || []);
+  check('K6 modelscope 本地过滤口径写进 hint（可达集合，不说窗口之外）', /可达集合|本地过滤/.test(hintK6) && !/窗口之外/.test(hintK6), hintK6.slice(0, 200));
+  const msLines = src15.split('\n').filter((l) => l.indexOf('msOnPartial:') >= 0 && String(l).trim().indexOf('//') !== 0);
+  check('K6 源码锁：两处 msOnPartial 决策都不再写死源名', msLines.length === 2 && msLines.every((l) => l.indexOf('modelscope') < 0 && l.indexOf('isLocalFilterSource') >= 0), JSON.stringify(msLines));
+
+  // K7 skillhub 源侧声明三形：全等才作证；不带类 / 混别类都闭嘴（反证主锚）。
+  const feedK7 = (rows) => { globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ code: 0, message: 'success', data: { skills: rows, total: rows.length } }) }); };
+  let ok7, none7, mixed7;
+  try {
+    feedK7([{ slug: 'sh-a', name: 'A', category: 'office-efficiency' }, { slug: 'sh-b', name: 'B', category: 'office-efficiency' }]);
+    ok7 = await cap15.searchSkills({ query: '', page: 1, pageSize: 20, category: 'office-efficiency', cache: null });
+    feedK7([{ slug: 'sh-a', name: 'A', category: 'office-efficiency' }]);
+    none7 = await cap15.searchSkills({ query: '', page: 1, pageSize: 20, category: '', cache: null });
+    feedK7([{ slug: 'sh-a', name: 'A', category: 'office-efficiency' }, { slug: 'sh-x', name: 'X', category: 'dev-programming' }]);
+    mixed7 = await cap15.searchSkills({ query: '', page: 1, pageSize: 20, category: 'office-efficiency', cache: null });
+  } finally { delete globalThis.fetch; }
+  check('K7 带类且行集全等 => facetUsed=该类 + serverFacet=true', ok7.facetUsed === 'office-efficiency' && ok7.serverFacet === true, JSON.stringify({ f: ok7.facetUsed, s: ok7.serverFacet }));
+  check('K7 不带类 => 声明位空/false（浏览态不作证）', none7.facetUsed === '' && none7.serverFacet === false, JSON.stringify({ f: none7.facetUsed, s: none7.serverFacet }));
+  check('K7 混别类 => 闭嘴（空串/false，反证「全等才作证」）', mixed7.facetUsed === '' && mixed7.serverFacet === false, JSON.stringify({ f: mixed7.facetUsed, s: mixed7.serverFacet }));
+  check('K7 出参前六键序未动（只在末尾追加声明位）', Object.keys(none7).slice(0, 6).join(',') === 'source,items,total,page,pageSize,hasMore', Object.keys(none7).join(','));
+
+  // K8 过渡态翻正：skillhub 词表内成功类现在计 fetched（0.5.180 源侧自描述已落）。
+  const storeK8 = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
+  const firstK8 = await storeK8.start({
+    query: '', source: 'skillhub', category: '', page: 1, pageSize: 24, cache: null,
+    tailCategories: ['office-efficiency'],
+    handlers: { skillhub: async (opts) => (opts.category
+      ? { source: 'skillhub', items: [mkItem('skillhub', 3)], total: 13966, hasMore: false, facetUsed: opts.category, serverFacet: true }
+      : { source: 'skillhub', items: [mkItem('skillhub', 9)], total: 1, hasMore: false }) },
+  });
+  const runK8 = await drain15(storeK8, firstK8, 120);
+  const tK8 = (runK8.fin.meta || {}).tail || {};
+  check('K8 skillhub 成功类翻正 fetched=1/failed=0/retrieved=1', tK8.categoriesFetched === 1 && tK8.categoriesFailed === 0 && tK8.retrievedTotal === 1, JSON.stringify(tK8));
+}
+
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

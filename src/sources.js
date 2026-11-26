@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { enrichPageDescriptions, enrichSkillsShFast } from "./enrich.js";
 import { supportsSort as capabilitySupports, sortKeysFor } from "./sort-capability.js";
+import { categoryCapability, categoryCapableSources, isLocalFilterSource } from "./category-capability.js";
 import {
   searchClawHub,
   warmClawHubCatalog,
@@ -544,9 +545,8 @@ const SOURCE_HANDLERS = {
 // 并发 4 防住 214 类全并发把上游打死（lobehub 单类实测 4.4~11.8s，走的是 npx CLI）。
 const TAIL_CATEGORY_CAP = 400;
 const TAIL_CONCURRENCY = 4;
-// 只有这些源的 handler 真带 category 参数（skills.sh / browse.sh 的签名里没有分类入参，
-// 逐类调用等于把同一份全目录重取 N 次，白烧上游 —— 直接计失败，不打上游）。
-const TAIL_CATEGORY_SOURCES = ["clawhub", "skillsmp", "trusttools", "lobehub", "skillhub", "modelscope"];
+// 哪个源能按分类取数、声明是服务端口径还是本地口径，唯一事实源在 src/category-capability.js
+//（照 sort-capability.js 的实测纪律，缺表键按「不支持」保守处理）。
 
 // tailCategories 归一化：非数组一律按空；每项 String + trim；去空串；去重；上限截断。
 // index.js 与 harvest 会话两侧共用这一份（口径唯一），测试亦直接调用它。
@@ -562,6 +562,17 @@ export function normalizeTailCategories(list) {
     if (out.length >= TAIL_CATEGORY_CAP) break;
   }
   return out;
+}
+
+/**
+ * 逐类取数的源选择（唯一入口）：picked 里第一个「能力表声明支持分类」的源。
+ * 注入 capableOf 是给判据用的自证通路 —— 测试用自己的谓词就能证明这条通路可达，
+ * 不必把名单抄进测试。表外/无能力一律空串（不取数）。
+ */
+export function pickTailCategorySource(picked, capableOf) {
+  const list = Array.isArray(picked) ? picked : [];
+  const ok = typeof capableOf === "function" ? capableOf : (name) => categoryCapability(name).supportsCategory;
+  return list.find((name) => ok(name)) || "";
 }
 
 // 短冷却只属于聚合路径（agent 的 source=all 搜索）：面板每个 tab 只有一个源，
@@ -1153,7 +1164,7 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
         return handler({
           query, page: p, pageSize: size, cache, sort: effectiveSort, category,
           harvestBypass: true,
-          msOnPartial: name === "modelscope"
+          msOnPartial: isLocalFilterSource(name)
             ? (pageItems) => {
                 for (const it of pageItems) pushRow(it);
                 if (!s.done) s.stage = "collected " + s.rows.length + " rows from " + s.settled + "/" + picked.length + " sources";
@@ -1180,7 +1191,7 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
     // 逐类取数只能发给「handler 真带 category 参数」的源：单源态就是它自己，
     // source:"all" 态取 picked 里第一个有分类能力的源（面板从不下发 all+tail）。
     const tailSourceName = tailList.length
-      ? (picked.find((name) => TAIL_CATEGORY_SOURCES.includes(name)) || "")
+      ? pickTailCategorySource(picked)
       : "";
     let tailDone = 0;
     const tailSettle = () => {
@@ -1206,7 +1217,7 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
           harvestBypass: true,
           // 逐页增量此刻还没有正证（证明门在取数返回之后），所以这里刻意不传 provenClass：
           // 提前落地的行只靠行内 category 自证 membership，证不了就不入账。
-          msOnPartial: tailSourceName === "modelscope"
+          msOnPartial: isLocalFilterSource(tailSourceName)
             ? (pageItems) => {
                 for (const it of pageItems) if (pushRow(it)) landed += 1;
                 signal();

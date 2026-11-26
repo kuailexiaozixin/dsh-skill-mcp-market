@@ -145,6 +145,7 @@ export async function searchSkills({ query = "", page = 1, pageSize = 20, catego
   // 关键词参数名必须是 keyword：实测 q=pdf 返回 total=233498（≈全量 233,498，等于没搜），
   // keyword=pdf 返回 5614。旧代码传 q，所以 SkillHub 的搜索一直无效，只因仍返回条目而看着像成功。
   if (query) params.set("keyword", query);
+  const catSent = category; // 这次真的发给上游的分类（行集自证的对照基准）
   if (category) params.set("category", category);
   params.set("page", String(p));
   params.set("pageSize", String(size));
@@ -166,6 +167,10 @@ export async function searchSkills({ query = "", page = 1, pageSize = 20, catego
   }
   const pageRows = rows;
   const items = pageRows.map(toItem);
+  // 0.5.180 源侧自描述：带分类时，只有取回的行集自己全等于该分类才算正证（facetUsed），
+  // 并据此声明 serverFacet。上游对表外 slug 直接回 400（getJson 抛错），所以这条声明
+  // 不会为谎话背书；混进别类时闭嘴（空串）—— tail 判定按 unproven 拒收，不洗行集。
+  const facetUsed = catSent && rows.length && rows.every((r) => String(r.category || "") === catSent) ? catSent : "";
   return {
     source: "skillhub",
     items,
@@ -175,6 +180,9 @@ export async function searchSkills({ query = "", page = 1, pageSize = 20, catego
     pageSize: size,
     // 0.5.144（D4）：请求页宽钳到 50，判据却拿未钳制的入参比 —— pageSize=60 时上游回 60 行也谎称最后一页。
     hasMore: items.length >= size,
+    // 0.5.180：facet 声明位（tail 只认正证，见 src/sources.js 的 fetchTailCategory）
+    facetUsed,
+    serverFacet: facetUsed !== "",
   };
 }
 // 曾有的 categories() 已删除：它请求 /api/skills/categories（实测 405 Method Not Allowed），
