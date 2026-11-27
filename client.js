@@ -269,7 +269,7 @@ window.__ModuleLoader__.load({
     // final 之后按一次性通路同一口径收尾（真空表才给「没有找到匹配的技能。」）。
     const setHarvestNotice = (d, pkg, count, settled) => {
       const m = (pkg && pkg.meta) || {};
-      const hints = (m.hints || []).filter(Boolean);
+      const hints = (m.hints || []).filter(Boolean).filter((x) => !(settled && m.tail && m.tail.categoriesTotal > 0 && String(x).indexOf('「其他」分类未取全') === 0));
       // 未收口（中间包）：无论已到达几条都只说「陆续加载中」。0 条时绝不能提前讲
       // 「没有找到匹配的技能」—— 那是把还没到的结果说成不存在（诚实性红线）。
       if (!settled) {
@@ -539,8 +539,8 @@ function categoryLabelLite(chip) {
 }
 // 窗内没列出的分类合并成一个「其他」入口（产品决策：246 类逐个铺开等于没做筛选）。
 // 上游没有可用的「其他」桶（lobehub 词表里 general/Others 各 1 条，是被挡的自由标签），所以这个
-// chip 是面板自造的：它不代表任何一个上游分类，条数也绝不从上游总量里编——只如实报「未列出的分类还有
-// N 类 / 合计 M 条」（入口本体不带数字，数字进 title 与说明行），实际可列出的条目由已取到的集合
+// chip 是面板自造的：它不代表任何一个上游分类，条数也绝不从上游总量里编。0.5.185（用户 m30832）：
+// 分类数与合计条数对用户没有意义，title 只说「未列出的分类已合并到这里」，实际可列出的条目由已取到的集合
 // 本地过滤得出（见 visibleSkills）；服务端按类逐个取数后改走 tail 口径。
 const CAT_OTHER = '__cat_other';
 // 展开态行尾的「收起分类」是渲染集合里的一个哨兵，不是分类值：它永远不进 category。
@@ -2378,17 +2378,16 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                 const F = Number(tailMemo.categoriesFailed || 0);
                 if (C === 0 && F === 0) return '';
                 const Y = Number(tailMemo.retrievedTotal || 0);
-                let s = '每个未列出的分类各取回一页（' + (Number(size) || 24) + ' 条），本次取回 ' + Y.toLocaleString() + ' 条，未取全';
-                if (C > 0) s += '。还有 ' + C + ' 个分类没取回' + (F > 0 ? '（其中 ' + F + ' 个分类取数失败）' : '');
+                // 0.5.185 C3（用户 m30832）：一行结论；分类数与失败类数不再上屏。
+                let s = '「其他」分类未取全：每个未列出的分类各取回一页（' + (Number(size) || 24) + ' 条），本次取回 ' + Y.toLocaleString() + ' 条';
                 s += '。建议：稍后重试。';
                 return s;
               })()
             // 旧服务端/本地筛源（未声明 tail）：只报本次取回，绝不报虚高的「上游合计」。
             : (function () {
                 const Y = skills.length;
-                const C = Number(chipFold.otherCount || 0);
-                let s = '每个未列出的分类各取回一页（' + (Number(size) || 24) + ' 条），本次取回 ' + Y + ' 条，未取全';
-                if (C > 0) s += '。还有 ' + C + ' 个分类没取回';
+                // 0.5.185 C3：兜底态同样一行结论，零分类数。
+                let s = '「其他」分类未取全：本次取回 ' + Y + ' 条';
                 s += '。建议：稍后重试。';
                 return s;
               })()));
@@ -2901,7 +2900,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                       return h('button', {
                         key: 'cat_tail',
                         style: S.chip(category === cat),
-                        title: '未列出的分类还有 ' + chipFold.otherCount + ' 个（同一技能可属多个分类，不设总数）',
+                        title: '未列出的分类已合并到这里（同一技能可属多个分类，不设总数）',
                         onClick: () => { setCategory(cat); searchSkills(query, { source, size, category: cat, page: 1, sort }); window.scrollTo({ top: 0, behavior: 'smooth' }); },
                       }, chipText);
                     }
@@ -3260,6 +3259,9 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
               : null,
             // 分批未渲染完时给出显式续加载入口；空态仍由 notice（服务端整页数据）判定，
             // 不会因为裁切了渲染列表而误报「没有找到」。
+            // 0.5.185 C1'（用户 m30832）：harvest 会话在途时不出这个按钮——渐进期列表还在长，
+            // 「继续显示 N 个」只会让人以为数据没到齐；收口后尾会话走整集切片，条件自然为假。
+            (harvestCtlRef && harvestCtlRef.current && harvestCtlRef.current.token === null) &&
             (tab === 'skills' ? visibleSkills : orderedMcps).length > cardStepFor(size) * cardBatch
               ? h('div', { style: { ...S.row, justifyContent: 'center', marginTop: 8 } },
                   h('button', { style: S.btn(), onClick: () => setCardBatch((n) => n + 1) },

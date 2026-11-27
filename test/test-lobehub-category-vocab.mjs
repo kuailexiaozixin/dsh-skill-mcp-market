@@ -820,10 +820,10 @@ const runRenderFor = (entries, fold) => {
     // 未取全 / 还有 C 类没取到 / 建议：稍后重试」；兜底态（本地筛源）只报本次取回、不报虚高总数；
     // 全部取到就静默。旧黑话（不再联网取数 / 往后翻页 / 上游合计 / 共约句 / 集合以本行 / 打上游）全退场。
     // 分页器 label 共约→共（边界外判据 test-search-fanout-latency 同步锁）。
-    check('0.5.184 tailNote 人话两态收尾在场（本次取回 N 条，未取全 + 建议：稍后重试。+ 还有 N 个分类没取回），旧黑话与虚高合计全退场',
-        /本次取回 .*条，未取全/.test(client) &&
+    check('0.5.185 tailNote 一行收尾在场（「其他」分类未取全 + 本次取回 N 条 + 建议：稍后重试。），旧黑话、分类数与虚高合计全退场',
+        /「其他」分类未取全/.test(client) && /本次取回 .*条/.test(client) &&
         /建议：稍后重试。/.test(client) &&
-        client.indexOf('个分类没取回') >= 0 &&
+        client.indexOf('个分类没取回') < 0 &&
         client.indexOf('个分类在取') >= 0 &&
         /tailNote \? h\('div', \{ style: \{ \.\.\.S\.status, marginTop: 8 \} \}, tailNote\) : null,/.test(client) &&
         client.indexOf('不再联网取数') < 0 && client.indexOf('往后翻页') < 0 && client.indexOf('集合以本行为准') < 0 && client.indexOf('翻页才会取回更多') < 0 &&

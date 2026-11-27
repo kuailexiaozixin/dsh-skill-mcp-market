@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.185
+
+- **用户 m30832 三问闭环（0.5.185-A）：加载中不再出现「继续显示 N 个」、合并入口不再报分类数、收口不再同屏两行说同一件事**。
+- **①「为什么提示语分两行」**：那两行是两条独立通路——加载行=服务端取数进度（setHarvestNotice），第二行=客户端渲染裁切（shownCards/CARD_BATCH 的「继续显示 N 个 / 还有 M 个未渲染」）。0.5.185 不删分批能力（一次性聚合通路里分页器只有一页，删掉按钮=剩余条目永久看不到，是回归），改为给分批行前置会话在途闸门（client.js:3263 `(harvestCtlRef && harvestCtlRef.current && harvestCtlRef.current.token === null) &&`）：harvest 渐进期列表还在长，「继续显示 N 个」只会让人误以为数据没到齐；收口后尾会话走整集切片，visibleSkills ≤ pageSize ⇒ 条件自然为假，按钮不再出现。加载行仍是一行「（陆续加载中，已到达 X 条，还有 Y 个分类在取）」——用户问的「还有多少条在途」= 窗外各类上游 total 相加（同一技能同属多类，重叠计数），不可信所以不报；分类数是唯一诚实的在途进度。
+- **②「继续显示这个框毫无用处，为什么不去掉」**：见①——渐进期整行消失，收口后由分页器翻页，按钮只在一次性聚合通路（无分页器可翻）里出现。
+- **③「类别数量毫无价值，『其他』的意义何在」**：合并入口 chip title 去掉分类数（:2904 ⇒「未列出的分类已合并到这里（同一技能可属多个分类，不设总数）」，零数字）；tailNote 收成一行且不再报「还有 N 个分类没取回（其中 F 个分类取数失败）」（:2381-2382/:2390-2391）⇒ tail 态「「其他」分类未取全：每个未列出的分类各取回一页（N 条），本次取回 Y 条。建议：稍后重试。」、兜底态「「其他」分类未取全：本次取回 Y 条。建议：稍后重试。」。「其他」保留为入口：它不是上游分类，是面板把窗口外未列出的分类合并成的筛选入口，按下即逐类取数、按 covers 并集筛选（:2364）。
+- **P0 同屏两行（收口期 hint 与 tailNote 重复）**：setHarvestNotice 收口时对 tail 会话过滤服务端「「其他」分类未取全…」hint（:272），结论只由 tailNote 一行播报；服务端 sources.js:1337 的 hint 与口径文案不动（test-harvest I6/K6 两条正则锁仍绿），一次性通路与其他源不受影响。
+- **判据同步**：test-panel-tail A 段 +1（分批闸门源码锁：token === null 恰 1 处）、B 段 +2（新夹具 planTailHint ⇒ 尾会话收口 hint 全程不上屏 + notice 清空）、D 段 +1（tailNote 表达式零「个分类」）、D 段四条逐字白话等式与 G 段 title 判据改为零数字、H 段 X8 needle 收窄 + 新增 X13（摘掉分批闸门必须出红）；SECT_WANT ⇒ {A:12,B:14,C:12,D:12,E:20,F:3,G:7,H:8}，实测 96/0。test-lobehub-category-vocab tailNote 锁同步（/「其他」分类未取全/ && /本次取回 .*条/ && 零「个分类没取回」），126/0。test-panel-harvest 81/0、test-harvest 205/0、test-search-fanout-latency 211/0（分批行代码保留 ⇒ cardStepFor/继续显示 锁不红）、test-modelscope-category-vocab 181/0(2 skipped)。
+- 版本 0.5.184⇒0.5.185。
+
 ## 0.5.184
 
 - **m30166 四问闭环（首要任务）：面板「其他」两行提示语彻底改口 + 服务端中间包带真进度**。逐问定位：
@@ -9,6 +19,9 @@
 - **④「50 万/为什么叫其他/为什么只取回 500 多」**：结论行与合并入口 chip title 都不再报任何上游合计数——「共 491,817 条」「合计约 743 条」退场，改说「每个未列出的分类各取回一页（N 条），本次取回 Y 条」+「同一技能可属多个分类，不设总数」。实测口径（port 53990，pageSize=24）：skillsmp 词表 63 类、窗口 32 类、窗外 31 类 totalAll 之和=506,003＝重叠计数（同一技能同属多类），不是 50 万个独立条目；612 条＝31 类各取 1 页×24 去重后的实取数（每类落地 15–24 条）。「其他」本就是面板自造的合并入口，不是上游分类。
 - **判据同步**：test-panel-tail D 段 +2（在途恒空、闸门必须写在 tailNote 表达式里）、B 段三条改真进度口径、G 段 title 判据去虚高；H 段新增变异例 X11（摘掉在途闸门）/X12（「在取」写回「在途」），X12 变异针改唯一片段。test-harvest 新增 C2(0.5.184) 两条（tail 会话 poll 中间包带 tail、六字段键序与收口一致）。test-lobehub-category-vocab tailNote 锁同步（「个分类没取回」＋零「合计约」/零「条在途」）。实测 92/0、205/0、81/0、126/0、181/0(2 skipped)。
 - **顺带闭环 0.5.184 遗留⑤**：setHarvestNotice 里 `tailLabel`/`tailHead` 死变量删除（:279-280），island deps 的 `tailLabel` 条件展开随之退场（全仓零引用）。
+- **发布凭据（0.5.184 发布闭环）**：commit 4730f8e（7 files +75/-51）；tag v0.5.184（object 587d65f，peel=4730f8e）；远端 master=4730f8e；CI run 46017378089 success（trusted publishing 自动出包，未手工 publish）；npm dist-tags.latest=0.5.184、shasum=421041b515f41f6e73295de9fe600351fb311459；装机 dsh plugin --profile desktop add 0.5.184 exit=0，test-profile-sync 7/0（no stale copies ✓、mirrors 0.5.184 ✓）、test-suite-inventory 12/0；链 81/81 全绿（chain184.log 段 1–50 + 尾段 chain184tail/chain184tail2 SEG_OK=30/FAIL=0；含 harvest 205/0、panel-harvest 81/0、panel-tail 92/0、lobehub 126/0、modelscope 181/0(2 skipped)）。
+- **0.5.184 画面凭据（遗留①闭环）**：host 重启到 61510 后浏览器实测两态——加载中「（陆续加载中，已到达 345 条，还有 14 个分类在取）」（真进度生效）与收口态两行并存（服务端 hint + tailNote 说同一件事）；后者即 0.5.185 P0 的取证依据。真 RPC 复核（pageSize=24，tailCategories=窗外 31 slug）：vocab=63/tail=31、start 首包 meta.tail=undefined（C2 契约不破）、FINAL total=612 tail={31,30,1,516123,windowed:true,612}。
+- **0.5.185 遗留**：①「其他」的窗口口径（CAT_CHIP_FOLD=32）与 ModelScope 可达集合外分类覆盖仍是产品决策，待用户点名；②GitHub Release 176–184 未建（惯例：用户未点名不建）；③src/github.js tar 通路仍只有结构锁，可补临时目录真解压测试；④分批行与加载行的合一（本次用闸门让二者不同时出现）若要做成真正的一行合并文案，需要把 cardBatch 交给分页器统一，属较大改动，未排期。
 
 ## 0.5.183
 
