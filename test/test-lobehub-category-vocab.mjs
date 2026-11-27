@@ -820,12 +820,14 @@ const runRenderFor = (entries, fold) => {
     // 未取全 / 还有 C 类没取到 / 建议：稍后重试」；兜底态（本地筛源）只报本次取回、不报虚高总数；
     // 全部取到就静默。旧黑话（不再联网取数 / 往后翻页 / 上游合计 / 共约句 / 集合以本行 / 打上游）全退场。
     // 分页器 label 共约→共（边界外判据 test-search-fanout-latency 同步锁）。
-    check('0.5.183 tailNote 人话两态收尾在场（本次取回 N 条，未取全 + 建议：稍后重试。+ 还有 N 类没取到），旧黑话全退场',
+    check('0.5.184 tailNote 人话两态收尾在场（本次取回 N 条，未取全 + 建议：稍后重试。+ 还有 N 个分类没取回），旧黑话与虚高合计全退场',
         /本次取回 .*条，未取全/.test(client) &&
         /建议：稍后重试。/.test(client) &&
-        client.indexOf('类没取到') >= 0 &&
+        client.indexOf('个分类没取回') >= 0 &&
+        client.indexOf('个分类在取') >= 0 &&
         /tailNote \? h\('div', \{ style: \{ \.\.\.S\.status, marginTop: 8 \} \}, tailNote\) : null,/.test(client) &&
-        client.indexOf('不再联网取数') < 0 && client.indexOf('往后翻页') < 0 && client.indexOf('集合以本行为准') < 0 && client.indexOf('翻页才会取回更多') < 0,
+        client.indexOf('不再联网取数') < 0 && client.indexOf('往后翻页') < 0 && client.indexOf('集合以本行为准') < 0 && client.indexOf('翻页才会取回更多') < 0 &&
+        client.indexOf('合计约') < 0 && client.indexOf('条在途') < 0,
         // 注：「上游合计」(仅存于开发注释 :2384) 与「打上游」(仅存于 :122/:312 开发注释) 不参与全仓零词锁，
         // 0.5.182 教训：全仓 indexOf 会被开发注释误伤；人话退场由 panel-tail D 段（nW/nO 逐字断言）锁定。
         (client.split(NL).find((l) => l.includes('本次取回')) || '(none)').trim().slice(0, 170));

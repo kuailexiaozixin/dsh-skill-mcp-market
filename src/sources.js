@@ -1037,8 +1037,11 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
       if (entry[1].expiresAt <= now) sessions.delete(entry[0]);
     }
   };
-  const metaOf = (s) => ({
+  const metaOf = (s, withTail) => ({
     // finalMeta 只在收口时落（折叠口径的分页字段）；中间包没有它，meta 形状不变。
+    // 0.5.184 withTail：poll 的中间包把逐类账本原样带下去，加载行才有真进度（start 首包
+    // 仍不带——C2 锁首包 meta.tail===undefined，收口包走 finalMeta.tail）。
+    ...(withTail && s.tail ? { tail: s.tail } : {}),
     ...(s.finalMeta || {}),
     degraded: s.degraded.slice(),
     sourceErrors: s.sourceErrors.slice(),
@@ -1399,7 +1402,7 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
     }
     // stage 随中间包下发：tail 逐类取数的进度（tail k/n classes）只有在这里才看得见，
     // 面板与测试都靠它判断「按类推进」而不是最后一把砸完。
-    return { rows, meta: metaOf(s), done: s.done, stage: s.stage, hints: s.hints.slice() };
+    return { rows, meta: metaOf(s, true), done: s.done, stage: s.stage, hints: s.hints.slice() };
   };
 
   return { start, poll, size: () => sessions.size };

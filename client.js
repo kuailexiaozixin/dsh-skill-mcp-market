@@ -273,12 +273,11 @@ window.__ModuleLoader__.load({
       // 未收口（中间包）：无论已到达几条都只说「陆续加载中」。0 条时绝不能提前讲
       // 「没有找到匹配的技能」—— 那是把还没到的结果说成不存在（诚实性红线）。
       if (!settled) {
-        // 0.5.177 逐类取数：服务端在 meta.tail 里带逐类进度（C2/C3）就如实播报；label 经
-        // deps.tailLabel 注入（island 文本独立 exec，引用不到模块层常量），缺省用中性词。
+        // 0.5.184 逐类进度改报「还有 N 个分类在取」：在取的是分类数，不是把各类上游条数相加的
+        // 重叠虚高数（同一技能可属多个分类）。取数失败的类已终结，不计在取，收口后单独说明。
         if (m.tail && m.tail.categoriesTotal > 0) {
-          const tailLabel = String(d.tailLabel || '');
-          const tailHead = tailLabel ? tailLabel + '类' : '未列出分类';
-          d.setNotice(hints.length ? hints.join('；') : '（陆续加载中，已到达 ' + count + ' 条' + (m.tail.windowed === true && Number(m.tail.upstreamTotal || 0) > 0 ? '，还有 ' + Number(m.tail.upstreamTotal).toLocaleString() + ' 条在途' : '') + '）');
+          const pending = Math.max(0, Number(m.tail.categoriesTotal || 0) - Number(m.tail.categoriesFetched || 0));
+          d.setNotice(hints.length ? hints.join('；') : '（陆续加载中，已到达 ' + count + ' 条' + (pending > 0 ? '，还有 ' + pending + ' 个分类在取' : '') + '）');
           return;
         }
         d.setNotice(hints.length ? hints.join('；') : '（陆续加载中，已到达 ' + count + ' 条）');
@@ -1341,7 +1340,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         // typeof 防御（同 probeOpPresent 的用法）：解不了就回落旧通路，不判红。
         if (pageNo <= 1 && !append && typeof harvestGate === 'function' && harvestCtlRef && harvestCtlRef.current) {
           const hres = await harvestGate(harvestCtlRef.current, {
-            deps: { call, resultCacheRef, totalBaseRef, setSkills, setSkillsPage, setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setBusy, ...(typeof tailStateRef !== 'undefined' ? { tailStateRef } : {}), ...(typeof CAT_TAIL_LABEL === 'string' ? { tailLabel: CAT_TAIL_LABEL } : {}) },
+            deps: { call, resultCacheRef, totalBaseRef, setSkills, setSkillsPage, setSkillsTotalPages, setSkillsTotal, setSkillsHasMore, setServerFacet, setNotice, setBusy, ...(typeof tailStateRef !== 'undefined' ? { tailStateRef } : {}) },
             seqRef: reqSeqRef,
             seq,
             text,
@@ -2365,31 +2364,34 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const visibleSkills = orderedSkills.filter((item) => category === CAT_OTHER ? (chipFold.other && (chipFold.other.tailDeclared || (Array.isArray(chipFold.other.covers) && !!item.category && chipFold.other.covers.indexOf(item.category) >= 0))) : serverFacet || category === 'all' || !item.category || item.category === category);
       // 诚实口径（设计 B）：并集只能作用在**已取回**的条目上——本次搜索取回多少就只筛多少，
       // 所以这里报「已取回 X / 属于这些类 Y」，绝不说成整个合并集合都已经在页面上。
-      const tailNote = (category !== CAT_OTHER || !chipFold.other)
+      // 0.5.184 P1 会话在途闸门：上次收口的账本（tailStateRef memo）不得给本次还在取数的会话
+      // 提前下结论——harvest 会话在途（ctl.token 非空）时这里恒空，进度只由加载行播报。
+      const tailNote = (harvestCtlRef && harvestCtlRef.current && harvestCtlRef.current.token !== null)
         ? ''
-        : (tailMemo
-          // 0.5.183 白话两态：可靠源（windowed）报「共 X」，本地筛源不报虚高总数；全部取到就静默。
-          ? (function () {
-              const C = Math.max(0, Number(tailMemo.categoriesTotal || 0) - Number(tailMemo.categoriesFetched || 0));
-              const F = Number(tailMemo.categoriesFailed || 0);
-              if (C === 0 && F === 0) return '';
-              const X = Number(tailMemo.upstreamTotal || 0);
-              const Y = Number(tailMemo.retrievedTotal || 0);
-              let s = (tailMemo.windowed === true ? '共 ' + X.toLocaleString() + ' 条，' : '');
-              s += '本次取回 ' + Y.toLocaleString() + ' 条，未取全';
-              if (C > 0) s += '。还有 ' + C + ' 类没取到' + (F > 0 ? '（其中 ' + F + ' 类取数失败）' : '');
-              s += '。建议：稍后重试。';
-              return s;
-            })()
-          // 旧服务端/本地筛源（未声明 tail）：只报本次取回，绝不报虚高的「上游合计」。
-          : (function () {
-              const Y = skills.length;
-              const C = Number(chipFold.otherCount || 0);
-              let s = '本次取回 ' + Y + ' 条，未取全';
-              if (C > 0) s += '。还有 ' + C + ' 类没取到';
-              s += '。建议：稍后重试。';
-              return s;
-            })());
+        : ((category !== CAT_OTHER || !chipFold.other)
+          ? ''
+          : (tailMemo
+            // 0.5.184 P3/P4/P5 白话两态：说清「每个未列出分类各取回一页」的取数口径；上游
+            // 条数按类相加会重复计同一技能，是虚高数，一律不再报；全部取到就静默。
+            ? (function () {
+                const C = Math.max(0, Number(tailMemo.categoriesTotal || 0) - Number(tailMemo.categoriesFetched || 0));
+                const F = Number(tailMemo.categoriesFailed || 0);
+                if (C === 0 && F === 0) return '';
+                const Y = Number(tailMemo.retrievedTotal || 0);
+                let s = '每个未列出的分类各取回一页（' + (Number(size) || 24) + ' 条），本次取回 ' + Y.toLocaleString() + ' 条，未取全';
+                if (C > 0) s += '。还有 ' + C + ' 个分类没取回' + (F > 0 ? '（其中 ' + F + ' 个分类取数失败）' : '');
+                s += '。建议：稍后重试。';
+                return s;
+              })()
+            // 旧服务端/本地筛源（未声明 tail）：只报本次取回，绝不报虚高的「上游合计」。
+            : (function () {
+                const Y = skills.length;
+                const C = Number(chipFold.otherCount || 0);
+                let s = '每个未列出的分类各取回一页（' + (Number(size) || 24) + ' 条），本次取回 ' + Y + ' 条，未取全';
+                if (C > 0) s += '。还有 ' + C + ' 个分类没取回';
+                s += '。建议：稍后重试。';
+                return s;
+              })()));
       const skillCards = shownCards(visibleSkills, cardBatch, cardStepFor(size)).map((item) =>
         h('div', { key: item.id, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
@@ -2899,7 +2901,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                       return h('button', {
                         key: 'cat_tail',
                         style: S.chip(category === cat),
-                        title: '未列出的分类还有 ' + chipFold.otherCount + ' 类，合计约 ' + Number(chip.totalAll || 0).toLocaleString() + ' 条',
+                        title: '未列出的分类还有 ' + chipFold.otherCount + ' 个（同一技能可属多个分类，不设总数）',
                         onClick: () => { setCategory(cat); searchSkills(query, { source, size, category: cat, page: 1, sort }); window.scrollTo({ top: 0, behavior: 'smooth' }); },
                       }, chipText);
                     }

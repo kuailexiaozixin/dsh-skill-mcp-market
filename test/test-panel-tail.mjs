@@ -39,7 +39,7 @@ const PRISTINE = Buffer.from(readFileSync(CLIENT));
 
 let passed = 0, failed = 0;
 const REDS = [];
-const SECT_WANT = { A: 11, B: 12, C: 12, D: 9, E: 20, F: 3, G: 7, H: 8 }; // 0.5.183: D 段随 tailNote IIFE 化 + 白话文案重排为 9 条判据
+const SECT_WANT = { A: 11, B: 12, C: 12, D: 11, E: 20, F: 3, G: 7, H: 8 }; // 0.5.184: D 段加会话在途两条（tailMemo 门 + 表达式闸门锚）= 11 条
 const SECT_GOT = {};
 let CURSECT = null;
 const check = (n, cond, d) => { if (CURSECT) SECT_GOT[CURSECT] = (SECT_GOT[CURSECT] || 0) + 1; if (cond) { passed += 1; console.log("  PASS " + n); } else { failed += 1; REDS.push(n); console.log("  FAIL " + n + (d ? "  [" + String(d).slice(0, 170) + "]" : "")); } };
@@ -249,9 +249,9 @@ const searchBodies = (e) => e.bodies.filter((b) => b.op === 'skills.search').map
 const eT = await drive('tail', KIT, planTail, { category: KIT.OTHER, tailCovers: COVERS.slice() });
 check("P1 合并态 harvest.start body.tailCategories 恰为 covers（逐字 C1）", canon(startBody(eT).tailCategories) === canon(COVERS), canon(startBody(eT).tailCategories));
 check("P1 合并态六参齐全且同旧口径（query/source/category/page/pageSize/sort）", canon(Object.assign({}, startBody(eT), { tailCategories: undefined })) === canon({ query: 'pdf', source: 'clawhub', category: '', page: 1, pageSize: 24, sort: 'installCount' }), canon(startBody(eT)));
-check("0.5.183 P2 中间包一行「陆续加载中，已到达 1 条，还有 900 条在途」（S1 锁不回归 + 在途数）", eT.logs.notice.length >= 2 && String(eT.logs.notice[0]).indexOf('陆续加载中，已到达 1 条') >= 0 && String(eT.logs.notice[0]).indexOf('还有 900 条在途') >= 0, JSON.stringify(eT.logs.notice));
-check("0.5.183 P2 第二个中间包已到达 2 条、还有 900 条在途", String(eT.logs.notice[1]).indexOf('已到达 2 条') >= 0 && String(eT.logs.notice[1]).indexOf('还有 900 条在途') >= 0, JSON.stringify(eT.logs.notice));
-check("0.5.183 P2 加载态一行白话（旧逐类进度「已取回 N/M 类」退场，零「窗外」词）", String(eT.logs.notice[0]).indexOf('陆续加载中') >= 0 && String(eT.logs.notice[0]).indexOf('已取回') < 0 && String(eT.logs.notice[0]).indexOf('窗外') < 0, String(eT.logs.notice[0]));
+check("0.5.184 P2 中间包一行「陆续加载中，已到达 1 条，还有 2 个分类在取」（真进度，条数不虚高）", eT.logs.notice.length >= 2 && String(eT.logs.notice[0]).indexOf('陆续加载中，已到达 1 条') >= 0 && String(eT.logs.notice[0]).indexOf('还有 2 个分类在取') >= 0, JSON.stringify(eT.logs.notice));
+check("0.5.184 P2 第二个中间包已到达 2 条、只剩 1 个分类在取", String(eT.logs.notice[1]).indexOf('已到达 2 条') >= 0 && String(eT.logs.notice[1]).indexOf('还有 1 个分类在取') >= 0, JSON.stringify(eT.logs.notice));
+check("0.5.184 P2 加载态一行白话（旧逐类进度退场，零「窗外」、零重叠虚高「条在途」）", String(eT.logs.notice[0]).indexOf('陆续加载中') >= 0 && String(eT.logs.notice[0]).indexOf('已取回') < 0 && String(eT.logs.notice[0]).indexOf('窗外') < 0 && String(eT.logs.notice[0]).indexOf('条在途') < 0, String(eT.logs.notice[0]));
 check("P4 final 落数是尾口径（total/pages/hasMore/serverFacet 来自收口包）", lastOf(eT.logs.total) === 4 && lastOf(eT.logs.totalPages) === 1 && lastOf(eT.logs.hasMore) === false && lastOf(eT.logs.serverFacet) === false, JSON.stringify([eT.logs.total, eT.logs.totalPages, eT.logs.hasMore, eT.logs.serverFacet]));
 const keyT = 'sk|clawhub|pdf|' + KIT.OTHER + '|1|24|installCount';
 const crecT = eT.resultCacheRef.current[keyT] || {};
@@ -290,24 +290,26 @@ check("C1 客户端侧夹上限 400（与服务端 normalizeTailCategories 同�
 
 // ── D. P3 tailNote 三态（真抽 client 表达式，真跑） ──
 CURSECT = "D";
-const runNote = (kit, env) => new Function('category', 'CAT_OTHER', 'chipFold', 'tailMemo', 'skills', 'visibleSkills', 'serverFacet',
+const runNote = (kit, env) => new Function('category', 'CAT_OTHER', 'chipFold', 'tailMemo', 'skills', 'visibleSkills', 'serverFacet', 'size', 'harvestCtlRef',
   String(kit.tailNoteSrc || '') + NL + 'return tailNote;')(
-  env.category, kit.OTHER, env.chipFold, env.tailMemo, env.skills || [], env.visible || [], Boolean(env.serverFacet));
+  env.category, kit.OTHER, env.chipFold, env.tailMemo, env.skills || [], env.visible || [], Boolean(env.serverFacet), env.size === undefined ? 24 : env.size, { current: { token: env.live ? 'h-live' : null } });
 const CF = { other: { value: KIT.OTHER, label: KIT.LABEL, totalAll: 743, covers: COVERS.slice(), otherCount: 0 }, otherCount: 3, otherTotal: 743 };
 check("D 装置：tailNote 表达式可抽出", !!KIT.tailNoteSrc && KIT.tailNoteSrc.indexOf('const tailNote = ') === 0, String(KIT.tailNoteSrc).slice(0, 80));
 const nW = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check('0.5.183 P3 tail windowed 白话：共 940 + 本次取回 4 + 未取全 + 还有 1 类没取到（其中 1 类取数失败）+ 建议稍后重试', nW === '共 940 条，本次取回 4 条，未取全。还有 1 类没取到（其中 1 类取数失败）。建议：稍后重试。', nW);
-check('0.5.183 P3 tail 态零旧词（上游合计/共约/不再联网取数/往后翻页/部分类可能取不全 一律不许）', nW.indexOf('上游合计') < 0 && nW.indexOf('共约') < 0 && nW.indexOf('不再联网取数') < 0 && nW.indexOf('往后翻页') < 0 && nW.indexOf('部分类可能取不全') < 0, nW);
+check('0.5.184 P3/P4/P5 tail 态白话：每类各取回一页（24 条）+ 本次取回 4 + 未取全 + 还有 1 个分类没取回（其中 1 个分类取数失败）+ 建议稍后重试，虚高 940 退场', nW === '每个未列出的分类各取回一页（24 条），本次取回 4 条，未取全。还有 1 个分类没取回（其中 1 个分类取数失败）。建议：稍后重试。', nW);
+check('0.5.184 P3 tail 态零旧词（上游合计/共约/不再联网取数/往后翻页/部分类可能取不全/共 940 一律不许）', nW.indexOf('上游合计') < 0 && nW.indexOf('共约') < 0 && nW.indexOf('不再联网取数') < 0 && nW.indexOf('往后翻页') < 0 && nW.indexOf('部分类可能取不全') < 0 && nW.indexOf('共 940') < 0, nW);
 const nF = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILNF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
 check('0.5.183 P3 tail !windowed 且全取回（3/3 类、0 失败）⇒ 全部取到，不出提示语（恒空）', nF === '', nF);
 const nO = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
-check('0.5.183 P3 兜底态（本地筛源）白话：本次取回 4 + 未取全 + 还有 3 类没取到 + 建议稍后重试，绝不显示虚高总数', nO === '本次取回 4 条，未取全。还有 3 类没取到。建议：稍后重试。', nO);
-check('0.5.183 P3 兜底态零旧词（上游合计/共约/不再联网取数/往后翻页/在列表中 一律不许）', nO.indexOf('上游合计') < 0 && nO.indexOf('共约') < 0 && nO.indexOf('不再联网取数') < 0 && nO.indexOf('往后翻页') < 0 && nO.indexOf('在列表中') < 0, nO);
+check('0.5.184 P3/P5 兜底态白话：每类各取回一页（24 条）+ 本次取回 4 + 未取全 + 还有 3 个分类没取回 + 建议稍后重试，绝不显示虚高总数', nO === '每个未列出的分类各取回一页（24 条），本次取回 4 条，未取全。还有 3 个分类没取回。建议：稍后重试。', nO);
+check('0.5.184 P3 兜底态零旧词（上游合计/共约/不再联网取数/往后翻页/在列表中/743 一律不许）', nO.indexOf('上游合计') < 0 && nO.indexOf('共约') < 0 && nO.indexOf('不再联网取数') < 0 && nO.indexOf('往后翻页') < 0 && nO.indexOf('在列表中') < 0 && nO.indexOf('743') < 0, nO);
 const nO2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
-check('0.5.183 P3 兜底态建议句在场（稍后重试）', nO2.indexOf('建议：稍后重试。') >= 0, nO2);
+check('0.5.184 P3 兜底态量词与句序：还有 3 个分类没取回 + 建议稍后重试（无 memo 时不谎报失败类数）', nO2.indexOf('还有 3 个分类没取回') >= 0 && nO2.indexOf('个分类没取回') >= 0 && nO2.indexOf('建议：稍后重试。') >= 0, nO2);
 const nW2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check('0.5.183 P3 tail 态与兜底态并存：tail 态报「共 940 条」，兜底态不报总数（两者都无 不再联网取数/往后翻页）', nW2.indexOf('共 940 条') >= 0 && nO2.indexOf('共 940 条') < 0 && nW2.indexOf('不再联网取数') < 0 && nO2.indexOf('不再联网取数') < 0, nW2 + ' | ' + nO2);
+check('0.5.184 P4 tail 态与兜底态都不报重叠虚高数（940/743 与「合计约」全退场，旧词零出现）', nW2.indexOf('940') < 0 && nO2.indexOf('940') < 0 && nW2.indexOf('合计约') < 0 && nO2.indexOf('合计约') < 0 && nW2.indexOf('不再联网取数') < 0 && nO2.indexOf('不再联网取数') < 0, nW2 + ' | ' + nO2);
 check('P3 非合并态 tailNote 恒空', runNote(KIT, { category: 'ai', chipFold: CF, tailMemo: TAILF }) === '' && runNote(KIT, { category: KIT.OTHER, chipFold: { other: null, otherCount: 0, otherTotal: 0 }, tailMemo: TAILF }) === '', 'not empty');
+check('0.5.184 P1 会话在途时 tailNote 恒空（上次收口的账本不得提前判本次未取全）', runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4], live: true }) === '' && runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2], live: true }) === '', '结论行在在途期泄出');
+check('0.5.184 P1 会话在途闸门写在 tailNote 表达式里（读 harvestCtlRef.current.token）', String(KIT.tailNoteSrc || '').indexOf('harvestCtlRef.current.token !== null') >= 0, String(KIT.tailNoteSrc || '').slice(0, 140));
 
 // ── E. P5 谓词真跑 + P6 整源数字不复用 + 缓存续命 ──
 CURSECT = "E";
@@ -405,7 +407,7 @@ check("G 装置：渲染块可真跑且出 3 个按钮", !G1N.err && G1N.nodes.l
 const G2N = runChipBlock(KIT, KIT.OTHER);
 check("N1/N2 合并入口 chip 本体恰好「其他」二字（无数字无后缀）", !G2N.err && G2N.nodes[2].kids[0] === KIT.LABEL && String(G2N.nodes[2].kids[0]).indexOf('其他') === 0 && String(G2N.nodes[2].kids[0]) === '其他', JSON.stringify(G2N.err || G2N.nodes[2].kids[0]));
 check("N1/N2 普通上游真桶仍由 categoryLabelLite 自带条数（数字拼在 label 后，与合并入口天然区分）", G2N.nodes[1].kids[0] === '模型 ' + (2360).toLocaleString(), JSON.stringify(G2N.nodes[1].kids[0]));
-check("N1/N2 合并入口 title 报「未列出的分类还有 1 类」，合计约 743 条（数字进 title 不进本体）", String(G2N.nodes[2].props.title || "").indexOf("未列出的分类还有 1 类") === 0 && String(G2N.nodes[2].props.title).indexOf("合计约 743 条") >= 0, String(G2N.nodes[2].props.title));
+check("N1/N2(0.5.184) 合并入口 title 报「未列出的分类还有 1 个」+ 说明同一技能可属多个分类，虚高合计 743 退场", String(G2N.nodes[2].props.title || "").indexOf("未列出的分类还有 1 个") === 0 && String(G2N.nodes[2].props.title).indexOf("同一技能可属多个分类") >= 0 && String(G2N.nodes[2].props.title).indexOf("743") < 0 && String(G2N.nodes[2].props.title).indexOf("合计约") < 0, String(G2N.nodes[2].props.title));
 check("N1/N2 合并入口按下走真筛选（setCategory(CAT_OTHER) + page:1），不再兼任展开", (() => {
   G2N.nodes[2].props.onClick();
   return G2N.calls.length === 1 && G2N.calls[0].category === KIT.OTHER && G2N.calls[0].page === 1 && G2N.toggles.length === 0;
@@ -441,11 +443,13 @@ const CASES = [
   { name: "X3 cache 记录不存 tail（缓存续命丢失）", needle: "tail: m.tail || null,", to: "tail: null," },
   { name: "X4 逐类进度分支被删（P2 退化成旧文案）", needle: "if (m.tail && m.tail.categoriesTotal > 0) {", to: "if (false) {" },
   { name: "X5 声明态本地筛回归（P5 又把无分类行错杀）", needle: "chipFold.other.tailDeclared || ", to: "" },
-  { name: "X6 windowed 句写反（取不全时说不受窗口限制）", needle: "(tailMemo.windowed === true ?", to: "(tailMemo.windowed === false ?" },
+  { name: "X6 取全时仍出结论行（恒空短路被拆）", needle: "if (C === 0 && F === 0) return ''", to: "if (C === 0 && F === 0) return '未取全'" },
   { name: "X7 D 防线拆除（upstreamCat 不再降级 CAT_OTHER）", needle: "const upstreamCat = cat === CAT_OTHER ? 'all' : cat;", to: "const upstreamCat = cat;" },
   { name: "X9 尾会话本地翻页分支被短路（收口后翻页又打网络）", needle: "const tailView = pageNo > 1 && !append && typeof harvestSliceOf === 'function' ? resultCacheRef.current[tailViewKey] : null;", to: "const tailView = false && pageNo > 1 && !append && typeof harvestSliceOf === 'function' ? resultCacheRef.current[tailViewKey] : null;" },
   { name: "X10 final 不切片（整表灌屏=虚构页码回归）", needle: "d.setSkills(wholeView ? harvestSliceOf(rows, env.pageSize, env.pageNo) : rows);", to: "d.setSkills(rows);" },
   { name: "X8 合并入口 title 回退旧比喻（零「窗内之外」锁必须咬合）", needle: "title: '未列出的分类还有 '", to: "title: '窗内之外还有 '" },
+  { name: "X11 会话在途闸门被摘掉（问题①回归：加载中就出结论行）", needle: "harvestCtlRef.current.token !== null", to: "harvestCtlRef.current.token === undefined" },
+  { name: "X12 加载行把「在取」写成「在途」（问题③口径回归）", needle: "'，还有 ' + pending + ' 个分类在取'", to: "'，还有 ' + pending + ' 个分类在途'" },
 ];
 const runCounts = (label) => {
   const mark = join(MUTDIR, "count.json");

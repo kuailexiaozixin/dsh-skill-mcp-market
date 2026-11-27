@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.184
+
+- **m30166 四问闭环（首要任务）：面板「其他」两行提示语彻底改口 + 服务端中间包带真进度**。逐问定位：
+- **①「还在加载中就建议稍后重试」**：根因是 tailNote 读 `tailStateRef` 里上一次收口的 memo（同 `src|q|cat` 命中即复用），渲染点没有任何在途判定 ⇒ 本次会话还在取数，上一次的结论先跳出来。修复=tailNote 外层挂会话在途闸门（client.js:2369 `harvestCtlRef.current.token !== null ⇒ 恒空`）。不能用 `busy` 判：harvestFirstPage 首批上屏即 `setBusy('')`（:385）。
+- **③「为什么不是在途中」**：加载行改「（陆续加载中，已到达 X 条，还有 Y 个分类在取）」，Y=categoriesTotal−categoriesFetched 是真分类数；旧的「还有 491,817 条在途」（窗外各类上游 total 相加）退场。服务端配合：src/sources.js `metaOf(s, withTail)` 加第二形参，仅 poll 中间包传 true（:1402），start 首包与收口包口径不变（test-harvest :616 C2 首包 `meta.tail===undefined`、:948/:960 T14e 非 tail 会话两条锁仍绿）。
+- **②「没取到是什么意思」**：措辞改「还有 C 个分类没取回（其中 F 个分类取数失败）」，量词由「类」改「个分类」。
+- **④「50 万/为什么叫其他/为什么只取回 500 多」**：结论行与合并入口 chip title 都不再报任何上游合计数——「共 491,817 条」「合计约 743 条」退场，改说「每个未列出的分类各取回一页（N 条），本次取回 Y 条」+「同一技能可属多个分类，不设总数」。实测口径（port 53990，pageSize=24）：skillsmp 词表 63 类、窗口 32 类、窗外 31 类 totalAll 之和=506,003＝重叠计数（同一技能同属多类），不是 50 万个独立条目；612 条＝31 类各取 1 页×24 去重后的实取数（每类落地 15–24 条）。「其他」本就是面板自造的合并入口，不是上游分类。
+- **判据同步**：test-panel-tail D 段 +2（在途恒空、闸门必须写在 tailNote 表达式里）、B 段三条改真进度口径、G 段 title 判据去虚高；H 段新增变异例 X11（摘掉在途闸门）/X12（「在取」写回「在途」），X12 变异针改唯一片段。test-harvest 新增 C2(0.5.184) 两条（tail 会话 poll 中间包带 tail、六字段键序与收口一致）。test-lobehub-category-vocab tailNote 锁同步（「个分类没取回」＋零「合计约」/零「条在途」）。实测 92/0、205/0、81/0、126/0、181/0(2 skipped)。
+- **顺带闭环 0.5.184 遗留⑤**：setHarvestNotice 里 `tailLabel`/`tailHead` 死变量删除（:279-280），island deps 的 `tailLabel` 条件展开随之退场（全仓零引用）。
+
 ## 0.5.183
 
 - **批 A（m29465/m29498/m29508，commit fd19143）：面板提示语白话化 + skillsmp「其他」上游合计去虚高**。tailNote 改自包含 IIFE 两态：tail 态「共 X 条，本次取回 Y 条，未取全。还有 C 类没取到（其中 F 类取数失败）。建议：稍后重试。」，全取回（C=0 且 F=0）静默；兜底态去掉虚高 totalAll（local-filter 源各类重叠计数⇒50 万假数），只报本次取回 Y 条与未取到类数。加载态一行「（陆续加载中，已到达 X 条，还有 M 条在途）」（client.js:281/:284 + sources.js 收口 hint）。分页器「共约」→「共」（client.js:3290）。测试锁同步：panel-tail D 段 9 条逐字白话断言 + extractor 改花括号深度匹配（旧 ');' 启发式在 IIFE 体首行误断）+ 零旧词；fanout 共约→共 13 处；lobehub B3 零词锁收窄（只锁 4 个全仓=0 黑话碎片，开发注释不误伤）。

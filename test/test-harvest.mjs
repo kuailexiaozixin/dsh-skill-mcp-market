@@ -632,6 +632,9 @@ console.log('Test 10: ModelScope 大源逐页推入 harvest（渐进式加载）
   const batches = [...new Set(rcs)];
   const grows = batches.length >= 2 && batches.every((v, i) => i === 0 || v > batches[i - 1]);
   check('C2 逐类增量：中间包 rowCount 逐批递增', grows, JSON.stringify(rcs));
+  const tailMidPkts = seen.filter((p) => !p.done && p.meta && p.meta.tail);
+  check('C2(0.5.184) tail 会话的 poll 中间包带 tail 账本（加载行才有真进度可用）', tailMidPkts.length >= 1, 'tailMidPkts=' + tailMidPkts.length);
+  check('C2(0.5.184) 中间包 tail 六字段键序与收口一致（加第七字段即红）', tailMidPkts.length >= 1 && Boolean((last.meta || {}).tail) && tailMidPkts.every((p) => Object.keys(p.meta.tail).sort().join(',') === Object.keys(last.meta.tail).sort().join(',')), tailMidPkts.map((p) => Object.keys(p.meta.tail).sort().join(',')).join(' | ').slice(0, 200));
 
   const fm = last.meta || {};
   const t = fm.tail || {};
