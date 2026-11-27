@@ -39,7 +39,7 @@ const PRISTINE = Buffer.from(readFileSync(CLIENT));
 
 let passed = 0, failed = 0;
 const REDS = [];
-const SECT_WANT = { A: 11, B: 12, C: 12, D: 12, E: 18, F: 3, G: 7, H: 8 };
+const SECT_WANT = { A: 11, B: 12, C: 12, D: 12, E: 20, F: 3, G: 7, H: 8 };
 const SECT_GOT = {};
 let CURSECT = null;
 const check = (n, cond, d) => { if (CURSECT) SECT_GOT[CURSECT] = (SECT_GOT[CURSECT] || 0) + 1; if (cond) { passed += 1; console.log("  PASS " + n); } else { failed += 1; REDS.push(n); console.log("  FAIL " + n + (d ? "  [" + String(d).slice(0, 170) + "]" : "")); } };
@@ -290,21 +290,21 @@ const runNote = (kit, env) => new Function('category', 'CAT_OTHER', 'chipFold', 
 const CF = { other: { value: KIT.OTHER, label: KIT.LABEL, totalAll: 743, covers: COVERS.slice(), otherCount: 0 }, otherCount: 3, otherTotal: 743 };
 check("D 装置：tailNote 表达式可抽出", !!KIT.tailNoteSrc && KIT.tailNoteSrc.indexOf('const tailNote = ') === 0, String(KIT.tailNoteSrc).slice(0, 80));
 const nW = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check("P3 tail 声明 + windowed=true：真实口径三数齐全（4 条 / 2\\/3 类 / 失败 1 类 / 上游 940）", nW.indexOf('已取回 4 条') === 0 && nW.indexOf('2/3 类完成') >= 0 && nW.indexOf('失败 1 类') >= 0 && nW.indexOf('上游合计 940 条') >= 0, nW);
-check("P3 windowed=true 追加窗口句", nW.indexOf('该来源各类均受上游窗口限制，部分类取不全') >= 0, nW);
-check("P3 tail 态零旧词、零旧词与整源口径（窗外/窗内之外/共约一律不许）", nW.indexOf('窗外') < 0 && nW.indexOf('窗内') < 0 && nW.indexOf('共约') < 0 && nW.indexOf('翻页才会取回更多') < 0, nW);
-check("P3 tail 态分页器口径声明（不是整个来源的总数）且短句化（零重复叙述）", nW.indexOf('不是整个来源的总数') >= 0 && nW.indexOf('分页器只在这些条里翻') >= 0 && nW.indexOf('不再打上游') >= 0 && nW.split('已取回 4 条').length === 2, nW);
+check('P3 tail 声明 + windowed=true：真实口径三数齐全（4 条 / 2/3 类 / 失败 1 类 / 上游 940）', nW.indexOf('已取回 4 条') === 0 && nW.indexOf('2/3 类完成') >= 0 && nW.indexOf('失败 1 类') >= 0 && nW.indexOf('上游合计 940 条') >= 0, nW);
+check('P3 windowed=true 追加窗口句（白话：部分类可能取不全，零「窗」字）', nW.indexOf('部分类可能取不全') >= 0, nW);
+check('P3 tail 态零旧词（窗外/窗内之外/共约/打上游/这些条里/翻页才会取回更多 一律不许）', nW.indexOf('窗') < 0 && nW.indexOf('共约') < 0 && nW.indexOf('打上游') < 0 && nW.indexOf('这些条里') < 0 && nW.indexOf('翻页才会取回更多') < 0, nW);
+check('P3 tail 态翻页句用户视角（往后翻页翻的就是已取回的条目，不再联网取数）', nW.indexOf('往后翻页翻的就是已取回的 4 条，不再联网取数') >= 0, nW);
 const nF = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILNF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check("P3 tail 声明 + windowed=false：不写窗口句但报 3/3 类", nF.indexOf('已取回 4 条') === 0 && nF.indexOf('3/3 类完成') >= 0 && nF.indexOf('失败') < 0 && nF.indexOf('窗口限制') < 0, nF);
+check('P3 tail 声明 + windowed=false：不写窗口句但报 3/3 类', nF.indexOf('已取回 4 条') === 0 && nF.indexOf('3/3 类完成') >= 0 && nF.indexOf('失败') < 0 && nF.indexOf('部分类可能取不全') < 0, nF);
 const nO = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
-check("P3 兜底态数字不重复叙述（已取回 4 条恰一次；老句「其中属于这些类的 N 条」不得回来）", nO.indexOf('本次已取回 4 条') >= 0 && nO.split('已取回 4 条').length === 2 && nO.indexOf('其中属于这些类的') < 0 && (nO.indexOf('2 条如上') >= 0 || nO.indexOf('全部如上') >= 0), nO);
-check("P3 兜底态零「窗」字（改回「窗外」或「窗内之外」都必红）", nO.indexOf('窗') < 0, nO);
-check("P3 兜底态诚实：整源「共约」不是这些类的条数（共约与集合锚保留）", nO.indexOf('「共约」是整个来源的总数') >= 0 && nO.indexOf('集合以本行为准') >= 0, nO);
+check('P3 兜底态数字不重复叙述（本次已取回 4 条恰一次；老句「其中属于这些类的」不得回来）', nO.indexOf('本次已取回 4 条') >= 0 && nO.split('已取回 4 条').length === 2 && nO.indexOf('其中属于这些类的') < 0 && (nO.indexOf('2 条在列表中') >= 0 || nO.indexOf('全部如上') >= 0), nO);
+check('P3 兜底态零「窗」字（改回「窗外」或「窗内之外」都必红）', nO.indexOf('窗') < 0, nO);
+check('P3 兜底态「共约」句用户视角（共约 = 全部条目的总数，不是本次取回这些的；「集合以本行为准」退场）', nO.indexOf('「共约」后面是全部条目的总数，不是本次取回这些的。') >= 0 && nO.indexOf('集合以本行为准') < 0, nO);
 const nO2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
-check("P3 兜底态分页器句：只在这些条里翻、不再打上游（零旧词）", nO2.indexOf('分页器只在这些条里翻') >= 0 && nO2.indexOf('不再打上游') >= 0 && nO2.indexOf('翻页才会取回更多') < 0 && nO2.indexOf('不会再去上游取回更多') < 0, nO2);
+check('P3 兜底态翻页句用户视角（零旧词：分页器只在这些条里翻/不再打上游/翻页才会取回更多）', nO2.indexOf('往后翻页只在这 4 条里，不再联网取数') >= 0 && nO2.indexOf('分页器只在这些条里翻') < 0 && nO2.indexOf('不再打上游') < 0 && nO2.indexOf('翻页才会取回更多') < 0, nO2);
 const nW2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check("P3 tail 态本地翻页句与整源口径并存（只在这些条里翻 + 不是整个来源的总数）", nW2.indexOf('分页器只在这些条里翻') >= 0 && nW2.indexOf('不是整个来源的总数') >= 0, nW2);
-check("P3 非合并态 tailNote 恒空", runNote(KIT, { category: 'ai', chipFold: CF, tailMemo: TAILF }) === '' && runNote(KIT, { category: KIT.OTHER, chipFold: { other: null, otherCount: 0, otherTotal: 0 }, tailMemo: TAILF }) === '', 'not empty');
+check('P3 tail 态与兜底态翻页句并存（尾态用 tailMemo.retrievedTotal，兜底用 skills.length）', nW2.indexOf('往后翻页翻的就是已取回的 4 条，不再联网取数') >= 0 && nO2.indexOf('往后翻页只在这 4 条里，不再联网取数') >= 0, nW2 + ' | ' + nO2);
+check('P3 非合并态 tailNote 恒空', runNote(KIT, { category: 'ai', chipFold: CF, tailMemo: TAILF }) === '' && runNote(KIT, { category: KIT.OTHER, chipFold: { other: null, otherCount: 0, otherTotal: 0 }, tailMemo: TAILF }) === '', 'not empty');
 
 // ── E. P5 谓词真跑 + P6 整源数字不复用 + 缓存续命 ──
 CURSECT = "E";
@@ -345,6 +345,15 @@ const eCH = await drive('cache-hit', KIT, planTail, { category: KIT.OTHER, tailC
 check("缓存续命：命中带 tail 的旧包 ⇒ tailStateRef 恢复声明（P5 memo 不因刷新丢失）", !!eCH.tailStateRef.current && canon(eCH.tailStateRef.current.tail) === canon(TAILF), JSON.stringify(eCH.tailStateRef.current));
 const eCH2 = await drive('cache-plain', KIT, { search: SEARCH_OK }, { noHarvest: true, category: KIT.OTHER, tailCovers: COVERS.slice(), tailState: { src: 'clawhub', q: 'pdf', cat: KIT.OTHER, tail: TAILF }, cache: { [ck]: { items: [K1], pages: 1, total: 1, hasMore: false, serverFacet: false, hints: [], sourceErrors: [], degraded: [] } } });
 check("缓存续命：命中不带 tail 的旧包 ⇒ 清声明（不把旧声明骗到现在）", eCH2.tailStateRef.current === null, JSON.stringify(eCH2.tailStateRef.current));
+// 0.5.182 症状2（用户 m28155）：合并态收口「无 tail」也是整集视图（兜底旧服务端）：缓存记录必须 wholeView=true
+// + 第 2 页本地翻、零 RPC——老代码把「无 tail」当「非全集」，翻页被发去一次性通路
+// （整源浏览 + covers 筛到 0 条 = 空页，正是 m28155 症状 2 的落空形状）。
+const eMP0 = await drive('merged-plain', KIT, planPlain, { category: KIT.OTHER, tailCovers: COVERS.slice() });
+const crecMP0 = eMP0.resultCacheRef.current['sk|clawhub|pdf|' + KIT.OTHER + '|1|24|installCount'] || {};
+check('E-sym2 合并态收口无 tail ⇒ 缓存记录 wholeView=true、tail=null（整集视图，不冒充 tail 声明）', crecMP0.wholeView === true && crecMP0.tail === null, JSON.stringify({ wholeView: crecMP0.wholeView, tail: crecMP0.tail }));
+const ckMP = 'sk|clawhub|pdf|' + KIT.OTHER + '|1|2|installCount';
+const eMP2 = await drive('merged-plain-page2', KIT, { search: SEARCH_OK }, { category: KIT.OTHER, tailCovers: COVERS.slice(), arg: { page: 2, size: 2 }, cache: { [ckMP]: { items: [K1, K2, K3, K4], pages: 2, total: 4, hasMore: false, serverFacet: false, hints: [], sourceErrors: [], degraded: [], tail: null, wholeView: true } } });
+check('E-sym2 合并无 tail 第 2 页：零 RPC、本地第 2 页切片 k-c,k-d（m28155 症状 2 的落空形状）', eMP2.ops.length === 0 && (lastOf(eMP2.logs.skills) || []).join(',') === 'k-c,k-d' && lastOf(eMP2.logs.totalPages) === 2 && lastOf(eMP2.logs.total) === 4, JSON.stringify({ ops: eMP2.ops, skills: lastOf(eMP2.logs.skills), totalPages: lastOf(eMP2.logs.totalPages), total: lastOf(eMP2.logs.total) }));
 
 // ── F. G2 总账：本套跑过的每一次请求体，category 都不许是 __cat_other ──
 CURSECT = "F";

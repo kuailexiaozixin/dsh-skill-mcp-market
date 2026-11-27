@@ -306,6 +306,13 @@ window.__ModuleLoader__.load({
       const d = env.deps;
       const rows = pkg.rows || [];
       const m = pkg.meta || {};
+      // 0.5.182 症状2（用户 m28155）：「其他」合并入口收口时行集就是这个合并视图的全集——服务端 tail 分支
+      // 把 finalMeta.total 归一到 rows.length（src/sources.js:1330-1331），只是可能不带 tail 对象（逐类只取
+      // 第 1 页时一类不中 ⇒ tail 为空 ⇒ 走兜底）。老代码把「无 tail」当「非全集」：整表灌屏（首屏不受每页
+      // 约束）+ 翻页落一次性通路（第 2 页起空白）。合并态翻页绝不能再打上游：那条请求体不带 tailCategories，
+      // 服务端把 category 降级成整源浏览，回来的行没有一条属于合并集，本地筛必空。
+      // 合并判据在门里算好经 env 传值：island 只依赖岛内符号与 env，测试装置摘录岛体才不会悬空引用。
+      const mergedTailView = Boolean(m.tail) === false && env.tailMerged === true;
       if (env.cacheKey) {
         d.resultCacheRef.current[env.cacheKey] = {
           items: rows,
@@ -320,7 +327,7 @@ window.__ModuleLoader__.load({
           tail: m.tail || null,
           // 0.5.178：tail 收口的行集是该视图全集（服务端 src/sources.js:1326-1334 的 finalMeta 口径），
           // 记 wholeView 让翻页在本地切片；非 tail 收口的行集只是当页结果，绝不冒充全集。
-          wholeView: Boolean(m.tail),
+          wholeView: Boolean(m.tail) || mergedTailView,
         };
       }
       // 0.5.177：服务端 tail 声明落会话 memo（P5：tail 态 visibleSkills 不做 covers 本地筛）。
@@ -328,7 +335,7 @@ window.__ModuleLoader__.load({
       if (d.tailStateRef) d.tailStateRef.current = { src: env.src, q: env.q, cat: env.cat, tail: m.tail || null };
       // 0.5.178：整表上屏会让分页器报「第 1/N 页」而内容却是全集 —— 虚构页码（用户 m25083 的第二个根因）。
       // tail 收口是全集，必须按页切片；非 tail 收口本来就是当页结果，原样上屏。
-      const wholeView = Boolean(m.tail);
+      const wholeView = Boolean(m.tail) || mergedTailView;
       d.setSkills(wholeView ? harvestSliceOf(rows, env.pageSize, env.pageNo) : rows);
       d.setSkillsPage(env.pageNo);
       d.setSkillsTotalPages(wholeView ? harvestPagesOf(rows.length, env.pageSize) : (m.pages || 0));
@@ -412,6 +419,14 @@ window.__ModuleLoader__.load({
 // 分批条件永不成立、纯属装饰（测试只锁了「首批≤阈值」这类性质，锁不住
 // 「阈值本身是否合理」，所以补一条首批≥最大每页的不变量）。
 const CARD_BATCH = 48;
+// 0.5.182 症状1（m28155）：带 tailCategories 的尾会话增量包无视 pageSize（p182l 实测
+// size=12 回 46 条、size=24 回 91 条），「每页 12/24」的失效点在卡片分批：分批单位
+// 必须跟随每页选择器——每批 = cardStepFor(size) 张；CARD_BATCH 只当上限（下拉最大 48），
+// 非法/越界每页值回落 48（不改变现网 24/48 的既得行为）。
+const cardStepFor = (pageSize) => {
+  const v = Math.trunc(Number(pageSize));
+  return v > 0 && v <= CARD_BATCH ? v : CARD_BATCH;
+};
 
 // 分类 chip 一屏默认只放 32 个：这个数不是我们拍的，是上游站点自己列出的可见分类数——
 // https://lobehub.com/zh/skills?category=all 左栏就是条数降序前 32 类（与上游词表前 32 类双向差集为空，
@@ -584,9 +599,13 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
     degradedNote: loaded ? '' : 'settings.get 这次没取到数据（原因见上方红字）。目录草稿与会话日志体检仍可用；配置文件路径、provider 与 MCP 客户端状态要等它恢复后才显示。',
   };
 }
-    // 市场卡片分批：与工具浮窗同一口径（首批 CARD_BATCH 张，点「继续显示」再放一批）。
+    // 市场卡片分批：每批 = 每页条数（cardStepFor(size)，0.5.182 起跟随每页选择器），
+    // 点「继续显示」再放一批；CARD_BATCH 只当上限（选择器最大 48）。
     // 每页最多 48 条，一次提交整页卡片意味着输入一个字符就重建几十个节点。
-    const shownCards = (list, batch) => list.slice(0, Math.max(1, Math.trunc(batch) || 1) * CARD_BATCH);
+    const shownCards = (list, batch, step) => {
+      const s = (typeof step === 'number' && step > 0 && step <= CARD_BATCH) ? step : CARD_BATCH;
+      return list.slice(0, Math.max(1, Math.trunc(batch) || 1) * s);
+    };
     // 已装技能排序：纯前端呈现序，与来源分组正交（分组归属仍由 rank 决定）。
     // default 必须原样返回——服务端顺序本身有含义，不能悄悄重排。
     function sortInstalled(items, mode, isOff) {
@@ -960,7 +979,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const [mcpTotal, setMcpTotal] = useState(0);
       const [mcpCategories, setMcpCategories] = useState([]);
       const [size, setSize] = useState(24);
-      // 市场卡片分批游标（第 n 批 = n × CARD_BATCH 张）
+      // 市场卡片分批游标（第 n 批 = n × cardStepFor(size) 张，0.5.182 起跟随每页选择器）
       const [cardBatch, setCardBatch] = useState(1);
       const [sort, setSort] = useState('default');
       const [category, setCategory] = useState('all');
@@ -1335,6 +1354,9 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
             effSort,
             cacheKey,
             tailCovers: (cat === CAT_OTHER && typeof tailCoversRef !== 'undefined' && tailCoversRef && Array.isArray(tailCoversRef.current) && tailCoversRef.current.length) ? tailCoversRef.current.slice(0, 400) : undefined,
+            // 0.5.182 症状2：与上一行同一判据（合并集合确实下发给了服务端），岛内当整集视图用。
+            // 门只读 CAT_OTHER、岛只读 env ⇒ 摘录岛体的测试装置拿不到未绑定的模块级名。
+            tailMerged: typeof tailCoversRef !== 'undefined' && cat === CAT_OTHER && Array.isArray(tailCoversRef.current) && tailCoversRef.current.length > 0,
             token: {},
           });
           if (hres && hres.settled) {
@@ -2352,14 +2374,14 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
             + Number(tailMemo.categoriesFetched || 0) + '/' + Number(tailMemo.categoriesTotal || 0) + ' 类完成'
             + (Number(tailMemo.categoriesFailed || 0) ? '，失败 ' + Number(tailMemo.categoriesFailed) + ' 类' : '')
             + '；上游合计 ' + Number(tailMemo.upstreamTotal || 0).toLocaleString() + ' 条）'
-            + (tailMemo.windowed === true ? '。该来源各类均受上游窗口限制，部分类取不全' : '')
-            + '。分页器只在这些条里翻（不是整个来源的总数），不再打上游。'
+            + (tailMemo.windowed === true ? '。部分类可能取不全' : '')
+            + '。往后翻页翻的就是已取回的 ' + Number(tailMemo.retrievedTotal || 0).toLocaleString() + ' 条，不再联网取数。'
           // 旧服务端（未声明 tail）：维持本地并集口径（诚实：只报已取回的集合）。
           : '未列出的分类还有 ' + chipFold.otherCount + ' 类（上游合计 ' + Number(chipFold.other.totalAll || 0).toLocaleString() + ' 条）。'
-            + '本次已取回 ' + skills.length + ' 条' + (visibleSkills.length === skills.length ? '，全部如上' : '，其中 ' + visibleSkills.length + ' 条如上')
-            + (serverFacet ? '（上游未按集合筛，本地并集筛出）' : '')
-            + '；分页器只在这些条里翻、不再打上游，「共约」是整个来源的总数。集合以本行为准。');
-      const skillCards = shownCards(visibleSkills, cardBatch).map((item) =>
+            + '本次已取回 ' + skills.length + ' 条' + (visibleSkills.length === skills.length ? '，全部如上' : '，其中 ' + visibleSkills.length + ' 条在列表中')
+            + (serverFacet ? '（整份取回，本地筛出）' : '')
+            + '。往后翻页只在这 ' + skills.length + ' 条里，不再联网取数。「共约」后面是全部条目的总数，不是本次取回这些的。');
+      const skillCards = shownCards(visibleSkills, cardBatch, cardStepFor(size)).map((item) =>
         h('div', { key: item.id, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
           h('div', { style: S.desc }, item.description || ''),
@@ -2402,7 +2424,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         if (mcpSort === 'ratingAverage') return (b.rating || 0) - (a.rating || 0);
         return 0;
       });
-      const mcpCards = shownCards(orderedMcps, cardBatch).map((item) =>
+      const mcpCards = shownCards(orderedMcps, cardBatch, cardStepFor(size)).map((item) =>
         h('div', { key: item.id || item.slug, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
           h('div', { style: S.desc }, item.description || ''),
@@ -3227,12 +3249,12 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
               : null,
             // 分批未渲染完时给出显式续加载入口；空态仍由 notice（服务端整页数据）判定，
             // 不会因为裁切了渲染列表而误报「没有找到」。
-            (tab === 'skills' ? visibleSkills : orderedMcps).length > CARD_BATCH * cardBatch
+            (tab === 'skills' ? visibleSkills : orderedMcps).length > cardStepFor(size) * cardBatch
               ? h('div', { style: { ...S.row, justifyContent: 'center', marginTop: 8 } },
                   h('button', { style: S.btn(), onClick: () => setCardBatch((n) => n + 1) },
-                    '继续显示 ' + Math.min(CARD_BATCH, (tab === 'skills' ? visibleSkills : orderedMcps).length - CARD_BATCH * cardBatch) + ' 个'),
+                    '继续显示 ' + Math.min(cardStepFor(size), (tab === 'skills' ? visibleSkills : orderedMcps).length - cardStepFor(size) * cardBatch) + ' 个'),
                   h('span', { style: { ...S.status, marginLeft: 6 } },
-                    '还有 ' + ((tab === 'skills' ? visibleSkills : orderedMcps).length - CARD_BATCH * cardBatch) + ' 个未渲染'))
+                    '还有 ' + ((tab === 'skills' ? visibleSkills : orderedMcps).length - cardStepFor(size) * cardBatch) + ' 个未渲染'))
               : null,
             tab === 'skills' ? h('div', { style: S.grid }, skillCards) : null,
             tab === 'mcp' ? h('div', { style: S.grid }, mcpCards) : null,

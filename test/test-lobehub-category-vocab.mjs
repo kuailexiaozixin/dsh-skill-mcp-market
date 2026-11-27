@@ -816,15 +816,20 @@ const runRenderFor = (entries, fold) => {
         !/const allRealChips *=/.test(client) && /catsExpanded && tailExpandable \? expandedChips/.test(client) &&
         /const tailExpandable = !!chipFold\.other && chipFold\.otherCount <= CAT_TAIL_EXPAND_MAX;/.test(client),
         (client.split(NL).find((l) => l.includes('tailExpandable')) || '(none)').trim().slice(0, 160));
-    // B3 诚实口径（m00282，0.5.181 短句化）：未声明 tail（旧服务端）时三处必须同锁——只报本次已取回
-    // 的集合（如上）、分页器只在这些条里翻不再打上游、「共约」是整源总数。短句化删的是重复叙述，
-    // 不是诚实口径。分页器实参两行原样不动（test-search-fanout-latency :442/:446 锁死），
+    // B3 诚实口径（0.5.182 用户视角重写，用户 m28870/m28871：「这些条里 / 打上游 / 共约是整源 /
+    // 集合以本行为准」用户看不懂）：两态 tailNote 收尾都必须白话——tail 态报逐类进度 +
+    //「往后翻页翻的就是已取回的条目，不再联网取数」；兜底态报本次取回集合 + 说明「共约」是
+    // 全量条数、不是本次取回的集合。分页器实参两行原样不动（test-search-fanout-latency 锁死），
     // 所以说实话的通道只有 tailNote。
-    check('tailNote 旧服务端兜底三处诚实口径在场（已取回集合如上 + 分页器短句 + 共约是整源总数），两态渲染走同一行',
+    check('tailNote 两态用户视角收尾在场（往后翻页翻的就是…不再联网取数 + 共约是全部条目总数），旧黑话全退场',
         /本次已取回 .*条.*如上/.test(client) &&
-        /分页器只在这些条里翻、不再打上游，「共约」是整个来源的总数。集合以本行为准。'/.test(client) &&
-        /tailNote \? h\('div', \{ style: \{ \.\.\.S\.status, marginTop: 8 \} \}, tailNote\) : null,/.test(client),
-        (client.split(NL).find((l) => l.includes('不是这些类的条数')) || '(none)').trim().slice(0, 170));
+        /往后翻页翻的就是已取回的.*条，不再联网取数./.test(client) &&
+        /往后翻页只在这 .*条里，不再联网取数./.test(client) &&
+        /「共约」后面是全部条目的总数，不是本次取回这些的./.test(client) &&
+        /tailNote \? h\('div', \{ style: \{ \.\.\.S\.status, marginTop: 8 \} \}, tailNote\) : null,/.test(client) &&
+        client.indexOf('分页器只在这些条里翻') < 0 && client.indexOf('不再打上游') < 0 && client.indexOf('集合以本行为准') < 0,
+        (client.split(NL).find((l) => l.includes('往后翻页')) || '(none)').trim().slice(0, 170));
+
     check('分页器实参两行未被顺手改动（边界外判据 test-search-fanout-latency :442/:446 依赖）',
         /tab === 'skills' \? '共约' : ''/.test(client) && /tab === 'skills' \? skillsTotal : mcpTotal/.test(client), '');
     // 展开态纵向滚动形态（用户 m20051「保持展开后可上下拖动的形态」）源码锁。

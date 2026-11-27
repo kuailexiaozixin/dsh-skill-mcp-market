@@ -628,57 +628,74 @@ console.log('Test 16: 市场卡片分批渲染（首批有上限，且不产生�
   const c = fs.readFileSync(path.join(W, 'client.js'), 'utf8');
   // 沿用工具浮窗已有形态（TOOL_BATCH/toolBatch）。市场列表此前一次提交整页卡片：每页 48
   // 条时输入一个字符就重建几十个节点，是明显浪费。
-  const bgn = c.indexOf('const shownCards = (list, batch) =>');
-  check('shownCards 已抽为纯函数', bgn > 0, bgn);
-  if (bgn > 0) {
+  // 0.5.182 症状1（用户 m28155）：尾会话增量包无视 pageSize（p182l 实测 size=12 回 46/775 条、
+  // size=24 回 91/1105 条）⇒「每页显示 12 条」必须在渲染分批层兑现：分批单位 = 每页选择器值
+  // （cardStepFor，CARD_BATCH 只当上限），否则首屏仍按 48 铺 = 选择器失约。
+  const batchNum = Number((c.match(/const CARD_BATCH = (\d+);/) || [])[1] || 0);
+  check('CARD_BATCH 为正数', batchNum > 0, batchNum);
+  // 每页选项从源码里读（不是把答案写进正则）：找 [n, n, ...].map((n) => 形态。
+  const sizeSel = /\[([\d,\s]+)\]\.map\(\(n\) =>/.exec(c);
+  const pageChoices = sizeSel ? sizeSel[1].split(',').map((x) => Number(x.trim())).filter((n) => n > 0) : [];
+  check('每页条数选项可读', pageChoices.length >= 2, JSON.stringify(pageChoices));
+  check('分批上限 ≥ 最大每页（选择器值永不超上限）', batchNum >= Math.max.apply(null, pageChoices), 'CARD_BATCH=' + batchNum + ' 最大每页=' + Math.max.apply(null, pageChoices));
+  const grabFn = (anchor) => {
+    const i = c.indexOf(anchor);
+    if (i < 0) return null;
     let depth = 0, q = 0, end = -1;
-    for (let i = bgn; i < c.length; i++) {
-      const ch = c.charCodeAt(i);
-      if (q) { if (ch === 92) i++; else if (ch === q) q = 0; continue; }
+    for (let k = i; k < c.length; k++) {
+      const ch = c.charCodeAt(k);
+      if (q) { if (ch === 92) k++; else if (ch === q) q = 0; continue; }
       if (ch === 39 || ch === 34 || ch === 96) { q = ch; continue; }
       if (ch === 123) depth++;
-      else if (ch === 125) { depth--; if (depth === 0) { end = i; break; } }
+      else if (ch === 125) { depth--; if (depth === 0) { end = k; break; } }
     }
-    const batchNum = Number((c.match(/const CARD_BATCH = (\d+);/) || [])[1] || 0);
-    const fn = new Function('CARD_BATCH', c.slice(bgn, end + 1) + String.fromCharCode(10) + 'return shownCards;')(batchNum);
-    const N = (n) => Array.from({ length: n }, (x, i) => ({ id: 'i' + i }));
-    check('CARD_BATCH 为正数', batchNum > 0, batchNum);
-    // 关键不变量：首批必须容得下用户能要求的最大一页，否则「分批」是在偷内容。
-    // 每页选项从源码里读（不是把答案写进正则）：找 \[n, n, ...\].map((n) => 形态。
-    const sizeSel = /\[([\d,\s]+)\]\.map\(\(n\) =>/.exec(c);
-    const pageChoices = sizeSel ? sizeSel[1].split(',').map((x) => Number(x.trim())).filter((n) => n > 0) : [];
-    check('每页条数选项可读', pageChoices.length >= 2, JSON.stringify(pageChoices));
-    check('首批不裁掉用户要求的一页', batchNum >= Math.max.apply(null, pageChoices), 'CARD_BATCH=' + batchNum + ' 最大每页=' + Math.max.apply(null, pageChoices));
-    // 另一侧也要锁：阈值大于现实最大列表时，分批条件永不成立 = 等于没实现
-    // （60 就是这样，它大于单页上限 48）。现实最大列表是聚合页：每源各返回最多
-    // 一页，上限 = 最大每页 × 来源数。来源数从 client.js 的来源 chip 行通用解析
-    // （任何引号包裹的短标识都算），不写死数字：写死 8 会在加源那天变假红，
-    // 只匹配某两个名字的排列顺序则会在 chip 换序那天变假红。
-    // 候选行必须唯一：用 find() 取第一条命中行会在「别处也出现这两个源名」时
-    // 静默选错（本轮新增的 embedBlockedFor 名单行就抢先命中，数出 5 个源）。
-    // 按 anchor-lib 的立场：锚有歧义就显式失败，绝不静默挑一条。
-    const chipHits = c.split(/\r?\n/).map(function (l, i) { return { i: i + 1, l: l }; }).filter(function (x) {
-      return x.l.includes("'skills.sh'") && x.l.includes("'modelscope'") && x.l.includes('.map((key)');
-    });
-    check('chip 列表行唯一（歧义即失败，不静默取第一条）', chipHits.length === 1, chipHits.map((x) => x.i).join(','));
-    const chipLine = chipHits.length === 1 ? chipHits[0].l : '';
-    const sourceCount = chipLine ? (chipLine.match(/'[^']{2,20}'/g) || []).length : 0;
-    check('来源数可读且合理', sourceCount >= 6 && sourceCount <= 12, sourceCount);
-    check('分批阈值不超过现实最大列表', batchNum <= Math.max.apply(null, pageChoices) * sourceCount,
-      'CARD_BATCH=' + batchNum + ' 现实上限=' + Math.max.apply(null, pageChoices) * sourceCount);
-    check('首批不超过阈值', fn(N(150), 1).length <= batchNum && fn(N(150), 1).length > 0, fn(N(150), 1).length);
-    check('按批单调增长', fn(N(150), 1).length <= fn(N(150), 2).length && fn(N(150), 2).length <= fn(N(150), 3).length, '');
-    check('批数足够时覆盖全集', fn(N(150), 4).length === 150, fn(N(150), 4).length);
-    check('不足一批时原样返回（不误裁）', fn(N(24), 1).length === 24, '');
-    check('空列表仍为空（空态由 notice 负责，不由分批制造）', fn([], 1).length === 0, '');
+    return end < 0 ? null : c.slice(i, end + 1);
+  };
+  const stepSrc = grabFn('const cardStepFor = (pageSize) =>');
+  check('cardStepFor 已抽为纯函数（分批单位跟随每页选择器）', stepSrc !== null, stepSrc ? '' : '(缺 cardStepFor)');
+  if (stepSrc) {
+    const stepFn = new Function('CARD_BATCH', stepSrc + String.fromCharCode(10) + 'return cardStepFor;')(batchNum);
+    check('step 跟随选择器值（12/24/48 原样）', stepFn(12) === 12 && stepFn(24) === 24 && stepFn(48) === 48, JSON.stringify([stepFn(12), stepFn(24), stepFn(48)]));
+    check('step 越界/非法回落 CARD_BATCH（0/undefined/96）', stepFn(0) === batchNum && stepFn(undefined) === batchNum && stepFn(96) === batchNum, JSON.stringify([stepFn(0), stepFn(undefined), stepFn(96)]));
   }
-  check('技能卡片走分批', c.includes('shownCards(visibleSkills, cardBatch).map'), '');
-  check('MCP 卡片走同一口径', c.includes('shownCards(orderedMcps, cardBatch).map'), '');
+  const scSrc = grabFn('const shownCards = (list, batch, step) =>');
+  check('shownCards 带第三参 step（旧两参形退场）', scSrc !== null && c.indexOf('const shownCards = (list, batch) =>') < 0, scSrc ? '' : '(缺三参形)');
+  const N = (n) => Array.from({ length: n }, (x, i) => ({ id: 'i' + i }));
+  if (scSrc) {
+    const fn = new Function('CARD_BATCH', scSrc + String.fromCharCode(10) + 'return shownCards;')(batchNum);
+    check('首批 = min(一页, 上限)：选择器 12→12、24→24、48→48（少=偷内容，多=性能浪费）', fn(N(150), 1, 12).length === 12 && fn(N(150), 1, 24).length === 24 && fn(N(150), 1, 48).length === 48, JSON.stringify([fn(N(150), 1, 12).length, fn(N(150), 1, 24).length, fn(N(150), 1, 48).length]));
+    check('step 缺省/非法回落 CARD_BATCH', fn(N(150), 1).length === batchNum && fn(N(150), 1, 0).length === batchNum, JSON.stringify([fn(N(150), 1).length, fn(N(150), 1, 0).length]));
+    check('批数足够时覆盖全集（12 步 × 13 批 ≥ 150）', fn(N(150), 13, 12).length === 150, fn(N(150), 13, 12).length);
+    check('不足一批原样返回（不误裁）', fn(N(8), 1, 12).length === 8, fn(N(8), 1, 12).length);
+    check('空列表仍为空（空态由 notice 负责，不由分批制造）', fn([], 1, 12).length === 0, fn([], 1, 12).length);
+  }
+  // 另一侧也要锁：阈值大于现实最大列表时，分批条件永不成立 = 等于没实现
+  // （60 就是这样，它大于单页上限 48）。现实最大列表是聚合页：每源各返回最多
+  // 一页，上限 = 最大每页 × 来源数。来源数从 client.js 的来源 chip 行通用解析
+  // （任何引号包裹的短标识都算），不写死数字：写死 8 会在加源那天变假红，
+  // 只匹配某两个名字的排列顺序则会在 chip 换序那天变假红。
+  // 候选行必须唯一：用 find() 取第一条命中行会在「别处也出现这两个源名」时
+  // 静默选错（本轮新增的 embedBlockedFor 名单行就抢先命中，数出 5 个源）。
+  // 按 anchor-lib 的立场：锚有歧义就显式失败，绝不静默挑一条。
+  const chipHits = c.split(/\r?\n/).map(function (l, i) { return { i: i + 1, l: l }; }).filter(function (x) {
+    return x.l.includes("'skills.sh'") && x.l.includes("'modelscope'") && x.l.includes('.map((key)');
+  });
+  check('chip 列表行唯一（歧义即失败，不静默取第一条）', chipHits.length === 1, chipHits.map((x) => x.i).join(','));
+  const chipLine = chipHits.length === 1 ? chipHits[0].l : '';
+  const sourceCount = chipLine ? (chipLine.match(/'[^']{2,20}'/g) || []).length : 0;
+  check('来源数可读且合理', sourceCount >= 6 && sourceCount <= 12, sourceCount);
+  check('分批上限不超过现实最大列表', batchNum <= Math.max.apply(null, pageChoices) * sourceCount,
+    'CARD_BATCH=' + batchNum + ' 现实上限=' + Math.max.apply(null, pageChoices) * sourceCount);
+  check('技能卡片分批单位跟随选择器（三参）', c.includes('shownCards(visibleSkills, cardBatch, cardStepFor(size)).map'), '');
+  check('MCP 卡片同一口径（三参）', c.includes('shownCards(orderedMcps, cardBatch, cardStepFor(size)).map'), '');
+  check('「继续显示」/未渲染数跟随选择器（无裸 CARD_BATCH*cardBatch）', c.includes('cardStepFor(size) * cardBatch') && c.includes('Math.min(cardStepFor(size),') && c.indexOf('CARD_BATCH * cardBatch') < 0, '');
   check('继续显示按钮存在', c.includes('继续显示'), '');
   // 空态误报防线：结果为空的判定必须仍基于服务端整页数据，而不是被裁切的渲染列表
   check('空态判定仍看 d.items', c.includes('if (!(d.items || []).length)'), '');
   // 条件变了必须回到首批（与工具浮窗 setToolBatch(1) 同规则）
-  check('条件变化重置首批', c.includes('useEffect(() => { setCardBatch(1); }, [query, source, mcpSource, size]);'), '');
+  check('条件变化重置首批', c.includes('useEffect(() => { setCardBatch(1); }, [query, source, mcpSource, size]);'), ''
+  );
+
 }
 
 console.log('');
