@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.182
+
+- 修 m28155 症状 1（点「其他」后首屏恒 48 条、不随每页 12/24 选择器变）：根因是卡片分批单位 CARD_BATCH=48 不跟随选择器，且带 tailCategories 的尾会话增量包无视 pageSize（p182l 实测 size=12 回 46/775 条、size=24 回 91/1105 条）。改法：新增纯函数 cardStepFor(pageSize)（合法值原样、越界/非法回落 48，CARD_BATCH 只当上限），shownCards 加第三参 step，skillCards/mcpCards 调用点传 cardStepFor(size)，「继续显示」三处全部换 cardStepFor(size)*cardBatch / Math.min(cardStepFor(size),…）。选 12 就每批 12 张，选 48 行为与现网一致（既得行为零变化）。
+- 修 m28155 症状 2（「其他」第 2 页起全空）：合并态收口（用户点「其他」chip、tailMerged）即使收口包不带 tail 对象也是整集视图——applyHarvestFinal 写缓存 wholeView=true，翻页走本地切片、零 RPC，visibleSkills 不再空页。旧通路：兜底态 wholeView=false 时翻页落一次性 skills.search（CAT_OTHER 降级成整源浏览）⇒ 回来行不属 covers ⇒ 筛出 0 条。island 只读 env.tailMerged（门处组装，引用 tailCoversRef 防御），不引岛外符号。
+- tailNote 两态按用户视角重写（用户 m28870/m28871 点名「这些条里/打上游/共约/集合以本行为准」看不懂）：tail 态末句「。往后翻页翻的就是已取回的 N 条，不再联网取数。」，windowed 句「。部分类可能取不全」；兜底态「。往后翻页只在这 N 条里，不再联网取数。「共约」后面是全部条目的总数，不是本次取回这些的。」；serverFacet 括注改「（整份取回，本地筛出）」；「其中 K 条在列表中」替「条如上」。内部词全部退场，三处诚实口径未删。
+- 判据同步（改文案/行为必同步锁面）：test-search-fanout-latency Test16 重写为 cardStepFor 性质锁 + shownCards 三参锁 + 调用点/继续显示锁（211 passed / 0 failed）；test-lobehub-category-vocab B3 文案锁改锚新句（126/0）；test-panel-tail D 段 12 条新文案锁 + E 段新增 E-sym2 两条行为锁（合并态无 tail ⇒ 缓存 wholeView===true && tail===null、第 2 页零 RPC 本地切片），SECT_WANT E:18⇒20（93/0）；test-panel-harvest 不回归（81/0）。test-profile-sync 在装机前为已知镜滞后红（profile 仍 0.5.181），装机后随镜像 0 差异转绿。
+- 0.5.183 遗留：①test-github-transport（src/github.js 353 行、8 导出 7 个无判据、唯一裸 fetch :33，globalThis.fetch 替换是唯一离线桩注入面）；②test-rpc-surface.mjs:15-16 提取正则抽不到 harvest.start/harvest.poll + src/sources.js:1180 注释订正；③0.5.180 台账两处数字不实（src/github.js 156 行、88 个套件）订正；④ModelScope 可达集合外分类覆盖 = 产品决策待用户；⑤面板两态画面凭据待用户点『重启应用与 Host』。
+
 ## 0.5.181
 
 - 修台账遗留「test/ 里 RED 期死 skip 把回归静音」。test/test-modelscope-category-vocab.mjs:36 起删掉 `fnOf` + `MISSING_EXPORTS` 那条「缺导出就 skip」通道（七处：词表本体/归一函数/chip 装配/真过滤/聚合层/缓存键/表外拒发）——两个导出早已在场，守卫恒不触发，而 test/run-gate.mjs:9 明确「SKIP 不算失败」，等于给这七条判据装了消音器；现在缺导出直接红并打印缺哪几个。改后 181 passed / 0 failed / 2 skipped，剩下两处 skip 合法（DSH_MS164_LIVE / DSH_MS165_LIVE 门控真跑上游 + err 分支）。
