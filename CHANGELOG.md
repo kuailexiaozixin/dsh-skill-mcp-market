@@ -8,6 +8,7 @@
 - **②(b) src/sources.js:1180 注释订正**：「上游窗口实测硬封顶」只对窗口封顶源成立；local-filter 源每类一页=可达集合内实测切片，不是窗口封顶。注释按两态分开表述。
 - **③ 0.5.180 台账两数字订正**：0.5.181 段遗留③「src/github.js 156 行零覆盖，现 88 个套件」不实⇒实测 github.js@0.5.180(d1ebcd6)=336 行、test:chain@0.5.180=79 段；已改写为历史真值并注 0.5.183 订正（原误记保留在注里，不改写历史结论本身）。
 - **链登记**：test-github-transport.mjs 加入 test:chain（rpc-surface 之后），链 80⇒81 段；test-suite-inventory 12/0 证无游离。
+- **发布凭据（0.5.183 发布闭环）**：提交 fd19143（批 A 提示语+上游合计）+ cf0d45e（批 B ：①②③+bump+链登记）；tag v0.5.183（object ded1f10，peel=cf0d45e）；远端 master=cf0d45e；CI run 45969301451 success（trusted publishing 自动出包，未手工 publish）；npm latest=0.5.183、shasum=f69246da50707763f992f410cfe9b6abc63eaaf2，本地下载 tarball 复算 SHA1 与 registry 逐字一致，解包 34 文件与 worktree LF 归一对比 missingInWt=0/contentMismatch=0；装机 dsh plugin --profile desktop add 0.5.183 exit=0（0.5.182⇒0.5.183，lockfile 298 entries 过，自动加 minimumReleaseAgeExclude），test-profile-sync 复跑 7/0（no stale copies ✓、mirrors report 0.5.183 ✓）；链 81/81（段 1–50 预装机全绿 + profile-sync 装机后 7/0 + 尾段 30/30，chain183.log/chain183tail.log，含 harvest 203/0、panel-harvest 81/0、panel-tail 90/0、lobehub 126/0、fanout 211/0、unjudged-exports 118/0、github-transport 13/0）；live-verify PASS（ms183-live.log：rows=14 LIVE-FAIL=0 NOT-TESTED=0 GAP=2 NOT-WARM=0；GAP=「监控」覆盖缺口 + 服务端旧通路 __cat_other 信息项，与 176–182 同形；判据④ lobehub 集合自洽 total=246 win=32(333426) out=214(743) sum=334169）。
 
 ## 0.5.182
 
