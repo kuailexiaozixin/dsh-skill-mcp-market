@@ -104,5 +104,61 @@ console.log('Test 5: 反向锁——被测试引用的符号不得被顺手清�
 }
 
 console.log('');
+console.log('Test 6: 正向锁——五个「有生产调用方、零测试引用」的导出必须两条都成立');
+{
+  // 0.5.178 遗留清单里的第二类静音缺口：这五个导出被 index.js 真调用，所以逃过 Test 3 的
+  // 零引用扫描；但它们当时没有任何测试引用，改坏行为不会让任何套件红。「有调用方」只证明
+  // 它活着，不证明它被判定。判据补齐在 test/test-unjudged-exports.mjs，本表把两条一起锁死：
+  // ① 生产调用点还在（连带 import 行）② 判据套件引用它，且那个套件挂在 test:chain 上。
+  const JUDGE = 'test/test-unjudged-exports.mjs';
+  const judge = read(JUDGE);
+  const chain = String(JSON.parse(read('package.json')).scripts['test:chain'] || '');
+  const LOCK = {
+    setUserEnvironmentVariable: {
+      home: 'src/env.js',
+      // index.js:36 import、:250 写入用户环境变量（面板「写入系统环境变量」按钮的实现）
+      calls: ['import { setUserEnvironmentVariable } from "./src/env.js";', 'setUserEnvironmentVariable(name, value);'],
+    },
+    registryCatalogueCacheKey: {
+      home: 'src/mcp-registry.js',
+      // index.js:26 import、:225 用它取 30 天前的目录缓存判定 stale
+      calls: ['registryCatalogueCacheKey', 'registryCatalogueCacheKey(query, REGISTRY_PAGE_SIZE, category)'],
+    },
+    fallbackCards: {
+      home: 'src/mcp-registry.js',
+      // index.js:26 import、:237 目录不可用时用静态兜底卡填 items
+      calls: ['fallbackCards', 'items: fallbackCards(query)'],
+    },
+    lobehubRegistered: {
+      home: 'src/lobehub-market.js',
+      // index.js:35 import、:156 决定首装提示 registerHint
+      calls: ['lobehubRegistered', 'const registerHint = lobehubRegistered()'],
+    },
+    viewLobeHubMcp: {
+      home: 'src/lobehub-market.js',
+      // index.js:35 import、:1633 详情面板取条目详情
+      calls: ['viewLobeHubMcp', 'await viewLobeHubMcp(body.serverName, { cache: marketCache })'],
+    },
+  };
+  const names = Object.keys(LOCK);
+  for (const s of names) {
+    const { home, calls } = LOCK[s];
+    check(s + ' 仍是导出（不许被当死代码清掉）', exportsOf(home).includes(s), 'not exported from ' + home);
+    check(s + ' 不是内部符号（不在 Test 2 的 INTERNAL 名单里）',
+      !(function () { const t = read('test/test-dead-exports.mjs'); const a = t.indexOf('const INTERNAL = {'); const b = t.indexOf('};', a); return b > a && new RegExp('\\b' + s + '\\b').test(t.slice(a, b)); })(),
+      s + ' 被列进 INTERNAL 就与「仍导出」自相矛盾');
+    check(s + ' 有生产调用方（index.js 的 import 行 + 真实调用点）',
+      corpus['index.js'].indexOf(calls[0]) >= 0 && corpus['index.js'].indexOf(calls[1]) >= 0,
+      calls[1]);
+    check(s + ' 有测试判据（' + JUDGE + ' 引用它）',
+      judge.indexOf(s) >= 0, '判据套件未引用');
+  }
+  check('判据套件本身已挂进 test:chain（挂在链上才会被 run-gate 跑）',
+    chain.split(' && ').some((x) => x.indexOf(JUDGE) >= 0), JUDGE);
+  check('判据套件对五个导出逐一有名字段（不是只 import 一次糊过去）',
+    names.every((s) => (judge.match(new RegExp('\\b' + s + '\\b', 'g')) || []).length >= 3),
+    names.filter((s) => (judge.match(new RegExp('\\b' + s + '\\b', 'g')) || []).length < 3).join(', '));
+}
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

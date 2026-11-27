@@ -816,13 +816,13 @@ const runRenderFor = (entries, fold) => {
         !/const allRealChips *=/.test(client) && /catsExpanded && tailExpandable \? expandedChips/.test(client) &&
         /const tailExpandable = !!chipFold\.other && chipFold\.otherCount <= CAT_TAIL_EXPAND_MAX;/.test(client),
         (client.split(NL).find((l) => l.includes('tailExpandable')) || '(none)').trim().slice(0, 160));
-    // B3 诚实口径（m00282）：未声明 tail（旧服务端）时两句必须同锁——这些类没逐个列、分页器只在
-    // 本次已取回的条里翻页、不再打上游；分页器「共约」是整源总数不是这些类的条数。分页器实参两行
-    // 原样不动（test-search-fanout-latency :442/:446 在边界外锁死 skillsTotal : mcpTotal 与「共约」label），
+    // B3 诚实口径（m00282，0.5.181 短句化）：未声明 tail（旧服务端）时三处必须同锁——只报本次已取回
+    // 的集合（如上）、分页器只在这些条里翻不再打上游、「共约」是整源总数。短句化删的是重复叙述，
+    // 不是诚实口径。分页器实参两行原样不动（test-search-fanout-latency :442/:446 锁死），
     // 所以说实话的通道只有 tailNote。
-    check('tailNote 旧服务端兜底两句在场（集合非逐个 + 共约是整源总数），两态渲染都走同一行',
-        /这些类没有逐个列成标签。'/.test(client) &&
-        /条里翻页，不会再去上游取回更多；集合以本行为准。'/.test(client) &&
+    check('tailNote 旧服务端兜底三处诚实口径在场（已取回集合如上 + 分页器短句 + 共约是整源总数），两态渲染走同一行',
+        /本次已取回 .*条.*如上/.test(client) &&
+        /分页器只在这些条里翻、不再打上游，「共约」是整个来源的总数。集合以本行为准。'/.test(client) &&
         /tailNote \? h\('div', \{ style: \{ \.\.\.S\.status, marginTop: 8 \} \}, tailNote\) : null,/.test(client),
         (client.split(NL).find((l) => l.includes('不是这些类的条数')) || '(none)').trim().slice(0, 170));
     check('分页器实参两行未被顺手改动（边界外判据 test-search-fanout-latency :442/:446 依赖）',

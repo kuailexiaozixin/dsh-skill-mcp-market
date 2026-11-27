@@ -1328,7 +1328,7 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
             // 上游全目录数。区别只在文案，绝不加第七个 tail 字段（面板消费口径不动）。
             const caliber = s.tail.windowed
               ? "（其余在上游窗口之外，取不到）"
-              : "（合计按各源自报口径相加：服务端已筛的记上游目录数，本地过滤的只记可达集合内实测）";
+              : "（本地过滤的源只算可达集合内实测）";
             const line = "其他分类逐类取数：已取回 " + finalRows.length + " 条 / 上游合计 " + s.tail.upstreamTotal + " 条" + caliber;
             if (!s.hints.includes(line)) s.hints.push(line);
           }

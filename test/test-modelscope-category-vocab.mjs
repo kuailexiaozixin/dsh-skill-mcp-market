@@ -20,14 +20,8 @@ const readLf = (f) => read(f).replace(/\r\n/g, NL);
 const esMod = await import('../src/extra-sources.js');
 const srcMod = await import('../src/sources.js');
 
-// 缺导出时不要具名 import：链接期崩溃 = 没有汇总行的红，拿不到逐条判据原文（无效红）。
-const MISSING_EXPORTS = [];
-const fnOf = (name) => {
-  if (typeof esMod[name] !== 'function') { MISSING_EXPORTS.push(name); return null; }
-  return esMod[name];
-};
-const vocabFn = fnOf('modelscopeCategoryVocabulary');
-const catOfFn = fnOf('modelscopeCategoryOf');
+const vocabFn = esMod.modelscopeCategoryVocabulary;
+const catOfFn = esMod.modelscopeCategoryOf;
 
 let passed = 0;
 let failed = 0;
@@ -39,6 +33,21 @@ const check = (name, cond, detail) => {
 const skip = (name, why) => { skipped += 1; console.log('  SKIP ' + name + '  [' + String(why).slice(0, 200) + ']'); };
 const soft = async (f) => { try { return { ok: true, v: await f() }; } catch (e) { return { ok: false, err: String((e && e.message) || e) }; } };
 
+// 0.5.181 批一：删掉 RED 期的「缺导出就 skip」守卫（fnOf + MISSING_EXPORTS + 七条
+// if (!fn) skip(...) else {…}）。两个导出早已落地，守卫永不触发，但静音通道一直挂在
+// 那里：run-gate 把 SKIP 不计失败（test/run-gate.mjs:9），将来谁把导出改坏，这七条只会
+// 变 SKIP，回归完全静音。现在是一枚硬检查 —— 缺导出直接红，没有 skip 分支可走；
+// 下面所有判据体无条件执行（缺导出也不再是链接期/运行期崩溃：先红并给出汇总行）。
+if (typeof vocabFn !== 'function' || typeof catOfFn !== 'function') {
+  failed += 1;
+  console.log('  FAIL 词表导出存在（缺导出=红，不再有 skip 通道）  [' +
+    [['modelscopeCategoryVocabulary', vocabFn], ['modelscopeCategoryOf', catOfFn]]
+      .filter((p) => typeof p[1] !== 'function').map((p) => p[0]).join(',') + ']');
+  console.log('');
+  console.log(passed + ' passed, ' + failed + ' failed, ' + skipped + ' skipped');
+  process.exit(1);
+}
+
 // 词表 20 行（ChineseName 原文）。slug 必须等于它：面板 client.js:1863 与聚合层 sources.js:847
 // 都是拿行内分类原文做等值比较，行内原文来自 raw.L1.ChineseName（extra-sources.js:1352）。
 const VOCAB_CN = [
@@ -47,8 +56,7 @@ const VOCAB_CN = [
 ];
 
 console.log('Test 1: 静态 L1 词表本体（20 个非空 CatalogID；ChineseName 作 slug/label；不带条数）');
-if (!vocabFn) skip('词表本体判据', 'modelscopeCategoryVocabulary 尚未导出（RED 期正常）：' + MISSING_EXPORTS.join(','));
-else {
+{
   const v1 = vocabFn();
   const v2 = vocabFn();
   const cats = v1 && v1.categories;
@@ -59,8 +67,7 @@ else {
   check('词表行不带条数（上游无分类级计数，写进 chip 就是假数）', Array.isArray(cats) && cats.every((r) => r && r.totalAll === undefined && r.count === undefined), JSON.stringify((cats || []).find((r) => r && (r.totalAll !== undefined || r.count !== undefined))));
   check('两次调用 slug 序列一致', JSON.stringify((cats || []).map((r) => r.slug)) === JSON.stringify(((v2 && v2.categories) || []).map((r) => r.slug)), 'stable');
 }
-if (!catOfFn) skip('归一函数判据', 'modelscopeCategoryOf 尚未导出（RED 期正常）');
-else {
+{
   check('归一：表内中文原文命中', VOCAB_CN.every((cn) => catOfFn(cn) === cn), JSON.stringify(VOCAB_CN.filter((cn) => catOfFn(cn) !== cn)));
   check('归一：两端空格后仍命中', catOfFn('  市场推广  ') === '市场推广', catOfFn('  市场推广  '));
   check('归一：空串与 all 都回空串（=不滤）', catOfFn('') === '' && catOfFn('all') === '', JSON.stringify([catOfFn(''), catOfFn('all')]));
@@ -87,8 +94,7 @@ for (let i = 0; i < 40; i += 1) derived40.push('derived-' + i);
 
 console.log('');
 console.log('Test 2: 缺陷本体——ModelScope 的分类 chip 必须来自词表，不再只能从当前页派生');
-if (!vocabFn) skip('chip 装配判据', '无词表可喂（RED 期正常）');
-else {
+{
   const real = vocabFn();
   const got = runChips(['modelscope', derived40, { modelscope: real }]);
   check('modelscope 拿到 20 个词表入口（以前只有当前页派生 = 结构性缺陷）', Array.isArray(got) && got.length === 20 && got.every((c) => c.fixed === true), Array.isArray(got) ? got.length + '/' + JSON.stringify(got.slice(0, 2)) : JSON.stringify(got));
@@ -163,8 +169,7 @@ const MS_MAX_PAGES = 30;
 
 console.log('');
 console.log('Test 3: 分类真过滤（跨页，全量可达集合内）——小条数子类也必须筛出非空');
-if (!vocabFn) skip('真过滤判据', 'searchModelScope 尚无分类通道（RED 期正常）');
-else {
+{
   const firstPageTiny = ALL_ROWS.slice(0, 5000).filter((r) => TINY.indexOf(r.L1 && r.L1.ChineseName) >= 0).length;
   check('夹具自证：小条数子类不在首页可达行（只滤当前页必为 0 行）', firstPageTiny === 0, firstPageTiny);
   check('夹具意图自证：小条数子类真实条数 = 6/2/2/1，市场推广 = 40，移动开发 = 25',
@@ -194,8 +199,7 @@ else {
 
 console.log('');
 console.log('Test 4: 聚合层口径——不得谎称服务端过滤，也不得说成「仅当前页」');
-if (!vocabFn) skip('聚合层判据', '无分类通道可注入（RED 期正常）');
-else {
+{
   newFake();
   const wrapped = { modelscope: (a) => esMod.searchModelScope({ query: a.query, page: a.page, pageSize: a.pageSize, cache: a.cache, sort: a.sort, category: a.category, transport: fakeFetch }) };
   installFake();
@@ -239,8 +243,7 @@ else {
 
 console.log('');
 console.log('Test 5: 缓存键含分类，而行集只按 query 拉一次（换分类不得重拉整份行集）');
-if (!vocabFn) skip('缓存键判据', '无分类通道（RED 期正常）');
-else {
+{
   const st = newFake();
   const shared = mkCache();
   const a = await runMs({ query: '', page: 1, pageSize: 24, cache: shared, sort: '', category: '市场推广' });
@@ -269,8 +272,7 @@ console.log('Test 6: 浏览态不回归（无分类无排序 = 一次普通分�
 
 console.log('');
 console.log('Test 7: 表外分类拒发（点名词表里没有，绝不声称已按它过滤）');
-if (!vocabFn) skip('表外拒发判据', '无分类通道（RED 期正常）');
-else {
+{
   newFake();
   const r = await runMs({ query: '', page: 1, pageSize: 24, cache: undefined, sort: '', category: '不存在的分类' });
   check('表外分类取数成功', r.ok, r.err);
@@ -310,7 +312,7 @@ console.log('Test 9: 接线（下发 + 面板归属 + 导出 + 进门登记 + �
   check('词表下发是静态同步，不进 Promise.all', !/Promise\.all\(\[[\s\S]{0,400}modelscopeCategoryVocabulary/.test(ix), 'no await on static');
   const originLine = readLf('client.js').split(NL).filter((l) => l.indexOf('const ORIGIN = {') >= 0);
   check('client.js ORIGIN 仍是一行且含 modelscope', originLine.length === 1 && /modelscope: 'https:\/\/modelscope.cn\/'/.test(originLine[0]), JSON.stringify(originLine[0] || null));
-  check('extra-sources 导出三件', typeof esMod.searchModelScope === 'function' && typeof vocabFn === 'function' && typeof catOfFn === 'function', MISSING_EXPORTS.join(','));
+  check('extra-sources 导出三件', typeof esMod.searchModelScope === 'function' && typeof vocabFn === 'function' && typeof catOfFn === 'function', '');
   const pkg = JSON.parse(read('package.json'));
   check('新套件已登记进 test:chain', String(pkg.scripts['test:chain']).indexOf('test/test-modelscope-category-vocab.mjs') >= 0, 'chain');
   // 版本判据按「不低于本批改动的落地版本」比较，不写死等号：写死等号时每升一次版本就得红一次门。
@@ -539,7 +541,6 @@ console.log('Test 13: 0.5.169 —— 上游「其他」沉到词表尾 + 本地�
   check('按下仍带当前排序与页大小（出路不改用户的排序意图）',
     sk.length === 1 && sk[0].o.sort === 'stars' && sk[0].o.size === 24, JSON.stringify(sk[0] && sk[0].o));
 }
-if (MISSING_EXPORTS.length) console.log('  待补：' + MISSING_EXPORTS.join(', '));
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
 fs.rmSync(cacheRoot, { recursive: true, force: true });

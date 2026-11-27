@@ -2353,13 +2353,12 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
             + (Number(tailMemo.categoriesFailed || 0) ? '，失败 ' + Number(tailMemo.categoriesFailed) + ' 类' : '')
             + '；上游合计 ' + Number(tailMemo.upstreamTotal || 0).toLocaleString() + ' 条）'
             + (tailMemo.windowed === true ? '。该来源各类均受上游窗口限制，部分类取不全' : '')
-            + '。分页器数字就是这一口径，不是整个来源的总数；翻页就在这已取回的 ' + Number(tailMemo.retrievedTotal || 0) + ' 条里本地翻，不再打上游。'
+            + '。分页器只在这些条里翻（不是整个来源的总数），不再打上游。'
           // 旧服务端（未声明 tail）：维持本地并集口径（诚实：只报已取回的集合）。
-          : '未列出的分类还有 ' + chipFold.otherCount + ' 类，上游合计 ' + Number(chipFold.other.totalAll || 0).toLocaleString() + ' 条。'
-            + '本次已取回 ' + skills.length + ' 条，其中属于这些类的 ' + visibleSkills.length + ' 条就是上面这些'
-            + (serverFacet ? '（上游这一页没有按集合筛：CAT_OTHER 不下发，靠本地并集筛出）' : '')
-            + '；这些类没有逐个列成标签。'
-            + '分页器里的「共约」是整个来源的总数，不是这些类的条数；分页器只会在这次已取回的 ' + skills.length + ' 条里翻页，不会再去上游取回更多；集合以本行为准。');
+          : '未列出的分类还有 ' + chipFold.otherCount + ' 类（上游合计 ' + Number(chipFold.other.totalAll || 0).toLocaleString() + ' 条）。'
+            + '本次已取回 ' + skills.length + ' 条' + (visibleSkills.length === skills.length ? '，全部如上' : '，其中 ' + visibleSkills.length + ' 条如上')
+            + (serverFacet ? '（上游未按集合筛，本地并集筛出）' : '')
+            + '；分页器只在这些条里翻、不再打上游，「共约」是整个来源的总数。集合以本行为准。');
       const skillCards = shownCards(visibleSkills, cardBatch).map((item) =>
         h('div', { key: item.id, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),

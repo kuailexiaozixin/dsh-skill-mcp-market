@@ -293,17 +293,17 @@ const nW = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, sk
 check("P3 tail 声明 + windowed=true：真实口径三数齐全（4 条 / 2\\/3 类 / 失败 1 类 / 上游 940）", nW.indexOf('已取回 4 条') === 0 && nW.indexOf('2/3 类完成') >= 0 && nW.indexOf('失败 1 类') >= 0 && nW.indexOf('上游合计 940 条') >= 0, nW);
 check("P3 windowed=true 追加窗口句", nW.indexOf('该来源各类均受上游窗口限制，部分类取不全') >= 0, nW);
 check("P3 tail 态零旧词、零旧词与整源口径（窗外/窗内之外/共约一律不许）", nW.indexOf('窗外') < 0 && nW.indexOf('窗内') < 0 && nW.indexOf('共约') < 0 && nW.indexOf('翻页才会取回更多') < 0, nW);
-check("P3 tail 态声明分页器口径已改（这一口径，不是整个来源的总数）", nW.indexOf('分页器数字就是这一口径') >= 0 && nW.indexOf('不是整个来源的总数') >= 0, nW);
+check("P3 tail 态分页器口径声明（不是整个来源的总数）且短句化（零重复叙述）", nW.indexOf('不是整个来源的总数') >= 0 && nW.indexOf('分页器只在这些条里翻') >= 0 && nW.indexOf('不再打上游') >= 0 && nW.split('已取回 4 条').length === 2, nW);
 const nF = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILNF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
 check("P3 tail 声明 + windowed=false：不写窗口句但报 3/3 类", nF.indexOf('已取回 4 条') === 0 && nF.indexOf('3/3 类完成') >= 0 && nF.indexOf('失败') < 0 && nF.indexOf('窗口限制') < 0, nF);
 const nO = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
-check("P3 tail 缺失（旧服务端）⇒ 保留本地筛口径兜底（已取回 4 条 / 属于这些类 2 条）", nO.indexOf('本次已取回 4 条') >= 0 && nO.indexOf('其中属于这些类的 2 条') >= 0 && nO.indexOf('未列出的分类还有 3 类') >= 0, nO);
+check("P3 兜底态数字不重复叙述（已取回 4 条恰一次；老句「其中属于这些类的 N 条」不得回来）", nO.indexOf('本次已取回 4 条') >= 0 && nO.split('已取回 4 条').length === 2 && nO.indexOf('其中属于这些类的') < 0 && (nO.indexOf('2 条如上') >= 0 || nO.indexOf('全部如上') >= 0), nO);
 check("P3 兜底态零「窗」字（改回「窗外」或「窗内之外」都必红）", nO.indexOf('窗') < 0, nO);
-check("P3 兜底态仍诚实：整源「共约」不是这些类的条数", nO.indexOf('是整个来源的总数') >= 0 && nO.indexOf('集合以本行为准') >= 0, nO);
+check("P3 兜底态诚实：整源「共约」不是这些类的条数（共约与集合锚保留）", nO.indexOf('「共约」是整个来源的总数') >= 0 && nO.indexOf('集合以本行为准') >= 0, nO);
 const nO2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
-check("P3 兜底态诚实句：分页器只在已取回的条里翻、不再打上游", nO2.indexOf('不会再去上游取回更多') >= 0 && nO2.indexOf('翻页才会取回更多') < 0 && nO2.indexOf('已取回的 4 条里翻页') >= 0, nO2);
+check("P3 兜底态分页器句：只在这些条里翻、不再打上游（零旧词）", nO2.indexOf('分页器只在这些条里翻') >= 0 && nO2.indexOf('不再打上游') >= 0 && nO2.indexOf('翻页才会取回更多') < 0 && nO2.indexOf('不会再去上游取回更多') < 0, nO2);
 const nW2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check("P3 tail 声明态补上本地翻页句（就在这已取回的 4 条里翻）", nW2.indexOf('本地翻') >= 0 && nW2.indexOf('已取回的 4 条') >= 0, nW2);
+check("P3 tail 态本地翻页句与整源口径并存（只在这些条里翻 + 不是整个来源的总数）", nW2.indexOf('分页器只在这些条里翻') >= 0 && nW2.indexOf('不是整个来源的总数') >= 0, nW2);
 check("P3 非合并态 tailNote 恒空", runNote(KIT, { category: 'ai', chipFold: CF, tailMemo: TAILF }) === '' && runNote(KIT, { category: KIT.OTHER, chipFold: { other: null, otherCount: 0, otherTotal: 0 }, tailMemo: TAILF }) === '', 'not empty');
 
 // ── E. P5 谓词真跑 + P6 整源数字不复用 + 缓存续命 ──
