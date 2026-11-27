@@ -1177,7 +1177,7 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
     // ---- 「其他」分类逐类取数（C1-C5 / E1-E2）----
     // 与上面的源扇出并行：扇出照常跑、照常增量，逐类取数只是**额外**多推一批行。
     // 绝不用 fanOutSources —— 它无上界全并发（sources.js:618 注释），214 类一起发会打死上游；
-    // 这里自己开一个小并发池，且每类只取一页（上游窗口实测硬封顶，越界翻页取不到新行）。
+    // 这里自己开一个小并发池，且每类只取一页（窗口封顶源一页即到顶、越界翻页取不到新行；本地过滤源这一页即该类在可达集合内的实测切片，不是窗口封顶）。
     // tailList / tailCovers / tailAdmissible 在 pushRow 之前就位（成员集合与入会话同生命周期）。
     // 收口 tail 计数：六字段，键序即契约。未落地前为 null（非 tail 会话永远不带这个键）。
     s.tail = tailList.length ? {
@@ -1326,8 +1326,12 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
             // 窗口封顶的源（自报 totalAll + 固定可浏览窗口）能说「窗口之外取不到」；
             // 本地过滤的源那个合计只是可达集合内的实测条数，既不写窗口话、也不冒充
             // 上游全目录数。区别只在文案，绝不加第七个 tail 字段（面板消费口径不动）。
-            // 0.5.183：加载态一行白话（陆续加载中，已到达 X 条[，还有 Y 条在途]），不再报「上游合计」虚高数。
-            const line = "（陆续加载中，已到达 " + finalRows.length + " 条" + (s.tail.windowed ? "，还有 " + s.tail.upstreamTotal + " 条在途" : "") + "）";
+            // 0.5.183：不再报「上游合计 N 条」虚高数（local-filter 源的 50 万是重叠计数，非独立条数）；
+            // 保留 I6 口径话（窗口源说「窗口之外」，本地过滤源说「可达集合内实测」），并补「建议稍后重试」。
+            const caliber = s.tail.windowed
+              ? "（其余在上游窗口之外取不到）"
+              : "（本地过滤，只统计可达集合内的实测数）";
+            const line = "「其他」分类未取全" + caliber + "；建议稍后重试。";
             if (!s.hints.includes(line)) s.hints.push(line);
           }
         }

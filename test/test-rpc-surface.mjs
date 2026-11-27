@@ -14,6 +14,9 @@ const index = fs.readFileSync(path.join(W, 'index.js'), 'utf8');
 
 const clientOps = [...new Set([...client.matchAll(/call\(['\x22]?([\w.]+)['\x22]?\s*,/g)].map((m) => m[1]))].sort();
 const clientOps2 = [...new Set([...client.matchAll(/call\('([\w.]+)'/g)].map((m) => m[1]))].sort();
+// harvestCall(首参, 'OP')：harvest.start / harvest.poll 的 op 在第 2 参（大写 C 调用、op 为字符串字面量），clientOps2 的 call('OP', 抓不到⇒补一条抓 harvestCall 的第 2 参 op，并入 clientOpsAll。
+const clientOps3 = [...new Set([...client.matchAll(/harvestCall\(\s*[\w.]+\s*,\s*'([\w.]+)'/g)].map((m) => m[1]))].sort();
+const clientOpsAll = [...new Set([...clientOps2, ...clientOps3])].sort();
 const serverOps = [...new Set([...index.matchAll(/case "([\w.]+)"/g)].map((m) => m[1]))];
 const blockedMatch = index.match(/HTTP_BLOCKED_OPS = new Set\(\[([^\]]*)\]/);
 const blocked = blockedMatch ? [...blockedMatch[1].matchAll(/"([\w.]+)"/g)].map((m) => m[1]) : [];
@@ -21,14 +24,14 @@ const blocked = blockedMatch ? [...blockedMatch[1].matchAll(/"([\w.]+)"/g)].map(
 console.log('');
 console.log('Test 1: 面板调用的每个 op 服务端都认识');
 {
-  const missing = clientOps2.filter((o) => !serverOps.includes(o));
+  const missing = clientOpsAll.filter((o) => !serverOps.includes(o));
   check('no unknown op', missing.length === 0, missing.join(', '));
 }
 
 console.log('');
 console.log('Test 2: 面板调用的 op 不得被 HTTP_BLOCKED_OPS 拦掉');
 {
-  const blockedLive = clientOps2.filter((o) => blocked.includes(o));
+  const blockedLive = clientOpsAll.filter((o) => blocked.includes(o));
   check('no client op is HTTP-blocked', blockedLive.length === 0, blockedLive.join(', '));
 }
 

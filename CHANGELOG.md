@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.183
+
+- **批 A（m29465/m29498/m29508，commit fd19143）：面板提示语白话化 + skillsmp「其他」上游合计去虚高**。tailNote 改自包含 IIFE 两态：tail 态「共 X 条，本次取回 Y 条，未取全。还有 C 类没取到（其中 F 类取数失败）。建议：稍后重试。」，全取回（C=0 且 F=0）静默；兜底态去掉虚高 totalAll（local-filter 源各类重叠计数⇒50 万假数），只报本次取回 Y 条与未取到类数。加载态一行「（陆续加载中，已到达 X 条，还有 M 条在途）」（client.js:281/:284 + sources.js 收口 hint）。分页器「共约」→「共」（client.js:3290）。测试锁同步：panel-tail D 段 9 条逐字白话断言 + extractor 改花括号深度匹配（旧 ');' 启发式在 IIFE 体首行误断）+ 零旧词；fanout 共约→共 13 处；lobehub B3 零词锁收窄（只锁 4 个全仓=0 黑话碎片，开发注释不误伤）。
+- **① test-github-transport（0.5.183 遗留①闭环）**：新建 13 判据——纯函数 parseRepoRef/skillDirsFrom 直跑 + globalThis.fetch=stub 驱动 findSkillDirFor/listTree/readRepoFile/fetchSkillMd/resolveRef（github 的 fetch 是裸全局 src/github.js:33，替换即注入面）。**TDD 红判据命中真 bug**：findSkillDirFor 兜底分支（:336）用 basename 但 :9 未导入⇒ReferenceError 被 :340 catch 静默吞⇒basename 匹配永不生效；修 :9 加 basename 后绿。tar 通路（pythonDownload/execFile）离线不可测⇒锁源码结构。
+- **② test-rpc-surface 提取正则补 harvest.start/poll（0.5.183 遗留②）**：:15-16 的 call('OP' 形态抽不到 harvestCall(d.call, 'harvest.start', …)（op 在第 2 参）⇒守卫对 harvest 两 op 恒瞎。加 clientOps3 正则 harvestCall\(\s*[\w.]+\s*,\s*'([\w.]+)' 并入 clientOpsAll，Test1/2 改走 clientOpsAll；实测抽出 ["harvest.poll","harvest.start"]，index.js case :1893/:1916 均在册⇒6/0 绿。
+- **②(b) src/sources.js:1180 注释订正**：「上游窗口实测硬封顶」只对窗口封顶源成立；local-filter 源每类一页=可达集合内实测切片，不是窗口封顶。注释按两态分开表述。
+- **③ 0.5.180 台账两数字订正**：0.5.181 段遗留③「src/github.js 156 行零覆盖，现 88 个套件」不实⇒实测 github.js@0.5.180(d1ebcd6)=336 行、test:chain@0.5.180=79 段；已改写为历史真值并注 0.5.183 订正（原误记保留在注里，不改写历史结论本身）。
+- **链登记**：test-github-transport.mjs 加入 test:chain（rpc-surface 之后），链 80⇒81 段；test-suite-inventory 12/0 证无游离。
+
 ## 0.5.182
 
 - 修 m28155 症状 1（点「其他」后首屏恒 48 条、不随每页 12/24 选择器变）：根因是卡片分批单位 CARD_BATCH=48 不跟随选择器，且带 tailCategories 的尾会话增量包无视 pageSize（p182l 实测 size=12 回 46/775 条、size=24 回 91/1105 条）。改法：新增纯函数 cardStepFor(pageSize)（合法值原样、越界/非法回落 48，CARD_BATCH 只当上限），shownCards 加第三参 step，skillCards/mcpCards 调用点传 cardStepFor(size)，「继续显示」三处全部换 cardStepFor(size)*cardBatch / Math.min(cardStepFor(size),…）。选 12 就每批 12 张，选 48 行为与现网一致（既得行为零变化）。
@@ -46,7 +55,7 @@
 - live-verify（port=53627，fingerprint=new，--retry-wait 20000，日志 C:/Users/Public/dsh-scratch/ms180-live1.log）：**rows=14 LIVE-FAIL=0 NOT-TESTED=0 GAP=2 NOT-WARM=0 RESULT: PASS exit=0**。GAP 两条与 176-179 同形（「监控」0 条且无中断措辞⇒覆盖缺口；服务端旧通路 __cat_other），非本批引入。判据③开发工具=574 vs 科研工具=57、判据④ total=246 win=32(333426) out=214(743) sum=334169。
 - 现网 tail 通路正证（扁平 body 的 harvest.start，index.js:1899-1907 直读 body.*，勿套 args 层——套了会被整体忽略并假象地得到 meta.tail=null）：clawhub + tailCategories=productivity,developer-tools ⇒ final=true rows=13、tail={"categoriesTotal":2,"categoriesFetched":1,"categoriesFailed":1,"upstreamTotal":0,"windowed":false,"retrievedTotal":13}、total=13 pages=1 hasMore=false ⇒ 选源走 pickTailCategorySource、六字段口径未扩，本批改动在现网成立。
 - skillhub facet 声明位的现网正证改走直调已安装模块（脚本 C:/Users/Public/dsh-scratch/p180skillhub.mjs，import 须用绝对 file:/// URL）：category=office-efficiency ⇒ items=24 total=14071 facetUsed="office-efficiency" serverFacet=true，行集 category 唯一值即 office-efficiency，出参键序 source,items,total,page,pageSize,hasMore,facetUsed,serverFacet（前六键未动）。宿主 RPC 那条 skillhub tail 仍回 SkillHub HTTP 400 且 fetched=0/failed=3——宿主进程是重启前的 bundle，该路径待用户点『重启应用与 Host』后复验（AGENTS.md 禁止我杀宿主进程）。
-- 0.5.181 遗留：①test/test-modelscope-category-vocab.mjs 七条 RED 期死 skip（:50/:62/:90/:166/:197/:242/:272，被断言的导出早已存在⇒守卫恒不触发，run-gate 把 SKIP 当不失败，回归被静音）翻成硬断言；②5 个无判据导出补判据（src/env.js:25 setUserEnvironmentVariable、src/mcp-registry.js:228 registryCatalogueCacheKey、:318 fallbackCards、src/lobehub-market.js:29 lobehubRegistered、:249 viewLobeHubMcp；映射表 test/test-dead-exports.mjs:62/:63 未列）；③新增 test/test-github-transport.mjs（src/github.js 156 行零覆盖，现 88 个套件）；④RED 期死 skip 扫描规则补进 test-suite-inventory；⑤index.js:1144 HTTP_BLOCKED_OPS 空集观察；⑥src/sources.js:1169 注释订正；⑦source:all 时 tail 落首个有能力源仍是假设，需验真。GitHub Release 对象本批仍未创建（176-180 惯例一致），待用户确认。
+- 0.5.181 遗留：①test/test-modelscope-category-vocab.mjs 七条 RED 期死 skip（:50/:62/:90/:166/:197/:242/:272，被断言的导出早已存在⇒守卫恒不触发，run-gate 把 SKIP 当不失败，回归被静音）翻成硬断言；②5 个无判据导出补判据（src/env.js:25 setUserEnvironmentVariable、src/mcp-registry.js:228 registryCatalogueCacheKey、:318 fallbackCards、src/lobehub-market.js:29 lobehubRegistered、:249 viewLobeHubMcp；映射表 test/test-dead-exports.mjs:62/:63 未列）；③新增 test/test-github-transport.mjs（0.5.183 已落，含 basename bug TDD；数字订正：src/github.js 实为 336 行、0.5.180 时 79 段，原误记 156 行/88 个套件）；④RED 期死 skip 扫描规则补进 test-suite-inventory；⑤index.js:1144 HTTP_BLOCKED_OPS 空集观察；⑥src/sources.js:1169 注释订正；⑦source:all 时 tail 落首个有能力源仍是假设，需验真。GitHub Release 对象本批仍未创建（176-180 惯例一致），待用户确认。
 
 ## 0.5.179
 

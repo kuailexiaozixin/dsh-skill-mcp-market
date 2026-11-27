@@ -6,7 +6,7 @@
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, normalize, sep } from "node:path";
+import { basename, dirname, join, normalize, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { curlText, pythonDownload, pythonText } from "./http.js";
 import { safeTempDir } from "./home.js";
