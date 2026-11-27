@@ -186,8 +186,17 @@ function makeFakeNpx(payload) {
     "process.stdout.write(" + JSON.stringify(payload) + ");",
     "",
   ].join(NL), "utf8");
-  fs.writeFileSync(path.join(dir, "npx.cmd"),
-    "@echo off" + CR + NL + DQ + process.execPath + DQ + " " + DQ + stub + DQ + " %*" + CR + NL, "utf8");
+  if (process.platform === "win32") {
+    // Windows：runCli 用 cmd.exe 找 npx.cmd（execFile 不能直接跑 .cmd）。
+    fs.writeFileSync(path.join(dir, "npx.cmd"),
+      "@echo off" + CR + NL + DQ + process.execPath + DQ + " " + DQ + stub + DQ + " %*" + CR + NL, "utf8");
+    return { dir, stub, outFile };
+  }
+  // POSIX：runCli 直接 execFile("npx")，这里放一个同名的 sh 包装，落点仍是同一个 node 桩。
+  // 只造 .cmd 的话，Linux 上 execFile 找不到 npx，真实代码会退化成真发网络请求（CI 实测一条 404）。
+  const bin = path.join(dir, "npx");
+  fs.writeFileSync(bin, "#!" + "/bin/sh" + NL + "exec " + DQ + process.execPath + DQ + " " + DQ + stub + DQ + " " + DQ + "$@" + DQ + NL, "utf8");
+  fs.chmodSync(bin, 0o755);
   return { dir, stub, outFile };
 }
 const withPath = async (dirs, fn) => {
@@ -571,7 +580,13 @@ await block("Test 7: viewLobeHubMcp —— 真模块 + 假 npx + fetch 桩（真
   check("真通路写缓存恰一次且键形正确",
     puts.length === 1 && puts[0][0] === "lobehub_mcp_view:io.github/fakecli", JSON.stringify(puts.map((x) => x[0])));
   const fakeFail = makeFakeNpx("");
-  fs.writeFileSync(path.join(fakeFail.dir, "npx.cmd"), "@echo off" + CR + NL + "exit /b 1" + CR + NL, "utf8");
+  if (process.platform === "win32") {
+    fs.writeFileSync(path.join(fakeFail.dir, "npx.cmd"), "@echo off" + CR + NL + "exit /b 1" + CR + NL, "utf8");
+  } else {
+    const binFail = path.join(fakeFail.dir, "npx");
+    fs.writeFileSync(binFail, "#!" + "/bin/sh" + NL + "exit 1" + NL, "utf8");
+    fs.chmodSync(binFail, 0o755);
+  }
   const fetchCalls = [];
   const manifestBody = MANIFEST_FIXTURE;
   const rB = await withPath([fakeFail.dir, SYS32], () => withFetch(async (url) => {
@@ -870,7 +885,17 @@ await block("Test 13: 挂链与登记（package.json test:chain + test-dead-expo
   check("段名可被 run-gate 的正解出（/node test/([\w.-]+.mjs)/）",
     (function () { const re = new RegExp("node test/([A-Za-z0-9._-]+[.]mjs)", "g"); let m, hit = false; while ((m = re.exec(chain))) { if (m[1] === "test-unjudged-exports.mjs") hit = true; } return hit; })(),
     "run-gate 取不到段名");
-  check("package.json version 仍是 0.5.180（本任务书严禁改版本）", pkg.version === "0.5.180", pkg.version);
+  // 初版这条钉死 0.5.180（写套件时禁止私下 bump 的护栏），发布一 bump 就红——护栏钉错了对象。
+  // 改成钉语义：合法 x.y.z，且不低于本套件落地基线 0.5.180（版本回退才是这条要拦的事）。
+  check("package.json version 是合法 x.y.z 且不低于落地基线 0.5.180（不钉在飞批次的数字）",
+    (function () {
+      const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(pkg.version || ""));
+      if (!m) return false;
+      const v = [Number(m[1]), Number(m[2]), Number(m[3])];
+      const base = [0, 5, 180];
+      for (let i = 0; i < 3; i += 1) { if (v[i] !== base[i]) return v[i] > base[i]; }
+      return true;
+    })(), pkg.version);
   const dead = readRepo("test/test-dead-exports.mjs");
   const five = ["setUserEnvironmentVariable", "registryCatalogueCacheKey", "fallbackCards", "lobehubRegistered", "viewLobeHubMcp"];
   check("test-dead-exports.mjs 登记了这五个导出（两条都成立：有调用方 + 有判据）",
