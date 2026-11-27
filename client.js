@@ -278,10 +278,10 @@ window.__ModuleLoader__.load({
         if (m.tail && m.tail.categoriesTotal > 0) {
           const tailLabel = String(d.tailLabel || '');
           const tailHead = tailLabel ? tailLabel + '类' : '未列出分类';
-          d.setNotice(hints.length ? hints.join('；') : '（' + tailHead + '取数中：已取回 ' + Number(m.tail.categoriesFetched || 0) + ' / ' + m.tail.categoriesTotal + ' 类，陆续加载中，已到达 ' + count + ' 条）');
+          d.setNotice(hints.length ? hints.join('；') : '（陆续加载中，已到达 ' + count + ' 条' + (m.tail.windowed === true && Number(m.tail.upstreamTotal || 0) > 0 ? '，还有 ' + Number(m.tail.upstreamTotal).toLocaleString() + ' 条在途' : '') + '）');
           return;
         }
-        d.setNotice(hints.length ? hints.join('；') : `（陆续加载中，已到达 ${count} 条）`);
+        d.setNotice(hints.length ? hints.join('；') : '（陆续加载中，已到达 ' + count + ' 条）');
         return;
       }
       if (!count) {
@@ -2368,19 +2368,28 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const tailNote = (category !== CAT_OTHER || !chipFold.other)
         ? ''
         : (tailMemo
-          // 服务端已按类逐个取数（C3）：报真实口径——已取回条数、逐类进度、上游总量；
-          // 分页器同口径（P4/P6），不再出现整源「共约」数字。
-          ? '已取回 ' + Number(tailMemo.retrievedTotal || 0).toLocaleString() + ' 条（'
-            + Number(tailMemo.categoriesFetched || 0) + '/' + Number(tailMemo.categoriesTotal || 0) + ' 类完成'
-            + (Number(tailMemo.categoriesFailed || 0) ? '，失败 ' + Number(tailMemo.categoriesFailed) + ' 类' : '')
-            + '；上游合计 ' + Number(tailMemo.upstreamTotal || 0).toLocaleString() + ' 条）'
-            + (tailMemo.windowed === true ? '。部分类可能取不全' : '')
-            + '。往后翻页翻的就是已取回的 ' + Number(tailMemo.retrievedTotal || 0).toLocaleString() + ' 条，不再联网取数。'
-          // 旧服务端（未声明 tail）：维持本地并集口径（诚实：只报已取回的集合）。
-          : '未列出的分类还有 ' + chipFold.otherCount + ' 类（上游合计 ' + Number(chipFold.other.totalAll || 0).toLocaleString() + ' 条）。'
-            + '本次已取回 ' + skills.length + ' 条' + (visibleSkills.length === skills.length ? '，全部如上' : '，其中 ' + visibleSkills.length + ' 条在列表中')
-            + (serverFacet ? '（整份取回，本地筛出）' : '')
-            + '。往后翻页只在这 ' + skills.length + ' 条里，不再联网取数。「共约」后面是全部条目的总数，不是本次取回这些的。');
+          // 0.5.183 白话两态：可靠源（windowed）报「共 X」，本地筛源不报虚高总数；全部取到就静默。
+          ? (function () {
+              const C = Math.max(0, Number(tailMemo.categoriesTotal || 0) - Number(tailMemo.categoriesFetched || 0));
+              const F = Number(tailMemo.categoriesFailed || 0);
+              if (C === 0 && F === 0) return '';
+              const X = Number(tailMemo.upstreamTotal || 0);
+              const Y = Number(tailMemo.retrievedTotal || 0);
+              let s = (tailMemo.windowed === true ? '共 ' + X.toLocaleString() + ' 条，' : '');
+              s += '本次取回 ' + Y.toLocaleString() + ' 条，未取全';
+              if (C > 0) s += '。还有 ' + C + ' 类没取到' + (F > 0 ? '（其中 ' + F + ' 类取数失败）' : '');
+              s += '。建议：稍后重试。';
+              return s;
+            })()
+          // 旧服务端/本地筛源（未声明 tail）：只报本次取回，绝不报虚高的「上游合计」。
+          : (function () {
+              const Y = skills.length;
+              const C = Number(chipFold.otherCount || 0);
+              let s = '本次取回 ' + Y + ' 条，未取全';
+              if (C > 0) s += '。还有 ' + C + ' 类没取到';
+              s += '。建议：稍后重试。';
+              return s;
+            })());
       const skillCards = shownCards(visibleSkills, cardBatch, cardStepFor(size)).map((item) =>
         h('div', { key: item.id, style: S.card },
           h('div', { style: S.title }, item.name || item.slug),
@@ -3278,7 +3287,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                       tab === 'skills' ? skillsPage : mcpPage,
                       tab === 'skills' ? skillsTotalPages : mcpTotalPages,
                       tab === 'skills' ? skillsHasMore : mcpHasMore,
-                      tab === 'skills' ? '共约' : '',
+                      tab === 'skills' ? '共' : '',
                       tab === 'skills' ? skillsTotal : mcpTotal,
                        tab === 'skills' ? pageJump : mcpPageJump,
                        tab === 'skills' ? setPageJump : setMcpPageJump))))

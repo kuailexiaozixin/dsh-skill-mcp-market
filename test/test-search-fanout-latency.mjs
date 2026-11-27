@@ -396,9 +396,9 @@ console.log('Test 11: 分页摘要必须把数量接到真实数据（悬空标�
   const W = path.resolve(import.meta.dirname, '..');
   const c = fs.readFileSync(path.join(W, 'client.js'), 'utf8');
   const NL = String.fromCharCode(10);
-  // live 实测到的缺陷：分页器显示「共约 第 1 / 1 页」—— 标签后面没有数字。
+  // live 实测到的缺陷：分页器显示「共 第 1 / 1 页」—— 标签后面没有数字。
   // 根因是 skillsTotal 只被 setSkillsTotal 写入、从未被读取渲染（useState 只写不读审计
-  // 全仓唯一一处），而 pager 的 label 参数是硬编码的 '共约'。标签与数据源断链。
+  // 全仓唯一一处），而 pager 的 label 参数是硬编码的 '共'。标签与数据源断链。
   const ps = c.indexOf('const pagerSummary = (o) => {');
   check('pagerSummary 已抽为纯函数', ps > 0, ps);
   if (ps > 0) {
@@ -412,24 +412,24 @@ console.log('Test 11: 分页摘要必须把数量接到真实数据（悬空标�
     }
     const fn = new Function(c.slice(ps, end + 1) + NL + ' return pagerSummary;')();
     // 场景1：正常聚合结果 —— 数字必须来自 total，不是硬编码
-    const s1 = fn({ label: '共约', total: 129, page: 2, n: 6, unknown: false, hasMore: true });
-    check('摘要含真实数量', s1.includes('共约 129 个'), JSON.stringify(s1));
+    const s1 = fn({ label: '共', total: 129, page: 2, n: 6, unknown: false, hasMore: true });
+    check('摘要含真实数量', s1.includes('共 129 个'), JSON.stringify(s1));
     check('摘要含页码与总页数', s1.includes('第 2 / 6 页'), JSON.stringify(s1));
-    // 场景2：0 命中 —— 绝不出现「共约 第 1 / 1 页」这种悬空标签
-    const s0 = fn({ label: '共约', total: 0, page: 1, n: 1, unknown: false, hasMore: false });
-    check('0 命中不渲染悬空标签', !s0.includes('共约'), JSON.stringify(s0));
+    // 场景2：0 命中 —— 绝不出现「共 第 1 / 1 页」这种悬空标签
+    const s0 = fn({ label: '共', total: 0, page: 1, n: 1, unknown: false, hasMore: false });
+    check('0 命中不渲染悬空标签', !s0.includes('共'), JSON.stringify(s0));
     check('0 命中仍说明页码', s0.includes('第 1 / 1 页'), JSON.stringify(s0));
     // 场景3：过滤后（total 已被 P4 重算为可见集合）—— 摘要跟着变，不沿用上游数
-    const sf = fn({ label: '共约', total: 2, page: 1, n: 1, unknown: false, hasMore: false });
-    check('过滤后摘要用重算的数', sf.includes('共约 2 个'), JSON.stringify(sf));
+    const sf = fn({ label: '共', total: 2, page: 1, n: 1, unknown: false, hasMore: false });
+    check('过滤后摘要用重算的数', sf.includes('共 2 个'), JSON.stringify(sf));
     // 场景4：cursor 型源（unknown）—— 不许编造总页数，但数量若已知仍要显示
-    const su = fn({ label: '共约', total: 500, page: 3, n: 0, unknown: true, hasMore: true });
+    const su = fn({ label: '共', total: 500, page: 3, n: 0, unknown: true, hasMore: true });
     check('unknown 不显示假总页数', !su.includes('/ 0 页'), JSON.stringify(su));
     check('unknown 显示可继续加载', su.includes('可继续加载'), JSON.stringify(su));
-    check('unknown 仍带真实数量', su.includes('共约 500 个'), JSON.stringify(su));
+    check('unknown 仍带真实数量', su.includes('共 500 个'), JSON.stringify(su));
     // 无 label（MCP 侧另有专行）时不得凭空造词
     const sn = fn({ label: '', total: 500, page: 1, n: 25, unknown: false, hasMore: true });
-    check('空 label 不渲染数量子句', !sn.includes('共约') && !sn.includes('500'), JSON.stringify(sn));
+    check('空 label 不渲染数量子句', !sn.includes('共') && !sn.includes('500'), JSON.stringify(sn));
   }
   // 接线：pager 必须收到 total，且技能侧传的是 skillsTotal（不是硬编码字符串）
   const pagerSig = c.split(NL).find(function (l) { return l.includes('const pager = (page, totalPages'); });
@@ -443,7 +443,7 @@ console.log('Test 11: 分页摘要必须把数量接到真实数据（悬空标�
     callSite.replace(/\s+/g, ' ').slice(0, 150));
   // MCP 侧 label 必须留空：数量已由上方专行（LobeHub · 共 N 个连接器）负责，
   // 两处都显示就是同一个数字出现两次。
-  check('MCP 侧 label 留空（不与专行重复计数）', callSite.includes("tab === 'skills' ? '共约' : '',"), callSite.replace(/\s+/g, ' ').slice(0, 150));
+  check('MCP 侧 label 留空（不与专行重复计数）', callSite.includes("tab === 'skills' ? '共' : '',"), callSite.replace(/\s+/g, ' ').slice(0, 150));
   // 同类缺陷防回归：全仓不得再有「只写不读」的 useState
   // 计数前剥注释：整行注释与行尾注释都不算读取。②c 证明只剥整行会留下
   // 「? 0 : 0, // skillsTotal」这种盲区——变量名出现在行尾注释里仍被当成读取。

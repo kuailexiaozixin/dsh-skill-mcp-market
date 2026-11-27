@@ -39,7 +39,7 @@ const PRISTINE = Buffer.from(readFileSync(CLIENT));
 
 let passed = 0, failed = 0;
 const REDS = [];
-const SECT_WANT = { A: 11, B: 12, C: 12, D: 12, E: 20, F: 3, G: 7, H: 8 };
+const SECT_WANT = { A: 11, B: 12, C: 12, D: 9, E: 20, F: 3, G: 7, H: 8 }; // 0.5.183: D 段随 tailNote IIFE 化 + 白话文案重排为 9 条判据
 const SECT_GOT = {};
 let CURSECT = null;
 const check = (n, cond, d) => { if (CURSECT) SECT_GOT[CURSECT] = (SECT_GOT[CURSECT] || 0) + 1; if (cond) { passed += 1; console.log("  PASS " + n); } else { failed += 1; REDS.push(n); console.log("  FAIL " + n + (d ? "  [" + String(d).slice(0, 170) + "]" : "")); } };
@@ -87,9 +87,15 @@ const makeKit = (src) => {
     const i = ls.findIndex((l) => l.includes("const tailNote = "));
     if (i < 0) return null;
     const out = [String(ls[i]).slice(String(ls[i]).indexOf("const tailNote = "))];
+    // 0.5.183：tailNote 改自包含 IIFE（带嵌套 {}）后，旧「行尾 ); 即断」启发式会把中间 const C = Math.max(0, ...) 的 ); 误当语句尾⇒截断⇒new Function 抛 Unexpected end of input。改花括号深度匹配：深度回 0 且行尾 ; 才是真语句尾。
+    let depth = 0;
+    const scanDepth = (str) => { for (let c = 0; c < String(str).length; c += 1) { const ch = String(str).charAt(c); if (ch === "{") depth += 1; else if (ch === "}") depth -= 1; } };
+    scanDepth(out[0]);
     for (let k = i + 1; k < ls.length; k += 1) {
-      out.push(ls[k]);
-      if (ls[k].trim().endsWith(");")) break;
+      const L = String(ls[k]);
+      out.push(L);
+      scanDepth(L);
+      if (depth === 0 && L.trim().endsWith(";")) break;
     }
     return out.join(NL);
   })();
@@ -243,9 +249,9 @@ const searchBodies = (e) => e.bodies.filter((b) => b.op === 'skills.search').map
 const eT = await drive('tail', KIT, planTail, { category: KIT.OTHER, tailCovers: COVERS.slice() });
 check("P1 合并态 harvest.start body.tailCategories 恰为 covers（逐字 C1）", canon(startBody(eT).tailCategories) === canon(COVERS), canon(startBody(eT).tailCategories));
 check("P1 合并态六参齐全且同旧口径（query/source/category/page/pageSize/sort）", canon(Object.assign({}, startBody(eT), { tailCategories: undefined })) === canon({ query: 'pdf', source: 'clawhub', category: '', page: 1, pageSize: 24, sort: 'installCount' }), canon(startBody(eT)));
-check("P2 中间包 notice 报逐类进度（已取回 1 / 3 类）且保留「陆续加载中」（S1 锁不回归）", eT.logs.notice.length >= 2 && String(eT.logs.notice[0]).indexOf('已取回 1 / 3 类') >= 0 && String(eT.logs.notice[0]).indexOf('陆续加载中') >= 0, JSON.stringify(eT.logs.notice));
-check("P2 第二个中间包进度前进到 2 / 3 类", String(eT.logs.notice[1]).indexOf('已取回 2 / 3 类') >= 0, JSON.stringify(eT.logs.notice));
-check("P2 进度文案用的是标签常量「其他」，且零旧词", String(eT.logs.notice[0]).indexOf(KIT.LABEL) >= 0 && String(eT.logs.notice[0]).indexOf('窗外') < 0, String(eT.logs.notice[0]));
+check("0.5.183 P2 中间包一行「陆续加载中，已到达 1 条，还有 900 条在途」（S1 锁不回归 + 在途数）", eT.logs.notice.length >= 2 && String(eT.logs.notice[0]).indexOf('陆续加载中，已到达 1 条') >= 0 && String(eT.logs.notice[0]).indexOf('还有 900 条在途') >= 0, JSON.stringify(eT.logs.notice));
+check("0.5.183 P2 第二个中间包已到达 2 条、还有 900 条在途", String(eT.logs.notice[1]).indexOf('已到达 2 条') >= 0 && String(eT.logs.notice[1]).indexOf('还有 900 条在途') >= 0, JSON.stringify(eT.logs.notice));
+check("0.5.183 P2 加载态一行白话（旧逐类进度「已取回 N/M 类」退场，零「窗外」词）", String(eT.logs.notice[0]).indexOf('陆续加载中') >= 0 && String(eT.logs.notice[0]).indexOf('已取回') < 0 && String(eT.logs.notice[0]).indexOf('窗外') < 0, String(eT.logs.notice[0]));
 check("P4 final 落数是尾口径（total/pages/hasMore/serverFacet 来自收口包）", lastOf(eT.logs.total) === 4 && lastOf(eT.logs.totalPages) === 1 && lastOf(eT.logs.hasMore) === false && lastOf(eT.logs.serverFacet) === false, JSON.stringify([eT.logs.total, eT.logs.totalPages, eT.logs.hasMore, eT.logs.serverFacet]));
 const keyT = 'sk|clawhub|pdf|' + KIT.OTHER + '|1|24|installCount';
 const crecT = eT.resultCacheRef.current[keyT] || {};
@@ -290,20 +296,17 @@ const runNote = (kit, env) => new Function('category', 'CAT_OTHER', 'chipFold', 
 const CF = { other: { value: KIT.OTHER, label: KIT.LABEL, totalAll: 743, covers: COVERS.slice(), otherCount: 0 }, otherCount: 3, otherTotal: 743 };
 check("D 装置：tailNote 表达式可抽出", !!KIT.tailNoteSrc && KIT.tailNoteSrc.indexOf('const tailNote = ') === 0, String(KIT.tailNoteSrc).slice(0, 80));
 const nW = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check('P3 tail 声明 + windowed=true：真实口径三数齐全（4 条 / 2/3 类 / 失败 1 类 / 上游 940）', nW.indexOf('已取回 4 条') === 0 && nW.indexOf('2/3 类完成') >= 0 && nW.indexOf('失败 1 类') >= 0 && nW.indexOf('上游合计 940 条') >= 0, nW);
-check('P3 windowed=true 追加窗口句（白话：部分类可能取不全，零「窗」字）', nW.indexOf('部分类可能取不全') >= 0, nW);
-check('P3 tail 态零旧词（窗外/窗内之外/共约/打上游/这些条里/翻页才会取回更多 一律不许）', nW.indexOf('窗') < 0 && nW.indexOf('共约') < 0 && nW.indexOf('打上游') < 0 && nW.indexOf('这些条里') < 0 && nW.indexOf('翻页才会取回更多') < 0, nW);
-check('P3 tail 态翻页句用户视角（往后翻页翻的就是已取回的条目，不再联网取数）', nW.indexOf('往后翻页翻的就是已取回的 4 条，不再联网取数') >= 0, nW);
+check('0.5.183 P3 tail windowed 白话：共 940 + 本次取回 4 + 未取全 + 还有 1 类没取到（其中 1 类取数失败）+ 建议稍后重试', nW === '共 940 条，本次取回 4 条，未取全。还有 1 类没取到（其中 1 类取数失败）。建议：稍后重试。', nW);
+check('0.5.183 P3 tail 态零旧词（上游合计/共约/不再联网取数/往后翻页/部分类可能取不全 一律不许）', nW.indexOf('上游合计') < 0 && nW.indexOf('共约') < 0 && nW.indexOf('不再联网取数') < 0 && nW.indexOf('往后翻页') < 0 && nW.indexOf('部分类可能取不全') < 0, nW);
 const nF = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILNF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check('P3 tail 声明 + windowed=false：不写窗口句但报 3/3 类', nF.indexOf('已取回 4 条') === 0 && nF.indexOf('3/3 类完成') >= 0 && nF.indexOf('失败') < 0 && nF.indexOf('部分类可能取不全') < 0, nF);
+check('0.5.183 P3 tail !windowed 且全取回（3/3 类、0 失败）⇒ 全部取到，不出提示语（恒空）', nF === '', nF);
 const nO = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
-check('P3 兜底态数字不重复叙述（本次已取回 4 条恰一次；老句「其中属于这些类的」不得回来）', nO.indexOf('本次已取回 4 条') >= 0 && nO.split('已取回 4 条').length === 2 && nO.indexOf('其中属于这些类的') < 0 && (nO.indexOf('2 条在列表中') >= 0 || nO.indexOf('全部如上') >= 0), nO);
-check('P3 兜底态零「窗」字（改回「窗外」或「窗内之外」都必红）', nO.indexOf('窗') < 0, nO);
-check('P3 兜底态「共约」句用户视角（共约 = 全部条目的总数，不是本次取回这些的；「集合以本行为准」退场）', nO.indexOf('「共约」后面是全部条目的总数，不是本次取回这些的。') >= 0 && nO.indexOf('集合以本行为准') < 0, nO);
+check('0.5.183 P3 兜底态（本地筛源）白话：本次取回 4 + 未取全 + 还有 3 类没取到 + 建议稍后重试，绝不显示虚高总数', nO === '本次取回 4 条，未取全。还有 3 类没取到。建议：稍后重试。', nO);
+check('0.5.183 P3 兜底态零旧词（上游合计/共约/不再联网取数/往后翻页/在列表中 一律不许）', nO.indexOf('上游合计') < 0 && nO.indexOf('共约') < 0 && nO.indexOf('不再联网取数') < 0 && nO.indexOf('往后翻页') < 0 && nO.indexOf('在列表中') < 0, nO);
 const nO2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
-check('P3 兜底态翻页句用户视角（零旧词：分页器只在这些条里翻/不再打上游/翻页才会取回更多）', nO2.indexOf('往后翻页只在这 4 条里，不再联网取数') >= 0 && nO2.indexOf('分页器只在这些条里翻') < 0 && nO2.indexOf('不再打上游') < 0 && nO2.indexOf('翻页才会取回更多') < 0, nO2);
+check('0.5.183 P3 兜底态建议句在场（稍后重试）', nO2.indexOf('建议：稍后重试。') >= 0, nO2);
 const nW2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check('P3 tail 态与兜底态翻页句并存（尾态用 tailMemo.retrievedTotal，兜底用 skills.length）', nW2.indexOf('往后翻页翻的就是已取回的 4 条，不再联网取数') >= 0 && nO2.indexOf('往后翻页只在这 4 条里，不再联网取数') >= 0, nW2 + ' | ' + nO2);
+check('0.5.183 P3 tail 态与兜底态并存：tail 态报「共 940 条」，兜底态不报总数（两者都无 不再联网取数/往后翻页）', nW2.indexOf('共 940 条') >= 0 && nO2.indexOf('共 940 条') < 0 && nW2.indexOf('不再联网取数') < 0 && nO2.indexOf('不再联网取数') < 0, nW2 + ' | ' + nO2);
 check('P3 非合并态 tailNote 恒空', runNote(KIT, { category: 'ai', chipFold: CF, tailMemo: TAILF }) === '' && runNote(KIT, { category: KIT.OTHER, chipFold: { other: null, otherCount: 0, otherTotal: 0 }, tailMemo: TAILF }) === '', 'not empty');
 
 // ── E. P5 谓词真跑 + P6 整源数字不复用 + 缓存续命 ──

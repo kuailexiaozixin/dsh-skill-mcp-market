@@ -816,22 +816,23 @@ const runRenderFor = (entries, fold) => {
         !/const allRealChips *=/.test(client) && /catsExpanded && tailExpandable \? expandedChips/.test(client) &&
         /const tailExpandable = !!chipFold\.other && chipFold\.otherCount <= CAT_TAIL_EXPAND_MAX;/.test(client),
         (client.split(NL).find((l) => l.includes('tailExpandable')) || '(none)').trim().slice(0, 160));
-    // B3 诚实口径（0.5.182 用户视角重写，用户 m28870/m28871：「这些条里 / 打上游 / 共约是整源 /
-    // 集合以本行为准」用户看不懂）：两态 tailNote 收尾都必须白话——tail 态报逐类进度 +
-    //「往后翻页翻的就是已取回的条目，不再联网取数」；兜底态报本次取回集合 + 说明「共约」是
-    // 全量条数、不是本次取回的集合。分页器实参两行原样不动（test-search-fanout-latency 锁死），
-    // 所以说实话的通道只有 tailNote。
-    check('tailNote 两态用户视角收尾在场（往后翻页翻的就是…不再联网取数 + 共约是全部条目总数），旧黑话全退场',
-        /本次已取回 .*条.*如上/.test(client) &&
-        /往后翻页翻的就是已取回的.*条，不再联网取数./.test(client) &&
-        /往后翻页只在这 .*条里，不再联网取数./.test(client) &&
-        /「共约」后面是全部条目的总数，不是本次取回这些的./.test(client) &&
+    // B3 人话两态（0.5.183，用户 m29465/m29498：提示语太长看不懂）：tail 态报「共 X / 本次取回 Y /
+    // 未取全 / 还有 C 类没取到 / 建议：稍后重试」；兜底态（本地筛源）只报本次取回、不报虚高总数；
+    // 全部取到就静默。旧黑话（不再联网取数 / 往后翻页 / 上游合计 / 共约句 / 集合以本行 / 打上游）全退场。
+    // 分页器 label 共约→共（边界外判据 test-search-fanout-latency 同步锁）。
+    check('0.5.183 tailNote 人话两态收尾在场（本次取回 N 条，未取全 + 建议：稍后重试。+ 还有 N 类没取到），旧黑话全退场',
+        /本次取回 .*条，未取全/.test(client) &&
+        /建议：稍后重试。/.test(client) &&
+        client.indexOf('类没取到') >= 0 &&
         /tailNote \? h\('div', \{ style: \{ \.\.\.S\.status, marginTop: 8 \} \}, tailNote\) : null,/.test(client) &&
-        client.indexOf('分页器只在这些条里翻') < 0 && client.indexOf('不再打上游') < 0 && client.indexOf('集合以本行为准') < 0,
-        (client.split(NL).find((l) => l.includes('往后翻页')) || '(none)').trim().slice(0, 170));
+        client.indexOf('不再联网取数') < 0 && client.indexOf('往后翻页') < 0 && client.indexOf('集合以本行为准') < 0 && client.indexOf('翻页才会取回更多') < 0,
+        // 注：「上游合计」(仅存于开发注释 :2384) 与「打上游」(仅存于 :122/:312 开发注释) 不参与全仓零词锁，
+        // 0.5.182 教训：全仓 indexOf 会被开发注释误伤；人话退场由 panel-tail D 段（nW/nO 逐字断言）锁定。
+        (client.split(NL).find((l) => l.includes('本次取回')) || '(none)').trim().slice(0, 170));
 
-    check('分页器实参两行未被顺手改动（边界外判据 test-search-fanout-latency :442/:446 依赖）',
-        /tab === 'skills' \? '共约' : ''/.test(client) && /tab === 'skills' \? skillsTotal : mcpTotal/.test(client), '');
+    check('0.5.183 分页器 label 共约→共（旧「共约」call-site 退场，total 实参不变；边界外判据 test-search-fanout-latency 同步锁）',
+        /tab === 'skills' \? '共' : ''/.test(client) && /tab === 'skills' \? skillsTotal : mcpTotal/.test(client) &&
+        client.indexOf("tab === 'skills' ? '共约' : ''") < 0, '');
     // 展开态纵向滚动形态（用户 m20051「保持展开后可上下拖动的形态」）源码锁。
     check('展开态限高纵向滚动样式仍在场（catsRow 是展开态唯一行样式）',
         /catsRow: \{[^\n]*maxHeight: 116[^\n]*overflowY: 'auto'/.test(client) &&
