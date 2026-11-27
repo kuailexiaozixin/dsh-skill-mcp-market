@@ -9,6 +9,7 @@
 - **P0 同屏两行（收口期 hint 与 tailNote 重复）**：setHarvestNotice 收口时对 tail 会话过滤服务端「「其他」分类未取全…」hint（:272），结论只由 tailNote 一行播报；服务端 sources.js:1337 的 hint 与口径文案不动（test-harvest I6/K6 两条正则锁仍绿），一次性通路与其他源不受影响。
 - **判据同步**：test-panel-tail A 段 +1（分批闸门源码锁：token === null 恰 1 处）、B 段 +2（新夹具 planTailHint ⇒ 尾会话收口 hint 全程不上屏 + notice 清空）、D 段 +1（tailNote 表达式零「个分类」）、D 段四条逐字白话等式与 G 段 title 判据改为零数字、H 段 X8 needle 收窄 + 新增 X13（摘掉分批闸门必须出红）；SECT_WANT ⇒ {A:12,B:14,C:12,D:12,E:20,F:3,G:7,H:8}，实测 96/0。test-lobehub-category-vocab tailNote 锁同步（/「其他」分类未取全/ && /本次取回 .*条/ && 零「个分类没取回」），126/0。test-panel-harvest 81/0、test-harvest 205/0、test-search-fanout-latency 211/0（分批行代码保留 ⇒ cardStepFor/继续显示 锁不红）、test-modelscope-category-vocab 181/0(2 skipped)。
 - 版本 0.5.184⇒0.5.185。
+- **发布凭据（0.5.185 发布闭环）**：commit 905ced5（5 files +45/-22）；tag v0.5.185（轻量 tag，peel=905ced5）；远端 master=905ced5、tag v0.5.185 已推（push 两次网络瞬断 Connection reset 后单发重试即成）；CI run **46033937575** success（trusted publishing 自动出包，未手工 publish）；npm dist-tags.latest=**0.5.185**、dist.shasum=b678c631f612a9ec895fffe63d295cffe96e8719；装机 dsh plugin --profile desktop add 0.5.185 exit=0（0.5.184⇒0.5.185，lockfile 298 entries 过），test-profile-sync 复跑 **7/0**（no stale copies ✓、mirrors report 0.5.185 ✓）、test-suite-inventory **12/0**；链 81/81 全绿（chain185head2 HEADSEGOK=50/FAIL=0 + chain185tail3 TAILSEGOK=30/FAIL=0，profile-sync 装机后随镜像 0.5.185 转绿）。
 
 ## 0.5.184
 
