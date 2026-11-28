@@ -583,8 +583,7 @@ export function createCatalogDemand() {
 
 const catalogDemandQueue = createCatalogDemand();
 
-/** 翻页时把「用户在意哪一面」记进跨源队列（sources.js 的 handlers 与两个泵共用一份席位）。 */
-export function noteCatalogDemand(source, facet) { return catalogDemandQueue.note(source, facet); }
+/** clawhub 浏览态登记需求：用户翻过哪一面，后台就先补满哪一面（空 facet＝全库面，同样占席位）。 */
 export function noteClawHubDemand(facet) { catalogDemandQueue.note("clawhub", facet); }
 
 /**
@@ -616,19 +615,16 @@ export async function catalogPumpLoop(store, options = {}) {
   return { rounds: ran };
 }
 
-/** 两个源各自的推进器：把队列项翻译成一次单飞链。 */
-export function clawHubPumpAdvance(options = {}) {
+/**
+ * clawhub 腿的推进适配器：把队列项翻译成一次单飞链。
+ * skillsmp 腿继续用它在 0.5.190 里已经写好并被 35 条判据钉住的 skillsMpPumpLoop，
+ * 两条腿各有自己的队列与定时器，互不抢游标——这里只做 clawhub 一家，够用就好，
+ * 不为「对称」造一个没人调用的第二适配器（test-dead-exports Test 3 会当场判红）。
+ */
+function clawHubPumpAdvance(options = {}) {
   return async (item, store) => pumpClawHubCatalog(store, {
     category: item.facet,
     sortBy: options.sortBy || "",
-    fetchJson: options.fetchJson,
-    rounds: options.rounds,
-  });
-}
-export function skillsMpPumpAdvance(options = {}) {
-  return async (item, store) => warmSkillsMpCatalog(store, {
-    facet: item.facet,
-    sort: options.sort || "",
     fetchJson: options.fetchJson,
     rounds: options.rounds,
   });
