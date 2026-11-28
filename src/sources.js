@@ -15,6 +15,7 @@ import {
   searchModelScope,
   searchSkillsMp,
   searchTrustTools,
+  startSkillsMpPump,
 } from "./extra-sources.js";
 import { safeTempDir, childEnv } from "./home.js";
 
@@ -1007,6 +1008,10 @@ export async function searchSkills({ query, source = "all", page = 1, pageSize =
  * skillsmp is a paged upstream). Runs in the background so the first panel open is already populated.
  */
 export async function warmMarketCache(cache = fallbackCache) {
+  // 0.5.190：skillsmp 目录补链泵挂在这里——宿主起来就挂一次，之后每 SKILLSMP_PUMP_GAP_MS
+  // 推进队列里的一面（队列由用户翻页 + 词表播种）。定时器 unref，不阻止进程退出；
+  // 重复调用（test-nocache 无参也走到这里）由 startSkillsMpPump 内部幂等挡住。
+  startSkillsMpPump(cache);
   const results = await Promise.allSettled([
     searchBrowseSh({ query: "", page: 1, pageSize: 24, cache }),
     searchLobeHubSkills({ query: "", page: 1, pageSize: 24, cache }),

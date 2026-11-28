@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.190 — skillsmp 后台补链泵：目录进度不再靠用户翻页驱动（m41100 令主体）
+
+- 用户令「必须确保所有技能被完整取回」。0.5.189 堵死了三条「谎称取完」通路，但取全本身仍只由翻页驱动：`need = size × page`——用户不往深翻，545,886 条/类的目录链就永远停在原地；且进度装载 TTL 只有 6 小时，空闲一夜半截进度直接清零。本批把「取满」变成后台持续过程。
+- **进度 TTL**：`SKILLSMP_CATALOG_TTL`（6h）改名 `SKILLSMP_PROGRESS_TTL = 7×24h`（对齐词表 VOCAB_TTL 量级；链每跳 `cache.put` 都刷新落盘时间戳，活动链内永不过期，空闲一周也续得上）。
+- **链预算解耦**：`extendSkillsMpCatalog` 加第 7 参 `rounds`（默认 `SKILLSMP_CHAIN_ROUNDS=12`，翻页通路行为逐毫秒不变）；泵调用传 `need=Infinity`，预算只由 rounds 定——目录进度与「用户看到第几页」彻底脱钩。新增常量 `SKILLSMP_PUMP_ROUNDS=12`、`SKILLSMP_PUMP_GAP_MS=30000`（实测一跳 48 行 1.4–2.0s，一轮 ≈18–24s；同链必须严格串行：keyset 游标并行会行交错重复并触发上游限流）。
+- **泵公开面**（`src/extra-sources.js`）：`warmSkillsMpCatalog(store,{facet,rounds,fetchJson})→{rows,done,joined}`——同 catKey 进程内单飞（`SKILLSMP_PUMP_FLIGHTS`，第二个调用 await 同一条链并标 joined，绝不开第二条）；`createSkillsMpDemand()` 需求队列（note 去重、next 轮转不饿死、done 退场、全库面=空 facet 也占席位）；`skillsMpPumpLoop` 每轮推一面、取完退场、瞬时失败吞掉留队列下一轮再接；`startSkillsMpPump` 挂在 `warmMarketCache`（sources.js），setTimeout 自重挂、**定时器 unref——后台泵永远不许阻止宿主退出**，队列空时用词表缓存播种。
+- `searchSkillsMp` 纯浏览态把翻到的面 `noteSkillsMpDemand(facet)` 记进队列：用户在意哪面，哪面先补满。
+- **链实现只有一份**：泵全程复用 `extendSkillsMpCatalog`，0.5.189 三条腿（死游标自愈 / catchingUp 跨调用 / 中毒终态复位）在泵路径同样生效；Test 10 源码锁盯接线（泵体必须出现 `extendSkillsMpCatalog(`、searchSkillsMp 必须 note、sources 必须挂泵、必须有 `.unref()`）。
+- TDD：新套件 `test/test-skillsmp-pump.mjs` 10 组 35 判据（RED 全红→GREEN），已登记 `test:chain`（82 段）。夹具教训：Windows 动态 import 用相对说明符（`pathToFileURL(pathname)` 会造出 `/D:/...`）；stopAt 用 1 基与断言逐一对齐。
+- 真机 sk34（走生产 warmSkillsMpCatalog，新缓存）：泵#1 四跳 192 行 8.2s、泵#2 从落盘游标续推 384、并发双腿恰一条链（B joined=true）、seen 零重复、末态 528/545886 done=false（未取满诚实报）——每轮 +192，泵持续跑 ≈7.9h 可取满一面（30s 间隔、12 跳×48 行/轮）。
+- 测试矩阵全绿：pump 35/0、skillsmp-search 138/0、fanout-latency 211/0、nocache 14/0、suite-inventory 12/0、harvest 205/0、panel-harvest 81/0、warm-budget 17/0、sort-server 45/0(3 skip)、full-sort 40/0(2 skip)、clawhub-quality 86/0、ux-honesty 62/0、category-vocab 四件套 71+62+181(2 skip)+84/0、sort-honesty 12/0、sort-options 36/0、index-runtime 26/0、panel-tail 99/0（单独串行）、lobehub 126/0（落盘取尾）。
+- 仍未收口：取满要求宿主持续在线跑泵（断线由游标自愈+落盘进度续）；重启后深页画面凭据待拍；逐源残留（modelscope 30k offset 硬顶、browse.sh CLI 窗口）另列核查。
+
 ## 0.5.189
 
 - **用户 m41100 令「技能的完整性是核心、关键问题，必须确保所有技能被完整取回」——本轮把游标目录链上三条「谎称取完」的通路全部堵死。** 0.5.188 的渐进取全只解决了「能不能往后取」，真机复跑证明它还有三个会让分类永久停在半截、对外却报「已取完」的形状。

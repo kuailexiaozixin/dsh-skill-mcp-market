@@ -1019,10 +1019,22 @@ const SKILLSMP_UNBOUNDED_NOTE = "skillsmp 没有给出总数，先显示这一�
 //   · 成本：limit=48 每轮平均 1.95s（10 轮 19496ms）⇒ debugging 一面 545886 条串行约 6.2 小时，
 //     所以只能「随翻随取」：按 need=size*p 链到够用为止，绝不首屏取全。
 const SKILLSMP_CATALOG_KEY = "{{SECRET_b94gck2c}}";
-const SKILLSMP_CATALOG_TTL = 6 * 3600 * 1000;
+// 进度装载 TTL（0.5.190 从 6 小时提到 7 天，用户 m41100「必须确保所有技能被完整取回」）：
+// 545,886 条/类串行要 ≈6.2 小时，6 小时 TTL 意味着「一个晚上没人翻页 ⇒ 半截进度整体作废、
+// 第二天从零重来」——渐进取全就永远取不全。makeCache.put 每轮落盘都刷 at，活动链内永不过期，
+// 真正的代价只是「连续 7 天没碰过的面」才重置；对照词表 VOCAB_TTL 同为一周，量级一致。
+const SKILLSMP_PROGRESS_TTL = 7 * 24 * 3600 * 1000;
 // 单次调用的补链轮数上界：必须真的判断（clawhub 侧 2026-11-23 的教训——guard 存在却从不判断，
 // 注入不收敛的上游能连打 201 次，把整个源拖到 12s 预算被切）。
 const SKILLSMP_CHAIN_ROUNDS = 12;
+// 0.5.190 后台补链泵（用户 m41100：「技能的完整性是核心、关键问题，必须确保所有技能被完整取回」）。
+// 0.5.188/189 的目录链只被用户翻页驱动（need = size × page）：没人翻页就永远停在已取的那一截，
+// 一面 545,886 条 ≈6.2 小时串行，靠会话内翻页取满是做不到的。泵把「取满」变成进程活着就持续
+// 推进的后台行为：每个 tick 推一面的一轮链（单轮轮数与翻页共用预算上界），facet 之间轮转不饿死。
+// 间隔取 30s：实测一跳 48 行 1.4–2.0s，一轮 12 跳 ≈18–24s，加间隔让同链严格串行（游标链不可并行、
+// 连打还会触发上游限流——sk 系列探针实证），也让别的请求有机会插进来。
+const SKILLSMP_PUMP_ROUNDS = 12;
+const SKILLSMP_PUMP_GAP_MS = 30000;
 // 分类词表：面板的「按分类浏览」入口只能来自 /zh/categories 这份 HTML（编目端点 10 个候选实测全部
 // ENDPOINT_NOT_FOUND），所以这里解析页面锚点，抓取走 pythonText（同一 Cloudflare 指纹门槛）。
 // 词表 TTL 取 7 天：判据不是「上游多久改版」，而是「面板宁可退回页内派生 chip，也不长期贴一份旧词表」。
@@ -1150,10 +1162,10 @@ function skillsMpItemOf(raw, catSlug) {
  * （上游这一包不带游标 ⇒ 整条通路退回页码口径）、lastData（legacy 时那包响应，供调用方就地复用，
  * 不许为同一页再打第二次）。state.rows 按 id 去重：实测同一游标重复取回的是同一批行，而链上零重复。
  */
-async function extendSkillsMpCatalog(cache, need, facet, sort, fetchJson, options) {
+async function extendSkillsMpCatalog(cache, need, facet, sort, fetchJson, options, rounds = SKILLSMP_CHAIN_ROUNDS) {
   const chain = async (f) => {
     const catKey = `${SKILLSMP_CATALOG_KEY}${f || "any"}${sort ? ":" + sort : ""}`;
-    let state = await cache.get(catKey, SKILLSMP_CATALOG_TTL);
+    let state = await cache.get(catKey, SKILLSMP_PROGRESS_TTL);
     if (!state || !Array.isArray(state.rows)) state = { rows: [], cursor: null, done: false, totalAll: 0 };
     // 中毒终态自愈（sk31/sk32 真机实证）：0.5.188 的局部 replaying bug 把「追赶页整页重复」
     // 误判成到底，落盘 done=true 而 rows<totalAll ⇒ 分类永久停在半截、对外还谎称取完。
@@ -1171,7 +1183,7 @@ async function extendSkillsMpCatalog(cache, need, facet, sort, fetchJson, option
     // 是追赶链中途游标；若追赶态只活在本次调用里，下一次调用第一跳取回重复页就会被判 done，
     // 目录永久截断在 576/545886 还对外报 hasMore=false＝谎称取完（Test 25 锁死）。
     const resumed = Boolean(state.cursor);
-    while (!state.done && state.rows.length < need && guard < SKILLSMP_CHAIN_ROUNDS) {
+    while (!state.done && state.rows.length < need && guard < rounds) {
       guard += 1;
       let data;
       try {
@@ -1239,6 +1251,126 @@ async function extendSkillsMpCatalog(cache, need, facet, sort, fetchJson, option
   }
 }
 
+// ── 0.5.190 后台补链泵 ─────────────────────────────────────────────────────
+// 单飞表：keyset 游标链不可并行（同一面同时开两条链，各自从各自游标往前走，行会交错重复、
+// 上游还容易被连打限流）。同一 catKey 同时只允许一条链，第二个调用等同一条并标 joined。
+const SKILLSMP_PUMP_FLIGHTS = new Map();
+const defaultSleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t.unref) t.unref(); });
+
+/**
+ * 需求队列：用户翻过哪面、词表里有哪面，哪面就排队等补。note 去重（同一面不双份）；
+ * next 取队首并放回队尾（轮转，一面卡住不会饿死其余面）；done 退场（取满/上游明说到底）。
+ * 空串 facet ＝ 全库面，同样占一个席位。
+ */
+export function createSkillsMpDemand() {
+  const order = [];
+  const norm = (f) => String(f == null ? "" : f).trim().toLowerCase();
+  return {
+    note(f) { const facet = norm(f); if (!order.includes(facet)) order.push(facet); },
+    next() { if (!order.length) return null; const facet = order.shift(); order.push(facet); return { facet }; },
+    done(f) { const i = order.indexOf(norm(f)); if (i >= 0) order.splice(i, 1); },
+    peek() { return order.slice(); },
+    size() { return order.length; },
+  };
+}
+
+const skillsMpDemandQueue = createSkillsMpDemand();
+
+/** searchSkillsMp 翻到哪面就把哪面记进需求队列（后台泵因此知道用户在意什么）。 */
+export function noteSkillsMpDemand(facet) { skillsMpDemandQueue.note(facet); }
+
+/**
+ * 推一面的一轮链：need=Infinity，预算只由 rounds 定；链实现复用 extendSkillsMpCatalog
+ * （三条腿——死游标自愈、catchingUp 跨调用、中毒终态复位——在泵路径同样生效，绝不另写一份）。
+ * 返回 {rows,done,joined}；rows 是目录累计行数（数字）。
+ */
+export async function warmSkillsMpCatalog(store, options = {}) {
+  const facet = String(options.facet || "").trim().toLowerCase();
+  const sort = String(options.sort || "").trim().toLowerCase();
+  const fetchJson = options.fetchJson || getJsonEscalating;
+  const rounds = Math.max(1, Number(options.rounds) || SKILLSMP_PUMP_ROUNDS);
+  const key = `${SKILLSMP_CATALOG_KEY}${facet || "any"}${sort ? ":" + sort : ""}`;
+  const running = SKILLSMP_PUMP_FLIGHTS.get(key);
+  if (running) {
+    const st = await running;
+    return { rows: st.rows.length, done: st.done, joined: true };
+  }
+  const flight = (async () => {
+    const r = await extendSkillsMpCatalog(store, Infinity, facet, sort, fetchJson, {
+      headers: { referer: "https://skillsmp.com/" },
+      timeoutMs: 20000,
+      pythonFirst: true,
+    }, rounds);
+    return r.state;
+  })();
+  SKILLSMP_PUMP_FLIGHTS.set(key, flight);
+  try {
+    const st = await flight;
+    return { rows: st.rows.length, done: st.done, joined: false };
+  } finally {
+    if (SKILLSMP_PUMP_FLIGHTS.get(key) === flight) SKILLSMP_PUMP_FLIGHTS.delete(key);
+  }
+}
+
+/**
+ * 按队列轮转推进：每轮取一面推一轮链，取完（done）退场；链抛错（限流抖动）不外抛、
+ * 该面留在队列里下一轮再接——这正是三条腿之外泵自己的容错口径。maxRounds 到点自退，
+ * 不吊调用方。返回 {rounds}（实际推进的轮数）。
+ */
+export async function skillsMpPumpLoop(store, options = {}) {
+  const queue = options.queue || skillsMpDemandQueue;
+  const rounds = Math.max(1, Number(options.rounds) || SKILLSMP_PUMP_ROUNDS);
+  const maxRounds = Math.max(1, Number(options.maxRounds) || 1);
+  const sleep = options.sleep || defaultSleep;
+  let ran = 0;
+  for (let i = 0; i < maxRounds; i += 1) {
+    const item = queue.next();
+    if (!item) break;
+    try {
+      const r = await warmSkillsMpCatalog(store, { facet: item.facet, fetchJson: options.fetchJson, rounds });
+      if (r && r.done) queue.done(item.facet);
+    } catch {
+      // 瞬时失败：不标 done，队列轮转稍后再接；死游标/中毒态由链内三条腿自愈。
+    }
+    ran += 1;
+    if (options.onRound) options.onRound(item.facet);
+    await sleep(SKILLSMP_PUMP_GAP_MS);
+  }
+  return { rounds: ran };
+}
+
+let SKILLSMP_PUMP_TIMER = null;
+
+/**
+ * 宿主启动时挂一次：每 SKILLSMP_PUMP_GAP_MS 推进队列里的一面。定时器 unref——
+ * 后台泵永远不许阻止宿主退出。队列先用词表缓存播种（只读缓存，不等网络），
+ * 之后由用户翻页持续补充。
+ */
+export function startSkillsMpPump(store, options = {}) {
+  if (!store || SKILLSMP_PUMP_TIMER) return { armed: Boolean(SKILLSMP_PUMP_TIMER) };
+  const queue = options.queue || skillsMpDemandQueue;
+  const arm = () => {
+    SKILLSMP_PUMP_TIMER = setTimeout(() => {
+      SKILLSMP_PUMP_TIMER = null;
+      void (async () => {
+        try {
+          if (!queue.size()) {
+            const vocab = await readSkillsMpCategoryVocabulary({ cache: store });
+            if (vocab) for (const c of vocab.categories) queue.note(c.slug);
+          }
+          await skillsMpPumpLoop(store, { queue, maxRounds: 1, fetchJson: options.fetchJson });
+        } catch {
+          // 一个 tick 失败不影响下一个：泵是尽力而为的后台进度。
+        }
+        if (!SKILLSMP_PUMP_TIMER) arm();
+      })();
+    }, SKILLSMP_PUMP_GAP_MS);
+    if (typeof SKILLSMP_PUMP_TIMER.unref === "function") SKILLSMP_PUMP_TIMER.unref();
+  };
+  arm();
+  return { armed: true };
+}
+
 export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "", fetchJson = getJsonEscalating }) {
   const q = String(query || "").trim();
   const p = Math.max(1, Number(page) || 1);
@@ -1271,6 +1403,9 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
   let seedUsed = facet;
   let seedRefused = false;
   if (cache && !q) {
+    // 翻到哪面就把哪面记进后台补链队列（0.5.190，m41100 令：目录进度不能只靠翻页驱动，
+    // 但用户翻过的面优先补——泵按这个队列轮转推进）。
+    noteSkillsMpDemand(facet);
     const cat = await extendSkillsMpCatalog(cache, size * p, facet, sort, fetchJson, options);
     // 只要上游没退回页码形状就用目录切片——包括「本地目录已攒够、这一轮根本不需要再链」的深页
     // （真机 0.5.188 首测第 22 页就撞在这里：链没跑 ⇒ probed=false ⇒ 误落页码通路，
