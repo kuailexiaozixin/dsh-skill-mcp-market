@@ -39,7 +39,7 @@ const PRISTINE = Buffer.from(readFileSync(CLIENT));
 
 let passed = 0, failed = 0;
 const REDS = [];
-const SECT_WANT = { A: 12, B: 14, C: 12, D: 14, E: 20, F: 3, G: 7, H: 8 }; // 0.5.184: D 段加会话在途两条（tailMemo 门 + 表达式闸门锚）= 11 条
+const SECT_WANT = { A: 12, B: 14, C: 12, D: 15, E: 20, F: 3, G: 7, H: 8 }; // 0.5.184: D 段加会话在途两条（tailMemo 门 + 表达式闸门锚）= 11 条
 const SECT_GOT = {};
 let CURSECT = null;
 const check = (n, cond, d) => { if (CURSECT) SECT_GOT[CURSECT] = (SECT_GOT[CURSECT] || 0) + 1; if (cond) { passed += 1; console.log("  PASS " + n); } else { failed += 1; REDS.push(n); console.log("  FAIL " + n + (d ? "  [" + String(d).slice(0, 170) + "]" : "")); } };
@@ -302,21 +302,22 @@ const runNote = (kit, env) => new Function('category', 'CAT_OTHER', 'chipFold', 
 const CF = { other: { value: KIT.OTHER, label: KIT.LABEL, totalAll: 743, covers: COVERS.slice(), otherCount: 0 }, otherCount: 3, otherTotal: 743 };
 check("D 装置：tailNote 表达式可抽出", !!KIT.tailNoteSrc && KIT.tailNoteSrc.indexOf('const tailNote = ') === 0, String(KIT.tailNoteSrc).slice(0, 80));
 const nW = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check('0.5.186 C3 tail 态一行白话：未取全 + 还差几个分类（含取数失败数）+ 本次取回 4 条 + 建议稍后重试（每类各取一页黑话与虚高 940 全退场）', nW === '「其他」分类未取全：还有 1 个分类没取到（其中 1 个取数失败），本次取回 4 条。建议：稍后重试。', nW);
+check('0.5.187 C3 tail 态一行白话：未取全 + 还差几个分类（含取数失败数）+ 本次取回 4 条，不做重试动作暗示（旧「建议稍后重试」退场）', nW === '「其他」分类未取全：还有 1 个分类没取到（其中 1 个取数失败），本次取回 4 条。', nW);
 check('0.5.185 C3 tail 态零旧词（上游合计/共约/不再联网取数/往后翻页/部分类可能取不全/共 940/个分类没取回 一律不许）', nW.indexOf('上游合计') < 0 && nW.indexOf('共约') < 0 && nW.indexOf('不再联网取数') < 0 && nW.indexOf('往后翻页') < 0 && nW.indexOf('部分类可能取不全') < 0 && nW.indexOf('共 940') < 0 && nW.indexOf('个分类没取回') < 0, nW);
 const nF = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILNF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
 check('0.5.183 P3 tail !windowed 且全取回（3/3 类、0 失败）⇒ 全部取到，不出提示语（恒空）', nF === '', nF);
 const nO = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
-check('0.5.185 C3 兜底态一行白话：「其他」分类未取全 + 本次取回 4 条 + 建议稍后重试（分类数与虚高总数全退场）', nO === '「其他」分类未取全：本次取回 4 条。建议：稍后重试。', nO);
+check('0.5.187 C3 兜底态一行白话：「其他」分类未取全 + 本次取回 4 条，不做重试动作暗示（分类数、虚高总数与「建议稍后重试」全退场）', nO === '「其他」分类未取全：本次取回 4 条。', nO);
 check('0.5.185 C3 兜底态零旧词（上游合计/共约/不再联网取数/往后翻页/在列表中/743/个分类没取回 一律不许）', nO.indexOf('上游合计') < 0 && nO.indexOf('共约') < 0 && nO.indexOf('不再联网取数') < 0 && nO.indexOf('往后翻页') < 0 && nO.indexOf('在列表中') < 0 && nO.indexOf('743') < 0 && nO.indexOf('个分类没取回') < 0, nO);
 const nO2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2] });
-check('0.5.185 C3 兜底态句序：未取全 + 本次取回 4 条 + 建议稍后重试（零分类数，无 memo 时不谎报失败类数）', nO2.indexOf('「其他」分类未取全') === 0 && nO2.indexOf('本次取回 4 条') >= 0 && nO2.indexOf('建议：稍后重试。') >= 0 && nO2.indexOf('个分类没取回') < 0, nO2);
+check('0.5.187 C3 兜底态句序：未取全 + 本次取回 4 条，且零重试动作暗示（界面上没有可点的重试入口，不承诺不存在的操作）', nO2.indexOf('「其他」分类未取全') === 0 && nO2.indexOf('本次取回 4 条') >= 0 && nO2.indexOf('稍后重试') < 0 && nO2.indexOf('个分类没取回') < 0, nO2);
 const nW2 = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
 check('0.5.184 P4 tail 态与兜底态都不报重叠虚高数（940/743 与「合计约」全退场，旧词零出现）', nW2.indexOf('940') < 0 && nO2.indexOf('940') < 0 && nW2.indexOf('合计约') < 0 && nO2.indexOf('合计约') < 0 && nW2.indexOf('不再联网取数') < 0 && nO2.indexOf('不再联网取数') < 0, nW2 + ' | ' + nO2);
 check('P3 非合并态 tailNote 恒空', runNote(KIT, { category: 'ai', chipFold: CF, tailMemo: TAILF }) === '' && runNote(KIT, { category: KIT.OTHER, chipFold: { other: null, otherCount: 0, otherTotal: 0 }, tailMemo: TAILF }) === '', 'not empty');
 check('0.5.184 P1 会话在途时 tailNote 恒空（上次收口的账本不得提前判本次未取全）', runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4], live: true }) === '' && runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: null, skills: [K1, K2, K3, K4], visible: [K1, K2], live: true }) === '', '结论行在在途期泄出');
 check('0.5.184 P1 会话在途闸门写在 tailNote 表达式里（读 harvestCtlRef.current.token）', String(KIT.tailNoteSrc || '').indexOf('harvestCtlRef.current.token !== null') >= 0, String(KIT.tailNoteSrc || '').slice(0, 140));
 check('0.5.185 C3 tailNote 表达式零分类数（tailMemo 态与兜底态都不许拼「个分类」）', String(KIT.tailNoteSrc || '').indexOf('个分类没取回') < 0 && String(KIT.tailNoteSrc || '').indexOf('个分类取数失败') < 0, JSON.stringify(String(KIT.tailNoteSrc || '').split(String.fromCharCode(10)).map((x) => x.trim()).filter((x) => x.indexOf('个分类') >= 0)));
+check('0.5.187 C3 tailNote 表达式里彻底没有重试动作暗示（源码级：两态共用一个尾巴，字面不许在场）', String(KIT.tailNoteSrc || '').indexOf('稍后重试') < 0, JSON.stringify(String(KIT.tailNoteSrc || '').split(String.fromCharCode(10)).map((x) => x.trim()).filter((x) => x.indexOf('稍后') >= 0)));
 
 // ── E. P5 谓词真跑 + P6 整源数字不复用 + 缓存续命 ──
 // 0.5.186：chipWindow 必须把「策略缺失」与「策略=0」分开。Number(null)===0 会让没有

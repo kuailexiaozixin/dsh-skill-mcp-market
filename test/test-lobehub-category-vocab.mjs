@@ -817,12 +817,12 @@ const runRenderFor = (entries, fold) => {
         /const tailExpandable = !!chipFold\.other && chipFold\.otherCount <= CAT_TAIL_EXPAND_MAX;/.test(client),
         (client.split(NL).find((l) => l.includes('tailExpandable')) || '(none)').trim().slice(0, 160));
     // B3 人话两态（0.5.183，用户 m29465/m29498：提示语太长看不懂）：tail 态报「共 X / 本次取回 Y /
-    // 未取全 / 还有 C 类没取到 / 建议：稍后重试」；兜底态（本地筛源）只报本次取回、不报虚高总数；
+    // 未取全 / 还有 C 类没取到」；兜底态（本地筛源）只报本次取回、不报虚高总数；
     // 全部取到就静默。旧黑话（不再联网取数 / 往后翻页 / 上游合计 / 共约句 / 集合以本行 / 打上游）全退场。
     // 分页器 label 共约→共（边界外判据 test-search-fanout-latency 同步锁）。
-    check('0.5.185 tailNote 一行收尾在场（「其他」分类未取全 + 本次取回 N 条 + 建议：稍后重试。），旧黑话、分类数与虚高合计全退场',
+    check('0.5.187 tailNote 一行收尾在场（「其他」分类未取全 + 本次取回 N 条，零重试动作暗示），旧黑话、分类数与虚高合计全退场',
         /「其他」分类未取全/.test(client) && /本次取回 .*条/.test(client) &&
-        /建议：稍后重试。/.test(client) &&
+        client.indexOf('稍后重试') < 0 &&
         client.indexOf('个分类没取回') < 0 &&
         client.indexOf('个分类在取') >= 0 &&
         /tailNote \? h\('div', \{ style: \{ \.\.\.S\.status, marginTop: 8 \} \}, tailNote\) : null,/.test(client) &&

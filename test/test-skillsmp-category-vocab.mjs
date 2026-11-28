@@ -381,6 +381,52 @@ check('chip 文案带条数（千分位，非裸 slug）',
     typeof lite === 'string' && lite.indexOf('调试工具') === 0 && /532[,.]?411/.test(lite),
     JSON.stringify(lite));
 
+// 0.5.187（用户 m39401①）：chip 数与提示语数必须同源（同一时刻的目录数）。
+// 真跑生产函数体，不复制实现：覆盖命中 / 只动目标 chip / 护栏不命中三种形状都要咬得住。
+const liveChipBody = bodyOf(clientLines, 'function liveCatalogChip(', 'liveCatalogChip');
+const liveTotalBody = bodyOf(clientLines, 'function liveCatalogTotal(', 'liveCatalogTotal');
+const runLiveChip = (chips, cat, fresh) => {
+  if (liveChipBody === null) return { err: '未取到 liveCatalogChip 函数体' };
+  try { return new Function('return (' + liveChipBody + ')')()(chips, cat, fresh); }
+  catch (e) { return { err: String((e && e.message) || e) }; }
+};
+const runLiveTotal = (src, q, cat, size, sort, facet, baseMap, cacheMap) => {
+  if (liveTotalBody === null) return { err: '未取到 liveCatalogTotal 函数体' };
+  try { return new Function('return (' + liveTotalBody + ')')()(src, q, cat, size, sort, facet, baseMap, cacheMap); }
+  catch (e) { return { err: String((e && e.message) || e) }; }
+};
+const SAME = [{ value: 'debugging', label: '调试工具', totalAll: 532411, fixed: true },
+              { value: 'git-workflows', label: 'Git 工作流', totalAll: 186906, fixed: true }];
+const hitOne = runLiveChip(SAME.map((c) => Object.assign({}, c)), 'debugging', 545886);
+check('同源覆盖：命中的那个 chip 换成此刻目录数，别的 chip 不受影响',
+    Array.isArray(hitOne) && !hitOne.err && hitOne[0].totalAll === 545886 && hitOne[1].totalAll === 186906,
+    JSON.stringify(hitOne));
+const missZero = runLiveChip(SAME.map((c) => Object.assign({}, c)), 'debugging', 0);
+check('取不到此刻数时保持快照值（不强改成 0，也不谎称同源）',
+    Array.isArray(missZero) && !missZero.err && missZero[0].totalAll === 532411,
+    JSON.stringify(missZero));
+const missAll = runLiveChip(SAME.map((c) => Object.assign({}, c)), 'all', 545886);
+check('「全部分类」态不覆盖任何 chip（那是聚合口径，不是某个分类）',
+    Array.isArray(missAll) && !missAll.err && missAll[0].totalAll === 532411 && missAll[1].totalAll === 186906,
+    JSON.stringify(missAll));
+const tGood = runLiveTotal('skillsmp', '', 'debugging', 24, 'default', true,
+    { 'skillsmp||debugging|installCount|24': 545886 }, {});
+check('实时数取自本轮首页基准（skillsmp + facet 生效 + 无关键词）',
+    tGood === 545886, JSON.stringify(tGood));
+const tCache = runLiveTotal('skillsmp', '', 'debugging', 24, 'stars', true, {},
+    { 'sk|skillsmp||debugging|1|24|stars': { total: 545886 } });
+check('首页基准缺失时退回本轮结果缓存的 total', tCache === 545886, JSON.stringify(tCache));
+const tGuards = [runLiveTotal('clawhub', '', 'dev', 24, 'default', true, { 'clawhub||dev|installCount|24': 9 }, {}),
+                 runLiveTotal('skillsmp', 'pdf', 'debugging', 24, 'default', true, { 'skillsmp|pdf|debugging|installCount|24': 9 }, {}),
+                 runLiveTotal('skillsmp', '', 'all', 24, 'default', true, { 'skillsmp||all|installCount|24': 9 }, {}),
+                 runLiveTotal('skillsmp', '', 'debugging', 24, 'default', false, { 'skillsmp||debugging|installCount|24': 9 }, {})];
+check('四种越界形状一律不取数（非 skillsmp / 带关键词 / 全部分类 / 上游没按分类筛）',
+    tGuards.every((v) => v === 0), JSON.stringify(tGuards));
+check('面板接线把此刻数接到 chip 装配上（就地覆盖，不新建集合、不重排）',
+    countHits(clientSrc, 'liveCatalogChip(vocabChips,') === 1 &&
+    countHits(clientSrc, 'const vocabChips = categoryChipsForSource(') === 1,
+    'hits=' + countHits(clientSrc, 'liveCatalogChip(vocabChips,'));
+
 // 词表为空时 chip 行必须退回原有派生 chip（关掉入口不是兜底）
 // gate 行允许被重构成括号形式（词表驱动后仍必须留着 categories.length 这条派生兜底），
 // 所以锚定到实际写法而不是裸串；判据在下面两条正则里，与锚无关。

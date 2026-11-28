@@ -1362,7 +1362,7 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
             const miss = s.tail.categoriesFailed + tailPending;
             const line = "「其他」分类未取全：还有 " + miss + " 个分类没取到"
               + (s.tail.categoriesFailed > 0 ? "（其中 " + s.tail.categoriesFailed + " 个取数失败）" : "")
-              + "；建议稍后重试。";
+              + "。";
             if (!s.hints.includes(line)) s.hints.push(line);
           } else if (!isTailExhaustiveSource(tailSourceName) || isLocalFilterSource(tailSourceName)) {
             // 两类源仍要发口径 hint：
@@ -1370,11 +1370,13 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
             //  ② 本地过滤源（modelscope）—— 它的「可达集合」本身就是上游 30,000 行 offset 硬窗口，
             //     实测 5 个有效排序各取满 30 页并集也只有 50,657/89,122=56.84%，翻尽本地集合 ≠ 覆盖全目录，
             //     所以即便 tailExhaustive 已把本地集合翻到底，这句 caveat 语义上依然成立（0.5.186 修法①）。
-            // I6 口径按源声明分两写：窗口封顶说「窗口之外」，本地过滤只报可达集合内实测数。
+            // I6 口径按源声明分两写：窗口封顶说取不到后面的，本地过滤只报已取回的那部分。
+            // 0.5.187（用户 m31212①）：两句都去掉「可达集合/本地过滤」这类工程词，
+            // 且不再写「建议稍后重试」——面板上没有重试入口，那句话承诺了不存在的操作。
             const caliber = s.tail.windowed
               ? "（其余在上游窗口之外取不到）"
-              : "（本地过滤，只统计可达集合内的实测数）";
-            const line = "「其他」分类未取全" + caliber + "；建议稍后重试。";
+              : "（受上游限制，只能统计已经取回的那部分）";
+            const line = "「其他」分类未取全" + caliber + "。";
             if (!s.hints.includes(line)) s.hints.push(line);
           }
         }

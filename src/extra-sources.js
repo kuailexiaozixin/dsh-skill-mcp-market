@@ -376,7 +376,7 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
     out.totalPages = capped ? undefined : Math.max(1, Math.ceil(merged.length / size));
     if (capped) out.hint = `clawhub 搜索上游单次最多回 ${WINDOW_CAP} 条且不报总数，再往后的结果需要换关键词继续找`;
     out.serverFacet = facetUsed !== "";
-    if (facetRefused) out.hint = `clawhub 词表里没有「${facet}」这个分类（不是「该分类下没有匹配」），已按全部分类返回这一页`;
+    if (facetRefused) out.hint = `clawhub 没有「${facet}」这个分类，已按全部分类显示这一页`;
     if (cache && out.items && out.items.length) await cache.put(cKey, out);
     // total/hasMore/totalPages/hint 全部在 cache.put 之前赋值（旧写法把
     // totalPages 排在 put 之后，缓存副本因此少一个字段）。
@@ -792,7 +792,7 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     total: known,
     // serverFacet 只有在「数据自证过滤成立」时才真：上游忽略参数或编码猜错都不谎报。
     serverFacet: facetAnswered,
-    ...(facetRefused ? { hint: `trusttools 词表里没有「${facet}」这个分类（不是「该分类下没有匹配」），已按全部分类返回这一页` } : {}),
+    ...(facetRefused ? { hint: `trusttools 没有「${facet}」这个分类，已按全部分类显示这一页` } : {}),
     // 只在「真取回了行且自证失败」时说这句话：空页里没有任何行，任何归因都是假陈述。
     ...(facetUsed && rows.length > 0 && !facetAnswered ? { hint: `trusttools 这个分类没有筛出不同的结果（总数与全部分类相同），已退回按普通列表显示这一页` } : {}),
     hasMore: known ? p * size < known : items.length >= size,
@@ -1204,7 +1204,7 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
       const depth = window > 0 ? Math.max(1, Math.ceil(window / size)) : Number(pg.totalPages) || 1;
       totalPages = depth;
       if (pg.hasNext === false) hasMore = false;
-      hint = `skillsmp 这个分类共有 ${upstreamAll} 条，上游只允许浏览前 ${window} 条（即 ${depth} 页）；第 ${depth} 页之后取不到，换关键词可以往里走得更深`;
+      hint = `skillsmp 这个分类共有 ${upstreamAll} 条，上游只让浏览前 ${window} 条（约 ${depth} 页），剩下的没有翻页入口；换关键词能搜到别的结果，但那样就不按这个分类筛了`;
     } else if (window === 0) {
       // 只有「连窗口多大都不知道」才需要那句话。窗口自报过 maxResults 时不再对用户念
       // 科普（用户 2026-11-23 点名那条说明已失效）：总数与页数照旧留未知（上面不赋

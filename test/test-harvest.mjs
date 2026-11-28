@@ -785,7 +785,7 @@ console.log('Test 10: ModelScope 大源逐页推入 harvest（渐进式加载）
   });
   const runE = await drain13(storeE, firstE, 120);
   const hintE = String((runE.fin.meta || {}).hints || []);
-  check('I6 本地过滤源的合计口径写进 hint（不谎称上游目录数，也不写窗口话）', tA && (runE.fin.meta || {}).tail && (runE.fin.meta || {}).tail.categoriesFetched === 1 && /可达集合|本地过滤/.test(hintE) && !/窗口之外/.test(hintE), hintE.slice(0, 240));
+  check('I6 本地过滤源的合计口径写进 hint（只报已取回部分，不谎称上游目录数、不写窗口话、零工程词）', tA && (runE.fin.meta || {}).tail && (runE.fin.meta || {}).tail.categoriesFetched === 1 && /受上游限制|已经取回/.test(hintE) && !/窗口之外/.test(hintE) && !/可达集合|本地过滤/.test(hintE) && !/稍后重试/.test(hintE), hintE.slice(0, 240));
   const storeF = makeHarvestStore({ ttlMs: 30000, maxSessions: 4 });
   const firstF = await storeF.start({
     query: '', source: 'skillsmp', category: '', page: 1, pageSize: 2, cache: null,
@@ -795,7 +795,7 @@ console.log('Test 10: ModelScope 大源逐页推入 harvest（渐进式加载）
       : { source: 'skillsmp', items: [mkItem('skillsmp', 9)], total: 1, hasMore: false }) },
   });
   const runF = await drain13(storeF, firstF, 120);
-  check('I6 窗口封顶源仍说窗口（两种口径不混写）', /窗口之外/.test(String((runF.fin.meta || {}).hints || [])), JSON.stringify((runF.fin.meta || {}).tail));
+  check('I6 窗口封顶源仍说窗口（两种口径不混写，且不再写「建议稍后重试」）', /窗口之外/.test(String((runF.fin.meta || {}).hints || [])) && !/稍后重试/.test(String((runF.fin.meta || {}).hints || [])), JSON.stringify((runF.fin.meta || {}).hints));
 
   // G. I7-1 串台：命中缓存条目带来的声明只能证明它自己那一类；换分类必须落到不同键。
   const readsG = [];
@@ -1048,7 +1048,7 @@ console.log('Test 10: ModelScope 大源逐页推入 harvest（渐进式加载）
   });
   const runK6 = await drain15(storeK6, firstK6, 120);
   const hintK6 = String((runK6.fin.meta || {}).hints || []);
-  check('K6 modelscope 本地过滤口径写进 hint（可达集合，不说窗口之外）', /可达集合|本地过滤/.test(hintK6) && !/窗口之外/.test(hintK6), hintK6.slice(0, 200));
+  check('K6 modelscope 本地过滤口径写进 hint（只报已取回部分，不说窗口之外、零工程词）', /受上游限制|已经取回/.test(hintK6) && !/窗口之外/.test(hintK6) && !/可达集合|本地过滤/.test(hintK6) && !/稍后重试/.test(hintK6), hintK6.slice(0, 200));
   const msLines = src15.split('\n').filter((l) => l.indexOf('msOnPartial:') >= 0 && String(l).trim().indexOf('//') !== 0);
   check('K6 源码锁：两处 msOnPartial 决策都不再写死源名', msLines.length === 2 && msLines.every((l) => l.indexOf('modelscope') < 0 && l.indexOf('isLocalFilterSource') >= 0), JSON.stringify(msLines));
 

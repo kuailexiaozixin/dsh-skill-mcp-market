@@ -272,8 +272,8 @@ console.log('Test 5: 表外分类不把别处的值当本市场分类发出去')
         check('表外一个 tag 都不发（猜 tag 就是编上游行为）',
             sentTags.length === 0, safe(junk + ' sent=' + sentTags.join(' | ')));
         check('表外不得谎报服务端已筛', r.serverFacet === false, safe(junk + ' serverFacet=' + JSON.stringify(r.serverFacet)));
-        check('表外写清是词表不认识这个分类（不是该分类下没匹配）',
-            /词表|不是.*分类/.test(String(r.hint || '')), safe(junk + ' hint=' + String(r.hint).slice(0, 130)));
+        check('表外写清是该分类不存在（不是该分类下没匹配，且不出现「词表」这类工程词）',
+            /没有「|不存在/.test(String(r.hint || '')) && String(r.hint || '').indexOf('词表') < 0, safe(junk + ' hint=' + String(r.hint).slice(0, 130)));
     }
 }
 

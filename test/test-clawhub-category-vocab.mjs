@@ -238,7 +238,7 @@ console.log('Test 5: 搜索路径也发 category，且无效 slug 不当成「�
     else {
         check('词表里没有的 slug 不发上游（免得把「slug 不存在」说成「该分类无匹配」）', urls2.every((u) => !/category=nosuchcat/.test(u)), urls2.join(' | '));
         check('词表判定的拒绝同样 serverFacet=false', r2.serverFacet === false, JSON.stringify(r2.serverFacet));
-        check('拒绝原因写明是词表不认识这个分类', /词表|不存在|不是.*分类/.test(String(r2.hint || '')), JSON.stringify(String(r2.hint).slice(0, 90)));
+        check('拒绝原因白话点名该分类不存在（不出现「词表」这类工程词）', /没有「|不存在/.test(String(r2.hint || '')) && String(r2.hint || '').indexOf('词表') < 0, JSON.stringify(String(r2.hint).slice(0, 90)));
     }
 }
 

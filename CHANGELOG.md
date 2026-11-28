@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.187
+
+- **用户 m31212① 收尾 + m39401 两问：界面提示彻底去工程黑话，并修掉「chip 数与提示语数不一致」。**
+- **① 「其他」分类的两条提示不再暗示不存在的动作**：界面上没有任何可点的重试入口，旧句尾巴「建议：稍后重试」承诺了一个用户做不到的操作。tail 态与兜底态两态改为只陈述缺口（`client.js` tailNote、`src/sources.js` 收口 hint 同步）。判据：`test-panel-tail` 三条逐字断言重订 + 新增源码级锁（tailNote 表达式里该字面不许在场）；`test-lobehub-category-vocab` 的源码锁由「必须含该句」翻成「必须不含」。
+- **② 收口 hint 去「可达集合 / 本地过滤」**：`src/sources.js` 非 exhaustive 源的口径句改为「（受上游限制，只能统计已经取回的那部分）」；`test-harvest` I6/K6 两条口径正则同步，并加禁现（旧工程词与重试暗示都不许回到用户可见串）。
+- **③ clawhub / trusttools 的拒发句与 skillsmp / modelscope 统一句式**：`src/extra-sources.js` 两处由「X 词表里没有「Y」这个分类（不是「该分类下没有匹配」）…」改为「X 没有「Y」这个分类，已按全部分类显示这一页」——「词表」是我们内部的工程说法，用户关心的是这个分类在不在。两套 vocab 判据换成 `/没有「|不存在/` 并要求「词表」二字不在场。
+- **④ skillsmp 窗口提示改准（不再承诺「换关键词可以往里走得更深」）**：实测上游 `search` 是全文检索，且搜索态 `category` 被完全忽略（响应 `data.filters` 只回显 search）——换关键词确实能拿到别的结果，但**不再按这个分类筛**。新句同时保留目录数与窗口数两个数，并说明剩下的没有翻页入口。
+- **⑤ chip 数与提示语数同源（修 m39401①）**：chip 上「调试工具 532,411」来自服务端抓的类目页快照（TTL 7 天），提示语「545,886」来自本轮 facet 请求上游此刻报的 `pagination.totalAll`——同一个字段、两个时刻，并排出现等于告诉用户我们的数不可信。新增两件纯函数 `liveCatalogTotal` / `liveCatalogChip`（`client.js` 可测岛内，只用参数）：当前正按某分类取数且上游确实按该分类筛时，用此刻的目录数就地覆盖那一个 chip。护栏四种越界形状一律不覆盖（非 skillsmp / 带关键词 / 全部分类 / 上游未按分类筛）；取不到数保持快照值，不强改成 0。就地改的是 `mergeCategoryVocab` 当场新建的对象，不污染下发的词表快照，且排序已在合并内完成，不引起 chip 换位。新增 7 条判据全部真跑生产函数体（非正则断言）。
+- **取证（回答 m39401②「第 20 页之后怎么取」）**：已穷尽上游一切入口，证明是结构性封顶——`page` 越界被钳回末页（p21 与 p100 逐字相同）；`limit` 上限 48（更大直接拒）；`offset/cursor/skip/after/start/from/index/pageToken/next/marker/lastId` 十一个位移参数名全部被忽略；`sortBy` 只认 `stars|recent`，两序各翻到尽头并集 798 / 该分类 545,886 = 0.146%；搜索态窗口 1000 且 `category` 被忽略（6 个关键词可新增 4,488 条，但是局部覆盖不是全量）；JSON-LD `ItemList` 每页只给 10 条且各页相同；SSR 页跨 p1..p22 并集仅 58；sitemap 全量约 1.5 万条；备择端点与 facet 参数别名全不接受；行对象 13 个字段无分类归属。**结论：该分类 545,886 条在现有 API 上不可完整取回**，面板报出可达上限与不可达原因。
+- **验证**：`test-skillsmp-category-vocab` 71/0、`test-panel-tail` 99/0、`test-lobehub-category-vocab` 126/0、`test-clawhub-category-vocab` 62/0、`test-modelscope-category-vocab` 181/0（2 skipped）、`test-harvest` 205/0、`test-skillsmp-search` 73/0。
+
 ## 0.5.186
 
 - **用户 m31226 三问 + m31267 补充指令 + m31672 两问闭环（0.5.186-A）：「其他」分类从「永远取不全」改为「能取全的取全、取不全的不谎称」，并把工程黑话从用户可见文案里清干净**。

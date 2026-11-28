@@ -549,6 +549,35 @@ function categoryLabelLite(chip) {
   const n = Number(chip && chip.totalAll) || 0;
   return n > 0 ? label + ' ' + n.toLocaleString() : label;
 }
+// 0.5.187（用户 m39401①）：chip 上的条数来自服务端抓的类目页快照（TTL 7 天），
+// 提示语里的条数是本轮 facet 请求上游此刻报的 totalAll —— 同一个分类、同一个字段、
+// 两个时刻（实测「调试工具」快照 532,411 vs 此刻 545,886），两个数并排出现就是在告诉
+// 用户我们的数不可信。这一轮正在按该分类取数时，用此刻的数覆盖那一个 chip，
+// 标签与提示语同源；取不到数就保持快照值（宁缺不强改）。两件都是纯函数：
+// 只用参数，测试用 new Function 直接执行函数体。
+function liveCatalogTotal(src, q, cat, size, sort, facet, baseMap, cacheMap) {
+  // 只修 skillsmp：它的 chip 与本轮 total 同为「该分类目录条数」。其它源的 chip
+  // 是词表全集数、本轮 total 在聚合视图下是多源相加，两者不同义，覆盖等于造新错。
+  if (src !== 'skillsmp' || !facet || !cat || cat === 'all') return 0;
+  if (String(q || '').trim()) return 0;
+  const eff = sort === 'default' ? 'installCount' : sort;
+  const k = String(src) + '|' + String(q || '') + '|' + cat + '|' + String(eff) + '|' + String(size);
+  const base = Number(baseMap && baseMap[k]);
+  if (Number.isFinite(base) && base > 0) return base;
+  const hit = cacheMap && cacheMap['sk|' + src + '|' + String(q || '') + '|' + cat + '|1|' + size + '|' + eff];
+  const n = Number(hit && hit.total);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+function liveCatalogChip(chips, cat, freshTotal) {
+  if (!Array.isArray(chips) || !cat) return chips;
+  const n = Number(freshTotal);
+  if (!Number.isFinite(n) || n <= 0) return chips;
+  for (let i = 0; i < chips.length; i++) {
+    const c = chips[i];
+    if (c && String(c.value) === String(cat)) c.totalAll = n;
+  }
+  return chips;
+}
 // 窗内没列出的分类合并成一个「其他」入口（产品决策：246 类逐个铺开等于没做筛选）。
 // 上游没有可用的「其他」桶（lobehub 词表里 general/Others 各 1 条，是被挡的自由标签），所以这个
 // chip 是面板自造的：它不代表任何一个上游分类，条数也绝不从上游总量里编。0.5.185（用户 m30832）：
@@ -2313,6 +2342,10 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const categories = [...new Set(skills.map((item) => item.category).filter(Boolean))].slice(0, 60);
       // 固定词表在前（上游条目数降序），当前页派生的串补在后：词表抓不到时入口不关，改版也不丢。
       const vocabChips = categoryChipsForSource(source, categories, categoryVocab);
+      // 0.5.187（用户 m39401①）：当前正按某个分类取数时，那一个 chip 的条数改用本轮
+      // 上游报的目录数，与提示语同源（就地改：这些对象是本行刚新建的，不污染下发词表，
+      // 排序也已在 mergeCategoryVocab 内做完，不会引起 chip 换位）。
+      liveCatalogChip(vocabChips, category, liveCatalogTotal(source, query, category, size, sort, serverFacet, totalBaseRef.current, resultCacheRef.current));
       // 默认窗口外的分类不再逐个铺开：合并成一个「其他」（窗内条数仍是上游真数，合计如实标注）。
       // 声明顺序要紧：chipEntries 与 visibleSkills 都读 chipFold，写在后面会撞 TDZ（node --check 看不见）。
       const chipFold = foldChips(vocabChips, chipWindowFor(source, categoryPolicy), CAT_TAIL_LABEL);
@@ -2397,16 +2430,15 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
                 if (C === 0 && F === 0) return '';
                 const Y = Number(tailMemo.retrievedTotal || 0);
                 let s = '「其他」分类未取全：还有 ' + (C + F) + ' 个分类没取到';
-                s += (F > 0 ? '（其中 ' + F + ' 个取数失败）' : '') + '，本次取回 ' + Y.toLocaleString() + ' 条';
-                s += '。建议：稍后重试。';
+                s += (F > 0 ? '（其中 ' + F + ' 个取数失败）' : '') + '，本次取回 ' + Y.toLocaleString() + ' 条。';
                 return s;
               })()
             // 旧服务端/本地筛源（未声明 tail）：只报本次取回，绝不报虚高的「上游合计」。
             : (function () {
                 const Y = skills.length;
-                // 0.5.185 C3：兜底态同样一行结论，零分类数。
-                let s = '「其他」分类未取全：本次取回 ' + Y + ' 条';
-                s += '。建议：稍后重试。';
+                // 0.5.187 C3：两态都只陈述缺口，不做动作暗示——界面上没有任何可点的
+                // 重试入口，旧句尾巴承诺了一个不存在的操作，整条退场。
+                let s = '「其他」分类未取全：本次取回 ' + Y + ' 条。';
                 return s;
               })()));
       const skillCards = shownCards(visibleSkills, cardBatch, cardStepFor(size)).map((item) =>
