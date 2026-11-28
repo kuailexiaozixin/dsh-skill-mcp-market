@@ -1155,19 +1155,45 @@ async function extendSkillsMpCatalog(cache, need, facet, sort, fetchJson, option
     const catKey = `${SKILLSMP_CATALOG_KEY}${f || "any"}${sort ? ":" + sort : ""}`;
     let state = await cache.get(catKey, SKILLSMP_CATALOG_TTL);
     if (!state || !Array.isArray(state.rows)) state = { rows: [], cursor: null, done: false, totalAll: 0 };
+    // 中毒终态自愈（sk31/sk32 真机实证）：0.5.188 的局部 replaying bug 把「追赶页整页重复」
+    // 误判成到底，落盘 done=true 而 rows<totalAll ⇒ 分类永久停在半截、对外还谎称取完。
+    // done 只有「取满 totalAll」或「上游明说没有下一页（零行/无后继/游标原地）」才作数；
+    // 旧码没记成因，装载时 rows<totalAll 且成因不是 upstream 的一律复位续取。代价：真·停滞
+    // 的目录每次装载多花一跳确认，换「绝不谎称取完」（用户 m41100 令）。
+    if (state.done && state.doneReason !== "upstream" && Number(state.totalAll) > 0 && state.rows.length < Number(state.totalAll)) state.done = false;
     const seen = new Set(state.rows.map((r) => String(r.id || r.name || "")));
     let legacy = false;
     let lastData = null;
     let probed = false;
     let guard = 0;
+    // catchingUp 落在 state 上（跨调用）：死游标重启后的追赶页整页重复，只算「还没追平」，
+    // 不算到底。sk30 真机实证：576 行目录重启追赶要 13 跳、链预算 12 跳 ⇒ 预算切断时落盘的
+    // 是追赶链中途游标；若追赶态只活在本次调用里，下一次调用第一跳取回重复页就会被判 done，
+    // 目录永久截断在 576/545886 还对外报 hasMore=false＝谎称取完（Test 25 锁死）。
+    const resumed = Boolean(state.cursor);
     while (!state.done && state.rows.length < need && guard < SKILLSMP_CHAIN_ROUNDS) {
       guard += 1;
-      // 起链发 cursor=start 且不带 page（实测 page+cursor 同带被上游拒）。
-      const sp = new URLSearchParams({ limit: String(SKILLSMP_MAX_LIMIT), cursor: String(state.cursor || "start") });
-      if (f) sp.set("category", f);
-      if (sort === "stars") sp.set("sortBy", "stars");
-      else if (sort === "updated") sp.set("sortBy", "recent");
-      const data = await fetchJson(`https://skillsmp.com/api/skills?${sp.toString()}`, options);
+      let data;
+      try {
+        // 起链发 cursor=start 且不带 page（实测 page+cursor 同带被上游拒）。
+        const sp = new URLSearchParams({ limit: String(SKILLSMP_MAX_LIMIT), cursor: String(state.cursor || "start") });
+        if (f) sp.set("category", f);
+        if (sort === "stars") sp.set("sortBy", "stars");
+        else if (sort === "updated") sp.set("sortBy", "recent");
+        data = await fetchJson(`https://skillsmp.com/api/skills?${sp.toString()}`, options);
+      } catch (err) {
+        const em = String((err && err.message) || err);
+        // 死游标只在「本次调用续起的第一跳」自愈重启：同一轮调用里第 2 跳之后的瞬时失败
+        // 是限流抖动，链就地攒着、原样抛出让下一页再接（Test 22 锁死）。确定性 4xx 先让
+        // 外层 facet 兜底，不冒充死游标。
+        if (!(guard === 1 && resumed && !/HTTP Error 400|INVALID_CATEGORY/.test(em))) throw err;
+        // 游标带 30 分钟 exp（sk29 实测停 10 分钟重放即 Traceback）：清掉死游标从 start 重启。
+        state.catchingUp = true;
+        state.cursor = "";
+        // 死游标不留在盘上：重启后预算到点被切，下一次也从 start 接，不再撞第二次死游标。
+        await cache.put(catKey, state);
+        continue;
+      }
       probed = true;
       lastData = data;
       const pg = (data && data.pagination) || {};
@@ -1184,8 +1210,11 @@ async function extendSkillsMpCatalog(cache, need, facet, sort, fetchJson, option
         state.rows.push(r);
         added += 1;
       }
-      // 停滞判定：本页零行、整页都是重复、没有下一游标、或游标原地不动 —— 四种都算这一面到底。
-      if (!rows.length || !added || !next || next === state.cursor) state.done = true;
+      // 停滞判定分两类成因（doneReason）：上游明说（零行/无后继/游标原地）与本地推断（整页重复）。
+      // 本地推断的 done 会被上面的中毒复位腿重开（每装载一跳确认）；上游明说的不复位。
+      if (added) state.catchingUp = false;
+      if (!rows.length || !next || next === state.cursor) { state.done = true; state.doneReason = "upstream"; }
+      else if (!state.catchingUp && !added) { state.done = true; state.doneReason = "stalled"; }
       else state.cursor = next;
       if (state.totalAll > 0 && state.rows.length >= state.totalAll) state.done = true;
       // 每轮都落盘：外层聚合预算（12s）到点只是没人再等这个 promise，链本身还会跑完；

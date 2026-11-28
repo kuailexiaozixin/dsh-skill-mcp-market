@@ -508,5 +508,114 @@ console.log('Test 21: 聚合层对渐进目录不得用 ceil(总数/页大小) �
 }
 
 console.log('');
+console.log('Test 24: 停顿>10min 后落盘的 keyset 游标已死 ⇒ 从 start 自愈重启（seen 去重，不串味）');
+{
+  // sk29 实测：游标 exp 名义 1802s(~30min)，但停 10 分钟重放即 Traceback（D 段）。旧写法让
+  // 下一次调用带死游标续起 ⇒ 整条目录链一路失败到 6h TTL 才重置。自愈：「从缓存游标续起的
+  // 第一跳」遇非 400 错误，清掉死游标、从 start 重启一次；前几页必然全见过（added=0），
+  // 只有重启态不能把 added=0 当到底，否则永远追不回进度。
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-deadcur-' + Date.now());
+  // 真上游重启链发的是「新生成」的游标（exp 不同、串不同），所以夹具按代命名：
+  // 第一代的 C* 在停顿后全死，start 与其后新生成的 R* 才活。
+  const liveGen = (gen) => (u) => {
+    const cur = String(new URL(u).searchParams.get('cursor'));
+    const idx = cur === 'start' ? 0 : Number(cur.replace(new RegExp('^' + gen), ''));
+    return mkCursorPage(48, idx * 48, gen + (idx + 1));
+  };
+  // 第一段：正常链攒到 48 行并落盘游标 C1（page 2 need=48，一跳到顶）。
+  await searchSkillsMp({ query: '', page: 2, pageSize: 24, category: 'debugging', cache: c,
+    fetchJson: async (u) => { urls.push(u); return liveGen('C')(u); } });
+  // 第二段：模拟「停顿后死游标」——第一代游标一律 Traceback，start 与重启后的新一代正常。
+  urls.length = 0;
+  const deadResume = async (u) => {
+    urls.push(u);
+    const cur = String(new URL(u).searchParams.get('cursor'));
+    if (cur !== 'start' && !/^R/.test(cur)) throw new Error('python 取数失败：Traceback (most recent call last): cursor expired');
+    return liveGen('R')(u);
+  };
+  let threw = false;
+  let r = null;
+  try { r = await searchSkillsMp({ query: '', page: 5, pageSize: 24, category: 'debugging', cache: c, fetchJson: deadResume }); }
+  catch { threw = true; }
+  console.log('   自愈后请求序列: ' + JSON.stringify(urls.map((u) => String(new URL(u).searchParams.get('cursor')))));
+  check('死游标续起被自愈，不再整链抛出', threw === false, 'threw=' + threw);
+  check('第一跳仍带的是落盘游标 C1（续起尝试）', urls.length > 0 && paramsOf(urls[0]).get('cursor') === 'C1', String(urls[0]));
+  check('失败后确实从 cursor=start 重启了一次', urls.some((u) => paramsOf(u).get('cursor') === 'start'), JSON.stringify(urls.map((u) => String(new URL(u).searchParams.get('cursor')))));
+  check('重启全程保留 category（没被当成分类不存在去 facet 重走）', urls.every((u) => paramsOf(u).get('category') === 'debugging'), JSON.stringify(urls));
+  check('自愈仍走目录切片（catalogProgressive 在场、没落 legacy）', r && r.catalogProgressive === true && r.serverFacet === true, r ? String(r.catalogProgressive) + '/' + String(r.serverFacet) : 'null');
+  check('自愈给的是第 97–120 行（追回到 need 后正常切页）', r && r.items.length === 24 && r.items[0].slug === 'pdf-tool-96' && r.items[23].slug === 'pdf-tool-119', r ? JSON.stringify(r.items.map((i) => i.slug).slice(0, 2)) : 'null');
+  const ids = r ? r.items.map((i) => i.id) : [];
+  check('重启 catch-up 后本页零重复', new Set(ids).size === ids.length, ids.length + '/' + new Set(ids).size);
+}
+
+console.log('');
+console.log('Test 25: 重启追赶被轮数预算切断 ⇒ 重复追赶页不得算到底（否则目录被截断=谎称取完）');
+{
+  // sk30 真机实证：576 行的目录重启追赶要 13 跳，而链预算 12 跳 ⇒ 切断时落盘的是重启链
+  // 中途游标。下一次调用带它取回的还是追赶页（整页重复），旧写法用「本次调用是否重启态」
+  // 判断重复是否算到底，而重启态没跨调用保存 ⇒ 直接把这一面判成 done：目录停在 576/545886
+  // 还报 hasMore=false，聚合层与 tail 都会当它取完了。追赶态必须落盘。
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-cut-' + Date.now());
+  // 第一段：正常链 page=2（need=48）攒 48 行，落盘第一代游标 C1。
+  await searchSkillsMp({ query: '', page: 2, pageSize: 24, category: 'debugging', cache: c,
+    fetchJson: async (u) => { urls.push(u); const cur = String(paramsOf(u).get('cursor')); const idx = cur === 'start' ? 0 : Number(cur.replace(/^C/, '')); return mkCursorPage(48, idx * 48, 'C' + (idx + 1)); } });
+  // 第二段：C* 全死；start/R* 活但「永远回同一批已见过的行」——追赶追不平，只能靠轮数预算切。
+  urls.length = 0;
+  const stuck = async (u) => {
+    urls.push(u);
+    const cur = String(paramsOf(u).get('cursor'));
+    if (/^C/.test(cur)) throw new Error('python 取数失败：Traceback (most recent call last): cursor expired');
+    const idx = cur === 'start' ? 0 : Number(String(cur).replace(/^R/, ''));
+    return mkCursorPage(48, 0, 'R' + (idx + 1));
+  };
+  const r1 = await searchSkillsMp({ query: '', page: 5, pageSize: 24, category: 'debugging', cache: c, fetchJson: stuck });
+  const cutReqs = urls.length;
+  console.log('   预算切断后: n=' + r1.items.length + ' hasMore=' + String(r1.hasMore) + ' 请求数=' + cutReqs);
+  check('本次调用内追赶不被算到底（hasMore 仍为 true）', r1.hasMore === true, String(r1.hasMore));
+  check('链确实跑满 12 跳预算（1 跳死游标 + 11 跳重复追赶页）', cutReqs === 12, String(cutReqs));
+  // 第三段：下一次调用。上游先回一跳重复追赶页（落盘游标还停在重启链中段，实测就是这种形状），
+  // 之后才给新行。旧写法在新调用里 replaying=false ⇒ 第一跳重复就被判 done：目录永久截断。
+  const recover = async (u) => {
+    urls.push(u);
+    const cur = String(paramsOf(u).get('cursor'));
+    if (cur === 'R11') return mkCursorPage(48, 0, 'R12');            // 仍是见过的行（追赶未追平）
+    const idx = Number(String(cur).replace(/^R/, ''));
+    return mkCursorPage(48, 48 + (idx - 12) * 48, 'R' + (idx + 1));   // 上游恢复：给全新行
+  };
+  const r2 = await searchSkillsMp({ query: '', page: 5, pageSize: 24, category: 'debugging', cache: c, fetchJson: recover });
+  console.log('   上游恢复后: n=' + r2.items.length + ' hasMore=' + String(r2.hasMore) + ' 首行=' + (r2.items[0] && r2.items[0].slug));
+  check('追赶态跨调用保存：重复页不再被误判到底（目录继续增长）', r2.items.length === 24 && r2.hasMore === true, r2.items.length + '/' + String(r2.hasMore));
+  check('恢复后给的是第 97–120 行（追平后正常切页）', r2.items.length === 24 && r2.items[0].slug === 'pdf-tool-96', JSON.stringify((r2.items || []).slice(0, 2).map((i) => i.slug)));
+}
+
+console.log('');
+console.log('Test 26: 盘上中毒终态（done=true 而 rows<totalAll）不得被当成已到底——装载即复位续取');
+{
+  // 0.5.188 的局部 replaying bug 在真机落过这种状态（sk31/sk32 实证：rows=576、done=true、
+  // totalAll=545886）：整条目录被谎称取完，新码若不识别，装载后 while 直接跳过，
+  // 这个分类永远停在 576。done 只在「取满 totalAll」或「上游明说没有下一页」时成立。
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-poison-' + Date.now());
+  const KEY = "{{SECRET_b94gck2c}}pdf-tools";
+  const poisoned = { rows: Array.from({ length: 48 }, (u, i) => rawRow(i)), cursor: 'C1', done: true, totalAll: 545886 };
+  await c.put(KEY, poisoned);
+  const fetch = async (u) => {
+    urls.push(u);
+    const cur = String(paramsOf(u).get('cursor'));
+    const idx = cur === 'start' ? 0 : Number(cur.replace(/^C/, ''));
+    return mkCursorPage(48, idx * 48, 'C' + (idx + 1));
+  };
+  const r = await searchSkillsMp({ query: '', page: 3, pageSize: 24, category: 'pdf-tools', cache: c, fetchJson: fetch });
+  console.log('   中毒态装载后: n=' + r.items.length + ' hasMore=' + String(r.hasMore) + ' 请求数=' + urls.length);
+  check('中毒终态不被当成已到底（续链照常打）', urls.length === 1 && paramsOf(urls[0]).get('cursor') === 'C1', JSON.stringify(urls));
+  check('不谎称取完（hasMore=true）', r.hasMore === true, String(r.hasMore));
+  check('目录从毒点继续增长（第 3 页给第 49–72 行）', r.items.length === 24 && r.items[0].slug === 'pdf-tool-48', JSON.stringify((r.items || []).slice(0, 2).map((i) => i.slug)));
+  const st2 = await c.get(KEY, 60 * 60 * 1000);
+  check('落盘状态被复位（done=false，不再是毒态）', st2 && st2.done === false, st2 ? String(st2.done) : 'null');
+}
+
+console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

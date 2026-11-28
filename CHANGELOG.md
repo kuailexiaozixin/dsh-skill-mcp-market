@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.189
+
+- **用户 m41100 令「技能的完整性是核心、关键问题，必须确保所有技能被完整取回」——本轮把游标目录链上三条「谎称取完」的通路全部堵死。** 0.5.188 的渐进取全只解决了「能不能往后取」，真机复跑证明它还有三个会让分类永久停在半截、对外却报「已取完」的形状。
+- **① 死游标自愈**：sk29 实测停顿 10 分钟后带着落盘游标续起，上游直接 `Traceback`，旧代码把错误原样上抛 ⇒ **整条目录链一直失败，直到 6 小时缓存 TTL 重置才恢复**。现在只有「本次调用一进门就带着落盘游标」的那第一跳遇非确定性错误时，才清掉死游标、从 `start` 重启一次（seen 去重保证零重复）；同一次调用里第 2 跳之后的瞬时失败仍原样上抛让下一页再接（Test 22 锁不变），`HTTP Error 400 / INVALID_CATEGORY` 仍走去 facet 的确定性兜底（Test 23 锁不变）。判据 Test 24：夹具按代分流——旧代游标全死、`start` 与重启后新代游标活，对应真上游重启链发的是新生成游标。
+- **② 追赶态跨调用（真机 sk30b 撞出，比①更违令）**：576 行的目录从 `start` 重放追赶需要 12 跳，一次调用的预算切断后**下一次调用第一跳取回的还是那批重复的追赶页**，旧判据把「整页都是重复」当场判成到底 ⇒ 报「已取完」而实际只有 576 / 545,886。追赶态现在随目录状态一起落盘（`catchingUp`），出现新行才清除，所以预算切断只是暂停、不是到底。判据 Test 25 三段：正常攒 48 → 追赶卡死（断言恰好 12 跳且 `hasMore=true`）→ 上游恢复（断言跨调用不被误判、给第 97–120 行）。
+- **③ 中毒终态复位（真机 sk31/sk32 复跑挖出）**：②的旧 bug 已经在 0.5.188 装机镜像的缓存里写下 `done=true 而 rows=576 < totalAll` 的**中毒终态**；新代码装载它时循环条件直接跳过 ⇒ 这个分类永久停在半截，且继续对外谎称取完。现在「到底」分成因记录：只有上游明说的（零行 / 没有后继游标 / 游标原地不动）算 `upstream` 作数，我们本地推断出的重复停滞算 `stalled`；装载时只要 `rows < totalAll` 且成因不是 `upstream`，一律复位续取。代价是真停滞的目录每次装载多花一跳确认——用一跳换一个「绝不谎称取完」。判据 Test 26 锁四态（续链照常打 / hasMore 真 / 目录从毒点继续增长 / 落盘不再是毒态）。
+- **真机验证 sk33**（全新缓存目录、走生产入口 `searchSkillsMp`）：人为注入 `done=true`（rows=48 / totalAll=545,886）⇒ 装载即复位，第 3 页给到第 49–72 行，`hasMore=true`；随后连打四轮 96→144→192→240→288，每轮 +48，全程无一次谎报取完。
+- **能力表仍未动（如实记账）**：`category-capability.js` skillsmp 仍是 `{chipWindow:0, tailExhaustive:false}`——63 个 chip 全铺、面板从未有「其他」分类，逐类补取通路不是本轮受益方；改这两格对 skillsmp 没有画面效果，已核。
+- **仍未收口（不留模糊账）**：m41100 要的是「取满」，本轮只保证「取不满时绝不谎报」。单类 545,886 条 ≈6.2 小时串行，现在仍靠用户翻页的 `need = size × page` 驱动，后台补链器（不依赖翻页、持续推进直到取满）另列一批。
+- **验证**：判据 Test 24/25/26（新增）；`test-skillsmp-search` **138/0**；16 套全绿——skillsmp-category-vocab 71/0、harvest 205/0、panel-tail 99/0（单独串行）、lobehub-category-vocab 126/0（单独跑）、clawhub-category-vocab 62/0、full-sort 43/0、clawhub-quality 86/0、ux-honesty 62/0、panel-harvest 81/0、search-fanout-latency 211/0、index-runtime 26/0、trusttools-category-vocab 84/0、modelscope-category-vocab 181/0(2 skip)、sort-honesty 12/0、sort-options 35/0(1 skip)、suite-inventory 12/0。
+- 版本 0.5.188⇒0.5.189。
+
 ## 0.5.188
 
 - **用户 m40394 令「解决 480 条取不全，否则分类标签不值得保留」——取全已在真机达成。** 封顶只存在于页码模式：第 16 轮把 `/zh/categories/debugging` 页面的 `/_next/static/chunks/*.js`（28 个）逐个挖矿，只有 `2_xzsl546wbko.js` 同时命中 `api/skills`+`pagination`，其调用点露出上游自己的取数构造器 `buildSkillsApiSearchParams` 与 `pagination.nextCursor` 游标通路——此前 14 轮探针全在页码形状上猜参数名，据此得出的「结构性封顶」结论是错的，已修正。
