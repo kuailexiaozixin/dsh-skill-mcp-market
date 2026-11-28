@@ -8,10 +8,28 @@
 - **③ lobehub「其他」逐类翻到尽头（全量取回）**：`fetchTailCategory` 由「每类只取第 1 页」改为 `for(;;)` 翻页循环，终止四道：`pageLanded === 0` / `hasMore !== true` / `page >= totalPages` / `page >= TAIL_PAGE_CAP(200)`（撞护栏如实记 `windowed`）。正证门（I4）与 `upstreamTotal` 累加**只在第 1 页**执行（续页 total 是同一目录规模，逐页累加会翻虚）。实测代价：窗外 214 类 = **217 次分页请求 / 157 秒**，每类实取条数与词表 totalAll **零偏差**，按 `source|slug` 去重后并集 **722 条**（ΣtotalAll=743，重复仅 21 条）⇒ 用户 m31226②「重复计数问题是可以解决的」在 lobehub 上正面成立：取全后直接报并集去重条数，不再解释重叠口径。
 - **④「未取全」永真的真因修掉**：收口判据原为 `s.tail.upstreamTotal > finalRows.length`，而 `upstreamTotal` 是各分类 total 之和（跨类重叠计数）⇒ 恒大于去重行数 ⇒ 用户永远见不到「已取全」。改为 `categoriesFailed > 0 || tailPending > 0`（tailPending = total − fetched − failed），`upstreamTotal` 只作参考不进判据；**逐类翻尽的源全部落地时一条 hint 都不发 ⇒ 界面那行提示整行消失，这才是「已取全」**。
 - **⑤ 本地过滤源的 caveat 保留（修法①）**：收口 else-if 改为「非 exhaustive **或** `isLocalFilterSource`」都发口径 hint。依据实测：ModelScope 的「可达集合」本质是上游 offset 硬顶 30,000 行（`(page−1)×size ≥ 30000` 一律 HTTP 500，n=1000/2000/5000/10000/20000 五档同红）；5 个有效排序（默认/GmtCreate/GmtModify/Likes/Visits，`Sort` 是唯一被认的参数名）各取满 30 页并集 = **50,657 / 89,122 = 56.84%** ⇒ 排序方向能扩窗但取不全，这句 caveat 语义上仍成立，抹掉它才是假话。
-- **⑥ 用户可见文案白话化（m31212①/m31672②：提示语必须简洁易懂、不许说工程黑话）**：`msCatHint` 三形、`msDepthHint`、`SKILLSMP_UNBOUNDED_NOTE`、skillsmp/modelscope `refusedNote`、skillsmp 窗口 hint、`src/sources.js:333` skills.sh 窗口句、`client.js` 出路条正文全部重写；「上游不提供服务端分类过滤（30 组参数探针实测全部忽略）」「本地过滤口径」「可达集合之外」「上游自报 totalAll」「静态词表里没有」等工程词在用户可见串里全仓零命中。tailNote 两态改为只报缺口（「还有 N 个分类没取到（其中 F 个取数失败），本次取回 Y 条」），「每个未列出的分类各取回一页（24 条）」退场。
+- **⑥ 用户可见文案白话化（m31212①/m31672①：提示语必须简洁易懂、不许说工程黑话）**：`msCatHint` 三形、`msDepthHint`、`SKILLSMP_UNBOUNDED_NOTE`、skillsmp/modelscope `refusedNote`、skillsmp 窗口 hint、`src/sources.js:333` skills.sh 窗口句、`client.js` 出路条正文全部重写；「上游不提供服务端分类过滤（30 组参数探针实测全部忽略）」「本地过滤口径」「可达集合之外」「上游自报 totalAll」「静态词表里没有」等工程词在用户可见串里全仓零命中。tailNote 两态改为只报缺口（「还有 N 个分类没取到（其中 F 个取数失败），本次取回 Y 条」），「每个未列出的分类各取回一页（24 条）」退场。
 - **⑦ 自修一个真 bug**：`chipWindowFor` 原写 `Number(hit && hit.chipWindow)`，而 `Number(null) === 0` ⇒ 旧服务端没有 `categoryPolicy` 这一键时会被当成 `chipWindow=0`（246 类整排铺开），不是回落 32。改为先取 `raw` 再判 `raw !== null`。
 - **判据同步**：test-panel-tail SECT_WANT D 段 12⇒14（`chipWindowFor` 函数体在场锁 + 四态回落锁：策略缺失/表外源/坏值都回落 32、只有显式 0 才是不折叠）+ 变异针 X14（摘掉回落 ⇒ 实测 mutFailed=1 会咬、还原 byteRestored=true）；test-modelscope-category-vocab :527/:528 重订为白话锁（`/没找到/` + `/近似，不等于/` + `!/本地过滤|可达集合/`，内存喂旧黑话句 ⇒ false，防 vacuous）；test-harvest I6:788 / K6:1051 两条红随修法①转绿。
 - **一处回退（诚实记账）**：`extra-sources.js:379` clawhub `refusedNote` 曾白话化，实测撞红 `test-clawhub-category-vocab.mjs:196`（该判据要求 hint 同时含 slug 与 `/400/`）⇒ 已逐字回退成 HEAD 原句，两侧独立复跑均 62/0。教训：改 hint 前必须全仓 grep 该字面，不能只 grep 自己那几套。
+- **发布凭据（0.5.186 发布闭环）**：commit d5d8145（9 files +202/−76）；tag v0.5.186（轻量 tag，peel=d5d8145）；
+  远端 master=d5d81454f61747e624a8985db7400bd45c44043c（API 核对）、tag 对象同值；直连 push 被 reset 后按 github-push 技能当场探测，
+  改走本机代理 127.0.0.1:7897 推送成功（master+tag 双推，PUSH_EXIT=0）；CI run **46116369717**（headBranch=v0.5.186）
+  success 7m34s，步序 Set up job→checkout→setup-node→Upgrade npm→Show versions→Install dependencies (no scripts)→Run tests (gates the publish)✓→
+  Publish package (trusted publishing)✓→Verify package contents only=skipped；npm 发布实锤读 CI 日志：`+ dsh-skill-mcp-market@0.5.186`、
+  shasum **cec8e1815f0c46c7d68adb2d9d52bdccdd31d721**（本地下载 registry tarball 复算 SHA1 逐字一致）、34 文件、package size 261.9 kB、unpacked 803.2 kB；
+  registry 传播延迟实测 ≈2 分钟（06:30:55 UTC 出包 → 06:32 查询 404 → 06:37 latest=0.5.186，教训：publish 成功后立即查 registry 会误判 404）；
+  装机 exit=0（pnpm −0.5.185/+0.5.186，lockfile 298 entries 过，8.6s）；镜像五文件 LF 归一后 **0 差异**（client.js/index.js/
+  src\category-capability.js/src\extra-sources.js/src\sources.js）；test-profile-sync **7/0**；**装机后全链 81/81 全绿**
+  （chain186post.log DONE_EXIT=0，profile-sync 段 ✓ no stale copies ✓ mirrors report 0.5.186，末段 unjudged-exports 118/0）；
+  live-verify **RESULT: PASS**（port=63580 自发现、fingerprint=new、rows=14 LIVE-FAIL=0 NOT-TESTED=0 GAP=2 NOT-WARM=0，
+  GAP 与 176/177/178/181/182/185 同形）；判据①指纹 PASS 依据 NEW_MARKS=['分类在已取回的','取数中断'] 双标记均在出参中。
+- **live-verify 复验出的一处环境残留（非回归，交用户处置）**：判据①② 打出的 ModelScope hint 仍是 0.5.185 旧句
+  （「30 组参数探针实测全部忽略…本地过滤…可达集合」）——已排除脏缓存（market/cache 42 个 json 扫描零命中）与文件残留
+  （profile 与 worktree 逐字节都是新句，唯一命中的是 CHANGELOG 记账本身）⇒ 残留在 **宿主进程内存**：
+  宿主 12:18:27 启动、装机 14:33 ⇒ 宿主内加载的还是 0.5.185 码。按 AGENTS.md 我不杀宿主进程；
+  **请用户点菜单『重启应用与 Host』后复核**：面板上 ModelScope 分类 hint 应变新白话句、skillsmp 63 类全铺无「其他」。
+- 版本 0.5.185⇒0.5.186。
 - 版本 0.5.185⇒0.5.186。
 - **遗留（下一批）**：① clawhub/trusttools 的「词表里没有「X」」两句要白话化，得同步重订 `test-clawhub-category-vocab.mjs:241` 与 `test-trusttools-category-vocab.mjs:276` 两条正则（两套都在测方侧）；② ModelScope 可达集合外的分类覆盖 = 产品决策待定（实测已证上游无法取全，非实现缺陷）。
 
