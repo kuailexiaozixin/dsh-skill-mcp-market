@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.192 — 取全进度的文案诚实性：取满 / 后台在推 / 上游截断 三种情形各说各话（m41100 镜像）
+
+- 0.5.190/191 把泵装上之后，`skillsmp` 那条 hint 反而开始说谎——它是在「只能靠用户翻页取全」的年代写的。用户令 m41100 要求完整性，而完整性包含**如实报告完整性**：谎报已取满与谎报未完成同样是错。本批只改文案与它需要的状态位，不动链。
+- **三种失真**（真机 sk36 与夹具 Test 27/28/29 各锁一种）：①目录已取满（`done=true` 且 `rows>=totalAll`）仍写「正按顺序取回……直到 N 条取完」；②后台泵根本没跑过也写「接着翻页会继续往后取」＝把取全责任推给翻页，与 m41100 相反；③上游明说没有后继（`done`）但行数没到 `totalAll` 时，与「取满」共用同一句话，用户会读成已取满。
+- **修复**：`warmSkillsMpCatalog` 每轮成功后给落盘状态打 `pumpedAt = Date.now()`（没有这个戳就不许提「后台」——绝不凭空谎称后台在跑）；新增 `skillsMpProgressHint(all, taken, done, pumpedAt, now)` 收敛四态：取满 ⇒ 「已全部取回 N 条」；上游截断 ⇒ 「这一面上游没有更多了（到这就没有后继了），已取到 X 条，该分类自报共 N 条」；泵在 `2×SKILLSMP_PUMP_GAP_MS` 内推过 ⇒ 「后台正在继续补取，已取到前 X 条」；其余维持旧两形（不破坏既有锁面 `!/没有翻页入口|只让浏览前/`、`/545886/`）。legacy 页码支的窗口文案一字未动。
+- **泵活动判定不靠猜**：读取的是链自己落盘的 `pumpedAt`（`makeCache` 每次 put 刷新 `at`，7 天进度 TTL 内跨会话可见），而不是进程内的定时器状态——宿主重启后泵还没挂上时，文案不会提前许诺「后台在取」。
+- TDD：`test/test-skillsmp-search.mjs` 新增 Test 27/28/29 共 11 判据（含夹具两处修正：Test 27 的 `totalAll` 必须覆写为 96 才走「取满」支而非「上游截断」支；Test 28 泵腿 `rounds:1` 才停在 96 行）。RED 143/7 → GREEN **150 passed, 0 failed**。相邻锁面复核：skillsmp-pump 35/0、catalog-pump 40/0、ux-honesty 62/0、harvest 205/0、panel-harvest 81/0、search-fanout-latency 211/0、dead-exports 69/0、unjudged-exports 118/0、suite-inventory 12/0、nocache 14/0、warm-budget 17/0。
+- **真机 sk36**（走生产 `searchSkillsMp` + `warmSkillsMpCatalog`，新缓存 sk36cache，逐字）：`[no-pump p1 3.4s] hint=skillsmp 这个分类共有 545886 条，正按顺序取回，已取到前 48 条；接着翻页会继续往后取，直到 545886 条取完`（`CLAIM 后台=false` 合格）；泵推 4 轮 `rows=240 done=false joined=false` 后换未缓存深页看新文案：`[after-pump p5] hint=skillsmp 这个分类共有 545886 条，后台正在继续补取，已取到前 240 条`；`AFTER state rows=240 done=false pumpedAt=1795894749250`；`VERDICT 无泵不谎称=true 泵后改口=true pumpedAt落盘=true`。观察坑：页载荷有 10 分钟页缓存，同页重取会拿到旧文案，必须换页深看。
+- 仍未收口（照实记）：`clawhub` 的 `done` 语义与 hint 尚未接同一套诚实口径（它 `done` 才报 total，未 done 报 undefined，文案层没有「取满/截断/后台在推」三态）；`modelscope` 的 `MS_MAX_PAGES=30` 是依赖边界（实测第 31 页起上游 HTTP 500），其长 hint 残留工程词属目标会话独占侧。取满本身仍要求宿主持续在线——泵一轮 12 跳 ≈18–24s、每 30s 一面，一面 545,886 条需 ≈7.9 小时连续运行。
+
 ## 0.5.191 — 逐源补链泵：clawhub 接入同一套后台取全机制（m41100 令延续）
 
 - 0.5.190 只给 skillsmp 接上了泵。用户令是「确保**所有**技能被完整取回」，所以本把 clawhub 接进同一机制，并把需求队列泛化成跨源形状。

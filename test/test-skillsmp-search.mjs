@@ -18,6 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { searchSkills, makeCache } from '../src/sources.js';
 import { searchSkillsMp } from '../src/extra-sources.js';
+import * as es from '../src/extra-sources.js';
 import { safeTempDir } from '../src/home.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -614,6 +615,66 @@ console.log('Test 26: 盘上中毒终态（done=true 而 rows<totalAll）不得�
   check('目录从毒点继续增长（第 3 页给第 49–72 行）', r.items.length === 24 && r.items[0].slug === 'pdf-tool-48', JSON.stringify((r.items || []).slice(0, 2).map((i) => i.slug)));
   const st2 = await c.get(KEY, 60 * 60 * 1000);
   check('落盘状态被复位（done=false，不再是毒态）', st2 && st2.done === false, st2 ? String(st2.done) : 'null');
+}
+
+console.log('');
+console.log('Test 27: 目录取满后不得再说「正在取回」——取满与未取满是两种不同文案（m41100 镜像：谎报未完成也是谎报）');
+{
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-full-' + Date.now());
+  // 这一面只有 96 条：第二跳上游明说没有后继游标（nextCursor 空）⇒ done=true 且 rows==totalAll。
+  // 注意 totalAll 必须跟着夹具走：默认 545886 是「目录自报一万级别」的口径，这里要的是「已取满」。
+  const fetch = async (u) => {
+    urls.push(u);
+    const cur = String(paramsOf(u).get('cursor'));
+    const idx = cur === 'start' ? 0 : Number(cur.replace(/^C/, ''));
+    if (idx === 0) return mkCursorPage(48, 0, 'C1', { totalAll: 96 });
+    return mkCursorPage(48, 48, '', { hasNext: false, totalAll: 96 });
+  };
+  // page=3 ⇒ need=72：第一跳 48 不够、第二跳补齐到 96 且上游明说到底。
+  const r = await searchSkillsMp({ query: '', page: 3, pageSize: 24, category: 'pdf-tools', cache: c, fetchJson: fetch });
+  console.log('   取满后: n=' + r.items.length + ' total=' + String(r.total) + ' hasMore=' + String(r.hasMore) + ' hint=' + String(r.hint));
+  check('取满后不再写「正按顺序取回 / 接着翻页会继续往后取」', !/正按顺序取回|接着翻页会继续往后取/.test(String(r.hint)), String(r.hint));
+  check('取满后明确说已取完（并给出行数）', /取完|取回全部|已全部/.test(String(r.hint)) && /96/.test(String(r.hint)), String(r.hint));
+  check('取满后本地还有下一页就照实 hasMore=true（这一页只 24 条）', r.hasMore === true, String(r.hasMore));
+  check('总数仍是目录自报那一万级别口径（与 chip 同源）', r.total === 96, String(r.total));
+}
+
+console.log('');
+console.log('Test 28: 后台泵刚推过 ⇒ 文案要说「后台正在继续补取」；没推过 ⇒ 只能说「翻页会继续往后取」（不许凭空谎称后台在跑）');
+{
+  const c = makeCache(safeTempDir() + '/smp-live-' + Date.now());
+  const mkFetch = () => async (u) => {
+    const cur = String(paramsOf(u).get('cursor'));
+    const idx = cur === 'start' ? 0 : Number(String(cur).replace(/^C/, ''));
+    return mkCursorPage(48, idx * 48, 'C' + (idx + 1));
+  };
+  const r0 = await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'debugging', cache: c, fetchJson: mkFetch() });
+  console.log('   未推泵: hint=' + String(r0.hint));
+  check('泵没跑过：不得谎称后台在取', !/后台/.test(String(r0.hint)), String(r0.hint));
+  check('泵没跑过：照旧说翻页会继续往后取', /接着翻页会继续往后取/.test(String(r0.hint)), String(r0.hint));
+  // 推一轮泵（走生产 loop + 单飞链，stub 上游、sleep 立回，不起任何定时器）
+  const q = es.createSkillsMpDemand();
+  q.note('debugging');
+  await es.skillsMpPumpLoop(c, { queue: q, maxRounds: 1, rounds: 1, sleep: async () => {}, fetchJson: mkFetch() });
+  const r1 = await searchSkillsMp({ query: '', page: 2, pageSize: 24, category: 'debugging', cache: c, fetchJson: mkFetch() });
+  console.log('   泵推过后: hint=' + String(r1.hint));
+  check('泵刚推过：文案改成「后台正在继续补取」', /后台正在继续补取/.test(String(r1.hint)), String(r1.hint));
+  check('泵推过后仍报目录总数与已取行数', /545,?886/.test(String(r1.hint)) && /96/.test(String(r1.hint)), String(r1.hint));
+  check('泵推过后不再要求用户靠翻页驱动', !/接着翻页会继续往后取/.test(String(r1.hint)), String(r1.hint));
+}
+
+console.log('');
+console.log('Test 29: 上游说到底但行数没到 totalAll ⇒ 两个数都要报，不许写「已全部取回」');
+{
+  const c = makeCache(safeTempDir() + '/smp-short-' + Date.now());
+  // 目录自报 545886，可上游第一跳就给出 48 行且没有后继游标：done=true、rows=48 < totalAll。
+  const fetch = async () => mkCursorPage(48, 0, '', { hasNext: false });
+  const r = await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'debugging', cache: c, fetchJson: fetch });
+  console.log('   上游截断: rows 提示=' + String(r.hint));
+  check('不得谎称全部取回', !/已全部|取回全部/.test(String(r.hint)), String(r.hint));
+  check('如实报已取行数与目录自报数两个口径', /48/.test(String(r.hint)) && /545,?886/.test(String(r.hint)), String(r.hint));
+  check('说明来源是「上游这一面没有更多」而不是我们取满了', /没有更多|到这就没/.test(String(r.hint)), String(r.hint));
 }
 
 console.log('');

@@ -1480,6 +1480,11 @@ export async function warmSkillsMpCatalog(store, options = {}) {
   SKILLSMP_PUMP_FLIGHTS.set(key, flight);
   try {
     const st = await flight;
+    // 0.5.192 进度诚实性的凭据：泵真的推过这一面，就在落盘状态上盖一个时间戳。
+    // hint 只有看到这个戳（或泵定时器确实挂着）才允许说「后台正在继续补取」，
+    // 否则只能说「翻页会继续往后取」——不许凭空谎称后台在跑。
+    st.pumpedAt = Date.now();
+    await store.put(key, st);
     return { rows: st.rows.length, done: st.done, joined: false };
   } finally {
     if (SKILLSMP_PUMP_FLIGHTS.get(key) === flight) SKILLSMP_PUMP_FLIGHTS.delete(key);
@@ -1545,6 +1550,32 @@ export function startSkillsMpPump(store, options = {}) {
   return { armed: true };
 }
 
+/**
+ * 目录取全进度文案（0.5.192，m41100 镜像原则：谎报未完成与谎报已完成都是谎报）。
+ * done 有两种成因，必须分开说：
+ *  · done 且 rows≥totalAll —— 真取满 ⇒ 说「已全部取回 N 条」，不许再写「正在取回」。
+ *  · done 但 rows<totalAll —— 上游这一面明说没有后继游标/回零行，我们没取满 ⇒
+ *    两个数都要报，并点明来源是「上游没有更多」，不许读成「我们取完了」。
+ * 未完成态再按泵活动分两种：泵刚推过（pumpedAt 新鲜）⇒ 说后台在补取；
+ * 没泵推过 ⇒ 只能说「翻页会继续往后取」，不许凭空谎称后台在跑。
+ */
+const SKILLSMP_PUMP_FRESH_MS = 2 * SKILLSMP_PUMP_GAP_MS;
+function skillsMpProgressHint(all, taken, done, pumpedAt, now = Date.now) {
+  const at = Number(typeof now === "function" ? now() : now) || Date.now();
+  if (all <= 0) {
+    // 上游没自报 totalAll（实测 language=zh 与纯浏览态不给该字段）：没有「共多少」可报，
+    // 只能报已取到的条数；泵推过与否同样决定后半句。
+    return pumpedAt && at - Number(pumpedAt) <= SKILLSMP_PUMP_FRESH_MS
+      ? `skillsmp 已顺游标取到 ${taken} 条，后台正在继续补取`
+      : `skillsmp 已顺游标取到 ${taken} 条，接着翻页会继续往后取`;
+  }
+  if (done && taken >= all) return `skillsmp 这个分类已全部取回 ${all} 条`;
+  if (done) return `skillsmp 这一面上游没有更多了（到这就没有后继了），已取到 ${taken} 条，该分类自报共 ${all} 条`;
+  if (pumpedAt && at - Number(pumpedAt) <= SKILLSMP_PUMP_FRESH_MS)
+    return `skillsmp 这个分类共有 ${all} 条，后台正在继续补取，已取到前 ${taken} 条`;
+  return `skillsmp 这个分类共有 ${all} 条，正按顺序取回，已取到前 ${taken} 条；接着翻页会继续往后取，直到 ${all} 条取完`;
+}
+
 export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "", fetchJson = getJsonEscalating }) {
   const q = String(query || "").trim();
   const p = Math.max(1, Number(page) || 1);
@@ -1601,9 +1632,7 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
         facetUsed: cat.facetUsed,
         windowed: false,
         catalogProgressive: true,
-        hint: cat.facetRefused ? refusedNote : (all > 0
-          ? `skillsmp 这个分类共有 ${all} 条，正按顺序取回，已取到前 ${crows.length} 条；接着翻页会继续往后取，直到 ${all} 条取完`
-          : `skillsmp 已顺游标取到 ${crows.length} 条，接着翻页会继续往后取`),
+        hint: cat.facetRefused ? refusedNote : skillsMpProgressHint(all, crows.length, done, cat.state.pumpedAt),
       };
       // 空页不落页缓存：一次上游抖动不该把这页钉死十分钟（与下面 legacy 通路同一口径）。
       if (citems.length) await cache.put(key, payload);
