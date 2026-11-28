@@ -27,6 +27,7 @@ import { REGISTRY_PAGE_SIZE, fallbackCards, registryCatalogueCacheKey, registryD
 import { createMarketSkillProvider, readSkillBody } from "./src/provider.js";
 import { ALL_SOURCES, makeCache, lookupSkillShRepo, searchSkills, warmMarketCache, makeHarvestStore, normalizeTailCategories } from "./src/sources.js";
 import { SORT_KEYS, sortKeysFor, sortKeysForMcp } from "./src/sort-capability.js";
+import { categoryChipPolicy } from "./src/category-capability.js";
 // 技能市场分类词表（skillsmp /zh/categories 实测抓取）只随 settings.get 走：读缓存 + 后台补取，
 // 面板首屏的 RPC 不等外网抓取。
 import { readSkillsMpCategoryVocabulary, skillsmpCategoryVocabulary, readClawhubCategoryVocabulary, clawhubCategoryVocabulary,
@@ -1251,6 +1252,9 @@ function needsConfirmFor(patch, current) {
           },
           // 面板画分类 chip 用的固定词表；缺省时面板退回按当前页派生（入口不关）
           categoryVocabulary: categoryVocabulary || undefined,
+          // 0.5.186 每源 chip 窗口与逐类取全策略：唯一事实源是 category-capability.js，
+          // 面板只读这份下发（零网络，纯表查），禁止在 client.js 抄第二份名单。
+          categoryPolicy: Object.fromEntries(ALL_SOURCES.map((src) => [src, categoryChipPolicy(src)])),
           shipped: {
             mcpClient: resolveShipped(SHIPPED.mcpClient, settings.shippedRoot) || "NOT FOUND",
             skillFilesystem: resolveShipped(SHIPPED.skillFilesystem, settings.shippedRoot) || "NOT FOUND",

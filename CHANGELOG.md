@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.186
+
+- **用户 m31226 三问 + m31267 补充指令 + m31672 两问闭环（0.5.186-A）：「其他」分类从「永远取不全」改为「能取全的取全、取不全的不谎称」，并把工程黑话从用户可见文案里清干净**。
+- **① 按源分策略（唯一事实源 src/category-capability.js，面板零第二份名单）**：能力表每源新增两格 `chipWindow`（0 = 完整呈现全部分类且不再合并「其他」）与 `tailExhaustive`（逐类补取是否翻到该类尽头）。表值 skillsmp `{0,false}`、lobehub/clawhub/trusttools/skillhub/modelscope `{32,true}`、skills.sh/browse.sh `{32,false}`；表外源保守回落 `{32,false}`。新增导出 `categoryChipPolicy(source)` 与 `isTailExhaustiveSource(source)`，`index.js` 随 `settings.get` 下发顶层 `categoryPolicy`（与词表是否存在解耦：冷缓存词表为 null 时策略仍要在，否则 skillsmp 会退化成折叠）。
+- **② skillsmp 取消折叠**：63 类全铺横向拖动条（chipRow 本就 `flexWrap:'nowrap', overflowX:'auto'`），零「其他」chip、零「展开分类」按钮，且不再下发 `tailCategories` ⇒ 服务端不再为它逐类取数。依据实测：窗外 31 类单类最大 155,772 条（≈5.0 万页）永远取不全，且单类可浏览窗口只有 480 条（20 页 × 24，`category=defi` page=20 实测 `hasMore:false`）——「全部取回」在 skillsmp 上是上游窗口硬封顶，不是页数不够。
+- **③ lobehub「其他」逐类翻到尽头（全量取回）**：`fetchTailCategory` 由「每类只取第 1 页」改为 `for(;;)` 翻页循环，终止四道：`pageLanded === 0` / `hasMore !== true` / `page >= totalPages` / `page >= TAIL_PAGE_CAP(200)`（撞护栏如实记 `windowed`）。正证门（I4）与 `upstreamTotal` 累加**只在第 1 页**执行（续页 total 是同一目录规模，逐页累加会翻虚）。实测代价：窗外 214 类 = **217 次分页请求 / 157 秒**，每类实取条数与词表 totalAll **零偏差**，按 `source|slug` 去重后并集 **722 条**（ΣtotalAll=743，重复仅 21 条）⇒ 用户 m31226②「重复计数问题是可以解决的」在 lobehub 上正面成立：取全后直接报并集去重条数，不再解释重叠口径。
+- **④「未取全」永真的真因修掉**：收口判据原为 `s.tail.upstreamTotal > finalRows.length`，而 `upstreamTotal` 是各分类 total 之和（跨类重叠计数）⇒ 恒大于去重行数 ⇒ 用户永远见不到「已取全」。改为 `categoriesFailed > 0 || tailPending > 0`（tailPending = total − fetched − failed），`upstreamTotal` 只作参考不进判据；**逐类翻尽的源全部落地时一条 hint 都不发 ⇒ 界面那行提示整行消失，这才是「已取全」**。
+- **⑤ 本地过滤源的 caveat 保留（修法①）**：收口 else-if 改为「非 exhaustive **或** `isLocalFilterSource`」都发口径 hint。依据实测：ModelScope 的「可达集合」本质是上游 offset 硬顶 30,000 行（`(page−1)×size ≥ 30000` 一律 HTTP 500，n=1000/2000/5000/10000/20000 五档同红）；5 个有效排序（默认/GmtCreate/GmtModify/Likes/Visits，`Sort` 是唯一被认的参数名）各取满 30 页并集 = **50,657 / 89,122 = 56.84%** ⇒ 排序方向能扩窗但取不全，这句 caveat 语义上仍成立，抹掉它才是假话。
+- **⑥ 用户可见文案白话化（m31212①/m31672②：提示语必须简洁易懂、不许说工程黑话）**：`msCatHint` 三形、`msDepthHint`、`SKILLSMP_UNBOUNDED_NOTE`、skillsmp/modelscope `refusedNote`、skillsmp 窗口 hint、`src/sources.js:333` skills.sh 窗口句、`client.js` 出路条正文全部重写；「上游不提供服务端分类过滤（30 组参数探针实测全部忽略）」「本地过滤口径」「可达集合之外」「上游自报 totalAll」「静态词表里没有」等工程词在用户可见串里全仓零命中。tailNote 两态改为只报缺口（「还有 N 个分类没取到（其中 F 个取数失败），本次取回 Y 条」），「每个未列出的分类各取回一页（24 条）」退场。
+- **⑦ 自修一个真 bug**：`chipWindowFor` 原写 `Number(hit && hit.chipWindow)`，而 `Number(null) === 0` ⇒ 旧服务端没有 `categoryPolicy` 这一键时会被当成 `chipWindow=0`（246 类整排铺开），不是回落 32。改为先取 `raw` 再判 `raw !== null`。
+- **判据同步**：test-panel-tail SECT_WANT D 段 12⇒14（`chipWindowFor` 函数体在场锁 + 四态回落锁：策略缺失/表外源/坏值都回落 32、只有显式 0 才是不折叠）+ 变异针 X14（摘掉回落 ⇒ 实测 mutFailed=1 会咬、还原 byteRestored=true）；test-modelscope-category-vocab :527/:528 重订为白话锁（`/没找到/` + `/近似，不等于/` + `!/本地过滤|可达集合/`，内存喂旧黑话句 ⇒ false，防 vacuous）；test-harvest I6:788 / K6:1051 两条红随修法①转绿。
+- **一处回退（诚实记账）**：`extra-sources.js:379` clawhub `refusedNote` 曾白话化，实测撞红 `test-clawhub-category-vocab.mjs:196`（该判据要求 hint 同时含 slug 与 `/400/`）⇒ 已逐字回退成 HEAD 原句，两侧独立复跑均 62/0。教训：改 hint 前必须全仓 grep 该字面，不能只 grep 自己那几套。
+- 版本 0.5.185⇒0.5.186。
+- **遗留（下一批）**：① clawhub/trusttools 的「词表里没有「X」」两句要白话化，得同步重订 `test-clawhub-category-vocab.mjs:241` 与 `test-trusttools-category-vocab.mjs:276` 两条正则（两套都在测方侧）；② ModelScope 可达集合外的分类覆盖 = 产品决策待定（实测已证上游无法取全，非实现缺陷）。
+
 ## 0.5.185
 
 - **用户 m30832 三问闭环（0.5.185-A）：加载中不再出现「继续显示 N 个」、合并入口不再报分类数、收口不再同屏两行说同一件事**。

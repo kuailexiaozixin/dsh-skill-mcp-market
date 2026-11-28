@@ -794,7 +794,7 @@ export async function searchTrustTools({ query = "", page = 1, pageSize = 24, ca
     serverFacet: facetAnswered,
     ...(facetRefused ? { hint: `trusttools 词表里没有「${facet}」这个分类（不是「该分类下没有匹配」），已按全部分类返回这一页` } : {}),
     // 只在「真取回了行且自证失败」时说这句话：空页里没有任何行，任何归因都是假陈述。
-    ...(facetUsed && rows.length > 0 && !facetAnswered ? { hint: `trusttools 的分类过滤未通过自证（带分类与不带分类的总数相同，且返回行里没有所请求的标签），已退回面板本地筛选这一页` } : {}),
+    ...(facetUsed && rows.length > 0 && !facetAnswered ? { hint: `trusttools 这个分类没有筛出不同的结果（总数与全部分类相同），已退回按普通列表显示这一页` } : {}),
     hasMore: known ? p * size < known : items.length >= size,
   };
 }
@@ -1006,7 +1006,7 @@ const SKILLSMP_TTL = 10 * 60 * 1000;
 // 注意：裸 fetch 对这些请求拿到的是 403「Just a moment...」挑战页，那不是上游对 limit 的答复，
 // 所以取证必须走 getJsonEscalating/python 传输。旧实现钳到 50 = 每页宽 48~50 的请求都会被拒。
 const SKILLSMP_MAX_LIMIT = 48;
-const SKILLSMP_UNBOUNDED_NOTE = "skillsmp 搜索窗口会随翻页移动，上游未报总数时不给数字";
+const SKILLSMP_UNBOUNDED_NOTE = "skillsmp 没有给出总数，先显示这一页；继续翻页或换个关键词都能看到更多";
 // 分类词表：面板的「按分类浏览」入口只能来自 /zh/categories 这份 HTML（编目端点 10 个候选实测全部
 // ENDPOINT_NOT_FOUND），所以这里解析页面锚点，抓取走 pythonText（同一 Cloudflare 指纹门槛）。
 // 词表 TTL 取 7 天：判据不是「上游多久改版」，而是「面板宁可退回页内派生 chip，也不长期贴一份旧词表」。
@@ -1133,7 +1133,7 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
   let data;
   let facetUsed = facet;
   let facetRefused = false;
-  const refusedNote = `skillsmp 不接受分类「${facet}」（上游回 400 INVALID_CATEGORY），已按全部分类返回这一页`;
+  const refusedNote = `skillsmp 没有「${facet}」这个分类，已按全部分类显示这一页`;
   try {
     data = await fetchJson(`https://skillsmp.com/api/skills?${params.toString()}`, options);
   } catch (err) {
@@ -1204,8 +1204,7 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
       const depth = window > 0 ? Math.max(1, Math.ceil(window / size)) : Number(pg.totalPages) || 1;
       totalPages = depth;
       if (pg.hasNext === false) hasMore = false;
-      hint = `skillsmp 该分类目录共 ${upstreamAll} 条（上游自报 totalAll），可浏览窗口只有 ${window} 条即 ${depth} 页 × ${size} 条，`;
-      hint += `第 ${depth} 页之后取不到也不计数，换关键词或换分类能继续往里走`;
+      hint = `skillsmp 这个分类共有 ${upstreamAll} 条，上游只允许浏览前 ${window} 条（即 ${depth} 页）；第 ${depth} 页之后取不到，换关键词可以往里走得更深`;
     } else if (window === 0) {
       // 只有「连窗口多大都不知道」才需要那句话。窗口自报过 maxResults 时不再对用户念
       // 科普（用户 2026-11-23 点名那条说明已失效）：总数与页数照旧留未知（上面不赋
@@ -1510,7 +1509,7 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   if (sortMode && total > rows.length) {
     msDepthHint = msInterrupt
       ? 'ModelScope 排序取数中断（' + msInterrupt + '），本次只在已取回的 ' + rows.length.toLocaleString() + ' 行内排序（目录共 ' + total.toLocaleString() + ' 条），不是全量覆盖；' + msResumeNote
-      : `ModelScope 上游分页深度上限约 ${rows.length.toLocaleString()} 条（目录共 ${total.toLocaleString()} 条），排序覆盖上游可返回的全部行`;
+      : `ModelScope 排序已覆盖能取回的 ${rows.length.toLocaleString()} 条（该源目录共 ${total.toLocaleString()} 条，其余暂时取不到）`;
   }
   // 分类态/表外拒发的如实提示：过滤在本地做，行数与 total 都是已取回行内的实测值，跨页
   // 有效；同时说明可达集合外的分类会漏（残余风险），不假装覆盖了全目录。
@@ -1521,10 +1520,10 @@ export async function searchModelScope({ query = "", page = 1, pageSize = 24, ca
   let msCatHint = "";
   if (catActive) {
     msCatHint = msInterrupt
-      ? 'ModelScope 分类取数中断（' + msInterrupt + '）：可达集合只到已取回的 ' + rows.length.toLocaleString() + ' 行（目录共 ' + total.toLocaleString() + ' 条），该类在这些行内命中 ' + catTotal.toLocaleString() + ' 条；这不是「该分类没有匹配」，是取数失败，' + msResumeNote
-      : 'ModelScope 上游不提供服务端分类过滤（30 组参数探针实测全部忽略），分类在已取回的 ' + rows.length.toLocaleString() + ' 行（目录共 ' + total.toLocaleString() + ' 条）内本地过滤，跨页有效；本类实测 ' + catTotal.toLocaleString() + ' 条；可达集合外的分类会漏';
+      ? 'ModelScope 分类取数中断（' + msInterrupt + '）：这次只取回 ' + rows.length.toLocaleString() + ' 行（该源目录共 ' + total.toLocaleString() + ' 条），本类在这些行里命中 ' + catTotal.toLocaleString() + ' 条；这不是「该分类没有匹配」，是取数失败，' + msResumeNote
+      : 'ModelScope 分类在已取回的 ' + rows.length.toLocaleString() + ' 行里筛出（该源目录共 ' + total.toLocaleString() + ' 条，其余暂时取不到）；本类实测 ' + catTotal.toLocaleString() + ' 条';
   } else if (catRefused) {
-    msCatHint = 'ModelScope 静态词表里没有「' + catRefused + '」这个分类（不是「该分类下没有匹配」），已按全部分类返回这一页';
+    msCatHint = 'ModelScope 没有「' + catRefused + '」这个分类（不是「这个分类下没有东西」），已按全部分类显示这一页';
   }
   const msHint = msCatHint || msDepthHint;
   sortRawRows(categoryRows, sort, MODELSCOPE_SORT_GETTERS);

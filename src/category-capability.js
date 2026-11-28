@@ -18,14 +18,19 @@
 // 缺表键一律按 false 处理（保守）：宁可计失败，也不把全目录当某一类塞进「其他」分类。
 
 const CATEGORY_CAPABILITY = {
-  "skills.sh": { supportsCategory: false, facetProof: "none" },
-  "clawhub": { supportsCategory: true, facetProof: "declared" },
-  "skillsmp": { supportsCategory: true, facetProof: "declared" },
-  "trusttools": { supportsCategory: true, facetProof: "declared" },
-  "browse.sh": { supportsCategory: false, facetProof: "none" },
-  "lobehub": { supportsCategory: true, facetProof: "declared" },
-  "skillhub": { supportsCategory: true, facetProof: "declared" },
-  "modelscope": { supportsCategory: true, facetProof: "local-filter" },
+  // chipWindow：面板分类 chip 一次呈现多少个，0 = 完整呈现全部且不再合并「其他」。
+  // tailExhaustive：逐类补取时是否把该类翻到尽头（取全），false = 每类只取一页（0.5.186）。
+  // 两格依据 0.5.186 实测：skillsmp 词表 63 类（横拖条放得下）且窗外单类最大 155,772 条
+  // （≈5.0 万页，永远取不全）；lobehub 词表 246 类（铺开读不动）但窗外合计仅 743 条
+  // （217 次分页请求，实测单页 3.7~5.6s）⇒ 取全可行，取全后才配谈「其他」。
+  "skills.sh": { supportsCategory: false, facetProof: "none", chipWindow: 32, tailExhaustive: false },
+  "clawhub": { supportsCategory: true, facetProof: "declared", chipWindow: 32, tailExhaustive: true },
+  "skillsmp": { supportsCategory: true, facetProof: "declared", chipWindow: 0, tailExhaustive: false },
+  "trusttools": { supportsCategory: true, facetProof: "declared", chipWindow: 32, tailExhaustive: true },
+  "browse.sh": { supportsCategory: false, facetProof: "none", chipWindow: 32, tailExhaustive: false },
+  "lobehub": { supportsCategory: true, facetProof: "declared", chipWindow: 32, tailExhaustive: true },
+  "skillhub": { supportsCategory: true, facetProof: "declared", chipWindow: 32, tailExhaustive: true },
+  "modelscope": { supportsCategory: true, facetProof: "local-filter", chipWindow: 32, tailExhaustive: true },
 };
 
 const norm = (source) => String(source == null ? "" : source).trim();
@@ -53,4 +58,22 @@ export function categoryCapableSources(names) {
 /** 本地过滤源：合计口径与窗口封顶源不同，只能写在 hint 里（0.5.177 I6）。 */
 export function isLocalFilterSource(source) {
   return categoryCapability(source).facetProof === "local-filter";
+}
+
+/** chip 窗口与逐类是否取全。表外源保守：窗口 32、不翻尽（unknown 不是 capability）。 */
+export function categoryChipPolicy(source) {
+  const key = norm(source);
+  const hit = Object.prototype.hasOwnProperty.call(CATEGORY_CAPABILITY, key)
+    ? CATEGORY_CAPABILITY[key]
+    : {};
+  return {
+    source: key,
+    chipWindow: Number.isFinite(Number(hit.chipWindow)) && Number(hit.chipWindow) >= 0 ? Number(hit.chipWindow) : 32,
+    tailExhaustive: hit.tailExhaustive === true,
+  };
+}
+
+/** 该源逐类补取是否翻到尽头（取全）。表外源按 false（保守）。 */
+export function isTailExhaustiveSource(source) {
+  return categoryChipPolicy(source).tailExhaustive === true;
 }

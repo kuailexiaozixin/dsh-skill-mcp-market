@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { searchSkills as searchSkillHub } from "./skillhub.js";
 import { enrichPageDescriptions, enrichSkillsShFast } from "./enrich.js";
 import { supportsSort as capabilitySupports, sortKeysFor } from "./sort-capability.js";
-import { categoryCapability, categoryCapableSources, isLocalFilterSource } from "./category-capability.js";
+import { categoryCapability, categoryCapableSources, isLocalFilterSource, isTailExhaustiveSource } from "./category-capability.js";
 import {
   searchClawHub,
   warmClawHubCatalog,
@@ -330,8 +330,8 @@ async function searchSkillsSh({ query = "", page = 1, pageSize = 24, cache, sort
     total = undefined;
   } else if (hitCap) {
     total = undefined;
-    hint = "skills.sh 搜索单次最多返回 " + SKILLS_SH_WINDOW_CAP +
-      " 条，上游没有偏移参数；已取满这一窗，后面的结果取不到也不计数，换个更具体的关键词能看到别的结果";
+    hint = "skills.sh 这一轮最多返回 " + SKILLS_SH_WINDOW_CAP +
+      " 条，已经取满；后面还有没有结果、有多少结果，上游不给数，所以这里报不出来。换个更具体的关键词能看到别的结果";
   } else {
     // 窗口内没取满 ⇒ 行数就是这个查询的完整集合，精确总数，与页码无关。
     hasMore = false;
@@ -545,6 +545,8 @@ const SOURCE_HANDLERS = {
 // 并发 4 防住 214 类全并发把上游打死（lobehub 单类实测 4.4~11.8s，走的是 npx CLI）。
 const TAIL_CATEGORY_CAP = 400;
 const TAIL_CONCURRENCY = 4;
+// 0.5.186 逐类翻尽的单类页数护栏：撞到这里说明该类确实没翻完，如实记 windowed。
+const TAIL_PAGE_CAP = 200;
 // 哪个源能按分类取数、声明是服务端口径还是本地口径，唯一事实源在 src/category-capability.js
 //（照 sort-capability.js 的实测纪律，缺表键按「不支持」保守处理）。
 
@@ -1211,44 +1213,72 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
       const tailHandler = (handlers && handlers[tailSourceName]) || SOURCE_HANDLERS[tailSourceName];
       // landed：本类新增行数（ModelScope 走 msOnPartial 提前落地，也记在同一本账上）。
       let landed = 0;
-      let result = null;
-      try {
-        // query 一律空串：带关键词时上游会静默丢掉分类参数（extra-sources.js:1114），
-        // 逐类取数就退化成「同一份全目录取 N 遍」。
-        result = await tailHandler({
-          query: "", page: 1, pageSize: size, cache, sort: "", category: slug,
-          harvestBypass: true,
-          // 逐页增量此刻还没有正证（证明门在取数返回之后），所以这里刻意不传 provenClass：
-          // 提前落地的行只靠行内 category 自证 membership，证不了就不入账。
-          msOnPartial: isLocalFilterSource(tailSourceName)
-            ? (pageItems) => {
-                for (const it of pageItems) if (pushRow(it)) landed += 1;
-                signal();
-              }
-            : null,
-        });
-      } catch {
-        tailRejected(slug, "failed");
-        return;
+      // 0.5.186 tailExhaustive 源：这一类要翻到尽头（取全），不是取一页就交差。
+      // 终止有四道：源说没有下一页 / 源报的页数翻完 / 本页零新增行（上游翻不出东西）/ 单类页数护栏。
+      // 非 exhaustive 源仍是「每类一页」，逐键行为与 0.5.185 一致（C1/I4/K5 数值不破）。
+      const exhaustive = isTailExhaustiveSource(tailSourceName);
+      let page = 1;
+      for (;;) {
+        let result = null;
+        try {
+          // query 一律空串：带关键词时上游会静默丢掉分类参数（extra-sources.js:1114），
+          // 逐类取数就退化成「同一份全目录取 N 遍」。
+          result = await tailHandler({
+            query: "", page, pageSize: size, cache, sort: "", category: slug,
+            harvestBypass: true,
+            // 逐页增量此刻还没有正证（证明门在取数返回之后），所以这里刻意不传 provenClass：
+            // 提前落地的行只靠行内 category 自证 membership，证不了就不入账。
+            msOnPartial: isLocalFilterSource(tailSourceName)
+              ? (pageItems) => {
+                  for (const it of pageItems) if (pushRow(it)) landed += 1;
+                  signal();
+                }
+              : null,
+          });
+        } catch {
+          // 首页就炸 = 该类没取到；续页炸 = 已落地的部分照旧入账，这一类不再往前翻。
+          if (page === 1) { tailRejected(slug, "failed"); return; }
+          break;
+        }
+        if (!result || typeof result !== "object") {
+          if (page === 1) { tailRejected(slug, "failed"); return; }
+          break;
+        }
+        if (page === 1) {
+          // I4 正向证明：逐类取数只认源自己的声明 —— 明说 serverFacet === true，或 facetUsed
+          // 归一（trim + 小写）后等于所请求的那个 slug。什么都不说（旧出参、旧缓存条目）一律
+          // 计 unproven：那批行是没按分类筛过的全目录，推进会话等于把谎继续传下去（I2），
+          // 把整源 total 记进该类合计同样是谎（I3）。旧写法只看「源主动声明了拒绝」的两条形，
+          // 对沉默形（无声明位的出参）整条判据是漏的 —— 沉默既不是成功也不是拒绝。
+          const proofSlug = String(slug).trim().toLowerCase();
+          const proofGiven = String(result.facetUsed == null ? "" : result.facetUsed).trim().toLowerCase();
+          const proven = result.serverFacet === true || (proofGiven !== "" && proofGiven === proofSlug);
+          if (!proven) { tailRejected(slug, "unproven"); return; }
+          if (s.tail) {
+            s.tail.categoriesFetched += 1;
+            // upstreamTotal 只记首页自报的那一份：续页的 total 是同一个目录规模，逐页累加会翻虚。
+            s.tail.upstreamTotal += Number(result.total) || 0;
+            if (result.windowed === true) s.tail.windowed = true;
+          }
+        }
+        const srcItems = Array.isArray(result.items) ? result.items : [];
+        // 正证已过的类：整类归因成立，本类行即使不带 category 也放行（谓词第 (3) 档）。
+        let pageLanded = 0;
+        for (const it of srcItems) if (pushRow(it, true)) { landed += 1; pageLanded += 1; }
+        if (!exhaustive) break;
+        // 上游还在说「有下一页」但一页新行都挤不出来：继续要下去只是空转（真机见过这种形）。
+        if (pageLanded === 0) break;
+        if (result.hasMore !== true) break;
+        const pages = Number(result.totalPages) || 0;
+        if (pages > 0 && page >= pages) break;
+        if (page >= TAIL_PAGE_CAP) {
+          // 护栏撞到：这个类确实还没翻尽，按窗口封顶口径如实记着。
+          if (s.tail) s.tail.windowed = true;
+          break;
+        }
+        page += 1;
+        signal();
       }
-      if (!result || typeof result !== "object") { tailRejected(slug, "failed"); return; }
-      // I4 正向证明：逐类取数只认源自己的声明 —— 明说 serverFacet === true，或 facetUsed
-      // 归一（trim + 小写）后等于所请求的那个 slug。什么都不说（旧出参、旧缓存条目）一律
-      // 计 unproven：那批行是没按分类筛过的全目录，推进会话等于把谎继续传下去（I2），
-      // 把整源 total 记进该类合计同样是谎（I3）。旧写法只看「源主动声明了拒绝」的两条形，
-      // 对沉默形（无声明位的出参）整条判据是漏的 —— 沉默既不是成功也不是拒绝。
-      const proofSlug = String(slug).trim().toLowerCase();
-      const proofGiven = String(result.facetUsed == null ? "" : result.facetUsed).trim().toLowerCase();
-      const proven = result.serverFacet === true || (proofGiven !== "" && proofGiven === proofSlug);
-      if (!proven) { tailRejected(slug, "unproven"); return; }
-      if (s.tail) {
-        s.tail.categoriesFetched += 1;
-        s.tail.upstreamTotal += Number(result.total) || 0;
-        if (result.windowed === true) s.tail.windowed = true;
-      }
-      const srcItems = Array.isArray(result.items) ? result.items : [];
-      // 正证已过的类：整类归因成立，本类行即使不带 category 也放行（谓词第 (3) 档）。
-      for (const it of srcItems) if (pushRow(it, true)) landed += 1;
       if (s.tail) s.tail.retrievedTotal += landed;
       tailSettle();
     };
@@ -1324,13 +1354,23 @@ export function makeHarvestStore({ ttlMs = 120000, maxSessions = 8, budgetMs = H
             have.add(key);
             finalRows.push(it);
           }
-          if (s.tail.upstreamTotal > finalRows.length) {
-            // I6：合计口径的措辞跟着源自己的声明走，不能一句话糊过去 ——
-            // 窗口封顶的源（自报 totalAll + 固定可浏览窗口）能说「窗口之外取不到」；
-            // 本地过滤的源那个合计只是可达集合内的实测条数，既不写窗口话、也不冒充
-            // 上游全目录数。区别只在文案，绝不加第七个 tail 字段（面板消费口径不动）。
-            // 0.5.183：不再报「上游合计 N 条」虚高数（local-filter 源的 50 万是重叠计数，非独立条数）；
-            // 保留 I6 口径话（窗口源说「窗口之外」，本地过滤源说「可达集合内实测」），并补「建议稍后重试」。
+          // 0.5.186：「取全」看的是类有没有落地，不再拿 upstreamTotal（跨类重叠的目录计数）和行数比大小
+          // —— 那个比法把永远追不平的虚高数当缺口感，于是提示怎么写都像「还差很多」，用户重试两天也取不完。
+          // 逐类翻尽的源（tailExhaustive）全部落地时一条 hint 都不发：界面那行提示整行消失，这才是「已取全」。
+          const tailPending = Math.max(0, s.tail.categoriesTotal - s.tail.categoriesFetched - s.tail.categoriesFailed);
+          if (s.tail.categoriesFailed > 0 || tailPending > 0) {
+            const miss = s.tail.categoriesFailed + tailPending;
+            const line = "「其他」分类未取全：还有 " + miss + " 个分类没取到"
+              + (s.tail.categoriesFailed > 0 ? "（其中 " + s.tail.categoriesFailed + " 个取数失败）" : "")
+              + "；建议稍后重试。";
+            if (!s.hints.includes(line)) s.hints.push(line);
+          } else if (!isTailExhaustiveSource(tailSourceName) || isLocalFilterSource(tailSourceName)) {
+            // 两类源仍要发口径 hint：
+            //  ① 每类只取一页的源（skillsmp 窗外单类最大 155,772 条 ≈ 5.0 万页，结构性取不全）；
+            //  ② 本地过滤源（modelscope）—— 它的「可达集合」本身就是上游 30,000 行 offset 硬窗口，
+            //     实测 5 个有效排序各取满 30 页并集也只有 50,657/89,122=56.84%，翻尽本地集合 ≠ 覆盖全目录，
+            //     所以即便 tailExhaustive 已把本地集合翻到底，这句 caveat 语义上依然成立（0.5.186 修法①）。
+            // I6 口径按源声明分两写：窗口封顶说「窗口之外」，本地过滤只报可达集合内实测数。
             const caliber = s.tail.windowed
               ? "（其余在上游窗口之外取不到）"
               : "（本地过滤，只统计可达集合内的实测数）";

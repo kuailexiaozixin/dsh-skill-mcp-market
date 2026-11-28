@@ -442,6 +442,18 @@ const cardStepFor = (pageSize) => {
 // 集合成员与哨兵在场性的判据：test-lobehub Test 8 装配段真跑 + 63 类小尾巴夹具。
 const CAT_TAIL_EXPAND_MAX = 40;
 const CAT_CHIP_FOLD = 32;
+// 0.5.186（用户 m31226/m31267）：chip 窗口按源下发，唯一事实源是服务端
+// src/category-capability.js 的能力表，面板只读 settings.get 的 categoryPolicy，
+// 禁止在 client.js 抄第二份名单。chipWindow=0 ⇒ 完整呈现全部分类且不再合并「其他」
+// （foldChips 的 cap 取 chips.length）；缺失（旧服务端没这个键）回落 CAT_CHIP_FOLD。
+function chipWindowFor(source, policy) {
+  const hit = policy && typeof policy === 'object' ? policy[String(source || '')] : null;
+  // 必须先把「没有这一格」与「这一格是 0」分开：Number(null) === 0 会把缺失策略
+  // 悄悄当成 chipWindow=0（= 不折叠），旧服务端没有 categoryPolicy 时 246 类会整排铺开。
+  const raw = hit && typeof hit === 'object' ? hit.chipWindow : null;
+  const n = Number(raw);
+  return raw !== null && Number.isFinite(n) && n >= 0 ? n : CAT_CHIP_FOLD;
+}
 // 分类词表 → chip 的三件纯函数，放在组件外同一座「可测岛」上：不碰 React 状态，
 // 测试用 new Function 直接执行函数体（与 capsFor/CARD_BATCH 同一口径）。
 // 词表来自服务端抓的 skillsmp 类目页（随 settings.get 下发），页内派生 chip 永远保留：
@@ -952,6 +964,9 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const [sortCaps, setSortCaps] = useState(null);
       // 服务端分类词表（index.js settings.get 顺带下发）；null = 还没取到，chip 退回页内派生。
       const [categoryVocab, setCategoryVocab] = useState(null);
+      // 每源 chip 窗口与逐类取全策略（settings.get 下发，与词表是否存在解耦：冷缓存时
+      // 词表为 null，策略仍要在，否则 skillsmp 会退化成折叠出「其他」）。
+      const [categoryPolicy, setCategoryPolicy] = useState(null);
       // 当页分类筛选是不是上游做的：为真时列表不再二次本地过滤（见 visibleSkills）。
       const [serverFacet, setServerFacet] = useState(false);
       // 可选 op 的运行时可用性：null=还没探过；探过之后每个 op 一个布尔。
@@ -1241,6 +1256,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
         setSettings(d);
         setSortCaps(d.sortCapabilities || null);
         setCategoryVocab(d.categoryVocabulary || null);
+        setCategoryPolicy(d.categoryPolicy || null);
         setSkillDraft((d.settings.skillDirs || []).join('\n'));
         setMcpDraft((d.settings.mcpDirs || []).join('\n'));
         setNativeDirs(d.settings.dshNativeSkillDirs || []);
@@ -2299,7 +2315,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
       const vocabChips = categoryChipsForSource(source, categories, categoryVocab);
       // 默认窗口外的分类不再逐个铺开：合并成一个「其他」（窗内条数仍是上游真数，合计如实标注）。
       // 声明顺序要紧：chipEntries 与 visibleSkills 都读 chipFold，写在后面会撞 TDZ（node --check 看不见）。
-      const chipFold = foldChips(vocabChips, CAT_CHIP_FOLD, CAT_TAIL_LABEL);
+      const chipFold = foldChips(vocabChips, chipWindowFor(source, categoryPolicy), CAT_TAIL_LABEL);
       // 0.5.177 逐类取数（消费侧）：covers 交给下发侧（tailCoversRef → env.tailCovers →
       // harvest.start tailCategories）；服务端 tail 声明经 memo 核对当前 src|q|cat 后落到
       // chipFold.other.tailDeclared，visibleSkills 据此豁免 covers 本地筛（P5）。
@@ -2374,12 +2390,14 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
             // 0.5.184 P3/P4/P5 白话两态：说清「每个未列出分类各取回一页」的取数口径；上游
             // 条数按类相加会重复计同一技能，是虚高数，一律不再报；全部取到就静默。
             ? (function () {
-                const C = Math.max(0, Number(tailMemo.categoriesTotal || 0) - Number(tailMemo.categoriesFetched || 0));
                 const F = Number(tailMemo.categoriesFailed || 0);
+                // 0.5.186（用户 m31212②/m31672①）：缺口只报「还差几个分类」，不再复述取数策略
+                // （「每个未列出的分类各取回一页（24 条）」是工程黑话，且逐类翻尽后已不成立）。
+                const C = Math.max(0, Number(tailMemo.categoriesTotal || 0) - Number(tailMemo.categoriesFetched || 0) - F);
                 if (C === 0 && F === 0) return '';
                 const Y = Number(tailMemo.retrievedTotal || 0);
-                // 0.5.185 C3（用户 m30832）：一行结论；分类数与失败类数不再上屏。
-                let s = '「其他」分类未取全：每个未列出的分类各取回一页（' + (Number(size) || 24) + ' 条），本次取回 ' + Y.toLocaleString() + ' 条';
+                let s = '「其他」分类未取全：还有 ' + (C + F) + ' 个分类没取到';
+                s += (F > 0 ? '（其中 ' + F + ' 个取数失败）' : '') + '，本次取回 ' + Y.toLocaleString() + ' 条';
                 s += '。建议：稍后重试。';
                 return s;
               })()
@@ -2948,7 +2966,7 @@ function pathsView(settings, skillDraftText, mcpDraftText) {
             notice ? h('div', { style: S.status }, notice) : null,
             nearbyNeedle
               ? h('div', { style: { ...S.row, gap: 8, alignItems: 'center' } },
-                  h('span', { style: S.status }, '该分类在已取回的条目里没有命中：分类是本地过滤口径，条目可能排在可达集合之外。可以用分类名做一次全文搜索（近似，不等于该分类）：'),
+                  h('span', { style: S.status }, '这个分类里没找到匹配的技能（有些结果可能还没取回来）。可以用分类名做一次全文搜索（近似，不等于这个分类）：'),
                   h('button', {
                     style: S.chip(false),
                     onClick: () => { setQuery(nearbyNeedle); setCategory('all'); searchSkills(nearbyNeedle, { source, size, category: 'all', page: 1, sort }); window.scrollTo({ top: 0, behavior: 'smooth' }); },

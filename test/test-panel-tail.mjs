@@ -39,7 +39,7 @@ const PRISTINE = Buffer.from(readFileSync(CLIENT));
 
 let passed = 0, failed = 0;
 const REDS = [];
-const SECT_WANT = { A: 12, B: 14, C: 12, D: 12, E: 20, F: 3, G: 7, H: 8 }; // 0.5.184: D 段加会话在途两条（tailMemo 门 + 表达式闸门锚）= 11 条
+const SECT_WANT = { A: 12, B: 14, C: 12, D: 14, E: 20, F: 3, G: 7, H: 8 }; // 0.5.184: D 段加会话在途两条（tailMemo 门 + 表达式闸门锚）= 11 条
 const SECT_GOT = {};
 let CURSECT = null;
 const check = (n, cond, d) => { if (CURSECT) SECT_GOT[CURSECT] = (SECT_GOT[CURSECT] || 0) + 1; if (cond) { passed += 1; console.log("  PASS " + n); } else { failed += 1; REDS.push(n); console.log("  FAIL " + n + (d ? "  [" + String(d).slice(0, 170) + "]" : "")); } };
@@ -302,7 +302,7 @@ const runNote = (kit, env) => new Function('category', 'CAT_OTHER', 'chipFold', 
 const CF = { other: { value: KIT.OTHER, label: KIT.LABEL, totalAll: 743, covers: COVERS.slice(), otherCount: 0 }, otherCount: 3, otherTotal: 743 };
 check("D 装置：tailNote 表达式可抽出", !!KIT.tailNoteSrc && KIT.tailNoteSrc.indexOf('const tailNote = ') === 0, String(KIT.tailNoteSrc).slice(0, 80));
 const nW = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
-check('0.5.185 C3 tail 态一行白话：「其他」分类未取全 + 每类各取回一页（24 条）+ 本次取回 4 条 + 建议稍后重试（分类数/失败类数/虚高 940 全退场）', nW === '「其他」分类未取全：每个未列出的分类各取回一页（24 条），本次取回 4 条。建议：稍后重试。', nW);
+check('0.5.186 C3 tail 态一行白话：未取全 + 还差几个分类（含取数失败数）+ 本次取回 4 条 + 建议稍后重试（每类各取一页黑话与虚高 940 全退场）', nW === '「其他」分类未取全：还有 1 个分类没取到（其中 1 个取数失败），本次取回 4 条。建议：稍后重试。', nW);
 check('0.5.185 C3 tail 态零旧词（上游合计/共约/不再联网取数/往后翻页/部分类可能取不全/共 940/个分类没取回 一律不许）', nW.indexOf('上游合计') < 0 && nW.indexOf('共约') < 0 && nW.indexOf('不再联网取数') < 0 && nW.indexOf('往后翻页') < 0 && nW.indexOf('部分类可能取不全') < 0 && nW.indexOf('共 940') < 0 && nW.indexOf('个分类没取回') < 0, nW);
 const nF = runNote(KIT, { category: KIT.OTHER, chipFold: CF, tailMemo: TAILNF, skills: [K1, K2, K3, K4], visible: [K1, K2, K3, K4] });
 check('0.5.183 P3 tail !windowed 且全取回（3/3 类、0 失败）⇒ 全部取到，不出提示语（恒空）', nF === '', nF);
@@ -319,6 +319,32 @@ check('0.5.184 P1 会话在途闸门写在 tailNote 表达式里（读 harvestCt
 check('0.5.185 C3 tailNote 表达式零分类数（tailMemo 态与兜底态都不许拼「个分类」）', String(KIT.tailNoteSrc || '').indexOf('个分类没取回') < 0 && String(KIT.tailNoteSrc || '').indexOf('个分类取数失败') < 0, JSON.stringify(String(KIT.tailNoteSrc || '').split(String.fromCharCode(10)).map((x) => x.trim()).filter((x) => x.indexOf('个分类') >= 0)));
 
 // ── E. P5 谓词真跑 + P6 整源数字不复用 + 缓存续命 ──
+// 0.5.186：chipWindow 必须把「策略缺失」与「策略=0」分开。Number(null)===0 会让没有
+// categoryPolicy 的旧服务端把 246 类整排铺开 —— 那不是「完整呈现」，是回落丢失。
+const chipWinSrc = (() => {
+  const i = KIT.ls.findIndex((l) => l.includes('function chipWindowFor('));
+  if (i < 0) return '';
+  let d = 0;
+  for (let k = i; k < KIT.ls.length; k += 1) {
+    for (const ch of KIT.ls[k]) {
+      if (ch === '{') d += 1;
+      else if (ch === '}') { d -= 1; if (d === 0) return KIT.ls.slice(i, k + 1).join(NL); }
+    }
+  }
+  return '';
+})();
+const runChipWin = (policy, source) => {
+  try {
+    return new Function('CAT_CHIP_FOLD', chipWinSrc + NL + 'return chipWindowFor(arguments[2], arguments[1]);')(32, policy, source);
+  } catch (e) { return 'ERR:' + e.message; }
+};
+check('0.5.186 chipWindowFor 函数体在场且回落 CAT_CHIP_FOLD', chipWinSrc.length > 0 && /CAT_CHIP_FOLD/.test(chipWinSrc), chipWinSrc.slice(0, 60));
+check('0.5.186 chipWindowFor 四态：策略缺失/表外源/坏值都回落 32，只有显式 0 才是不折叠',
+  runChipWin(null, 'lobehub') === 32 && runChipWin({}, 'zzz') === 32 &&
+  runChipWin({ x: { chipWindow: 'abc' } }, 'x') === 32 &&
+  runChipWin({ skillsmp: { chipWindow: 0 } }, 'skillsmp') === 0,
+  JSON.stringify([runChipWin(null, 'lobehub'), runChipWin({}, 'zzz'), runChipWin({ x: { chipWindow: 'abc' } }, 'x'), runChipWin({ skillsmp: { chipWindow: 0 } }, 'skillsmp')]));
+
 CURSECT = "E";
 const vline = (kit) => String((kit.ls.find((l) => l.includes('const visibleSkills = orderedSkills.filter')) || ''));
 const runVisible = (kit, item, env) => {
@@ -458,6 +484,7 @@ const CASES = [
   { name: "X11 会话在途闸门被摘掉（问题①回归：加载中就出结论行）", needle: "harvestCtlRef.current.token !== null", to: "harvestCtlRef.current.token === undefined" },
   { name: "X12 加载行把「在取」写成「在途」（问题③口径回归）", needle: "'，还有 ' + pending + ' 个分类在取'", to: "'，还有 ' + pending + ' 个分类在途'" },
   { name: "X13 分批按钮在途闸门被摘（渐进期回潮「继续显示」）", needle: 'harvestCtlRef.current.token === null', to: 'harvestCtlRef.current.token === undefined' },
+  { name: "X14 chipWindow 回落被摘（缺失策略被当成 0 ⇒ 246 类整排铺开）", needle: 'return raw !== null && Number.isFinite(n) && n >= 0 ? n : CAT_CHIP_FOLD;', to: 'return Number.isFinite(n) && n >= 0 ? n : CAT_CHIP_FOLD;' },
 ];
 const runCounts = (label) => {
   const mark = join(MUTDIR, "count.json");

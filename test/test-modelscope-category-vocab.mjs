@@ -184,7 +184,7 @@ console.log('Test 3: 分类真过滤（跨页，全量可达集合内）——�
     check('分类「' + cn + '」条目全属该类', Array.isArray(v.items) && v.items.every((it) => it.category === cn), JSON.stringify((v.items || []).slice(0, 3).map((it) => it.category)));
     check('分类「' + cn + '」total = 可达集合内真实条数', v.total === COUNTS[cn], v.total);
     check('分类「' + cn + '」hasMore 与该 total 自洽', v.hasMore === (24 < v.total), v.hasMore);
-    check('分类「' + cn + '」hint 如实说明本地过滤 + 可达集合', /本地|客户端/.test(String(v.hint || '')) && /30,000|30000/.test(String(v.hint || '')), JSON.stringify(v.hint));
+    check('分类「' + cn + '」hint 用白话说清可取回范围 + 本类实测数，且零工程词', /已取回的 30,000 行/.test(String(v.hint || '')) && /取不到/.test(String(v.hint || '')) && /本类实测/.test(String(v.hint || '')) && !/本地过滤|客户端|服务端分类过滤|可达集合|跨页有效/.test(String(v.hint || '')), JSON.stringify(v.hint));
     check('分类态绝不声明 serverFacet', v.serverFacet !== true, JSON.stringify(v.serverFacet));
     const ids = new Set(v.items.map((it) => it.id));
     for (const pg of [2, 3]) {
@@ -278,7 +278,7 @@ console.log('Test 7: 表外分类拒发（点名词表里没有，绝不声称�
   check('表外分类取数成功', r.ok, r.err);
   if (r.ok) {
     check('表外分类不得过滤（条目仍在）', r.v.items.length === 24, r.v.items.length);
-    check('hint 点名词表里没有这个分类', String(r.v.hint || '').indexOf('静态词表里没有') >= 0 && String(r.v.hint || '').indexOf('不存在的分类') >= 0, JSON.stringify(r.v.hint));
+    check('hint 白话点名该分类不存在（不出现「静态词表」这类工程词）', String(r.v.hint || '').indexOf('没有「不存在的分类」这个分类') >= 0 && String(r.v.hint || '').indexOf('静态词表') < 0, JSON.stringify(r.v.hint));
     check('不得声称已按该分类过滤', String(r.v.hint || '').indexOf('已按「不存在的分类」') < 0, JSON.stringify(r.v.hint));
   }
 }
@@ -524,8 +524,8 @@ console.log('Test 13: 0.5.169 —— 上游「其他」沉到词表尾 + 本地�
   check('出路条在 needle 为空时不渲染（空分类才露脸）',
     barNodes && barNodes.tag === 'div' && barNodes.kids.length === 2, JSON.stringify(barNodes && barNodes.tag));
   const barText = barNodes ? barNodes.kids.map((n) => String(n.kids && n.kids[0])).join(' | ') : '';
-  check('出路条文案如实承认口径缺口，并明写「近似，不等于该分类」（不假装是分类过滤）',
-    barText.indexOf('本地过滤') >= 0 && barText.indexOf('可达集合') >= 0 && barText.indexOf('近似，不等于该分类') >= 0, barText.slice(0, 160));
+  check('出路条文案用白话承认取数缺口，并明写「近似，不等于」（不假装是分类过滤，且零工程词）',
+    barText.indexOf('没找到') >= 0 && barText.indexOf('近似，不等于') >= 0 && !/本地过滤|可达集合/.test(barText), barText.slice(0, 160));
   check('按钮文案带上近似词（用户知道要点的是什么）', barText.indexOf('近似搜索「监控」') >= 0, barText.slice(0, 200));
   const btn = barNodes ? barNodes.kids[1] : null;
   check('出路按钮是真 button 且有 onClick（只有文字=假控件，正是 m18209 报的那一半）',
