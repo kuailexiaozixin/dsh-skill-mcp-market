@@ -10,6 +10,8 @@
 - **⑤ chip 数与提示语数同源（修 m39401①）**：chip 上「调试工具 532,411」来自服务端抓的类目页快照（TTL 7 天），提示语「545,886」来自本轮 facet 请求上游此刻报的 `pagination.totalAll`——同一个字段、两个时刻，并排出现等于告诉用户我们的数不可信。新增两件纯函数 `liveCatalogTotal` / `liveCatalogChip`（`client.js` 可测岛内，只用参数）：当前正按某分类取数且上游确实按该分类筛时，用此刻的目录数就地覆盖那一个 chip。护栏四种越界形状一律不覆盖（非 skillsmp / 带关键词 / 全部分类 / 上游未按分类筛）；取不到数保持快照值，不强改成 0。就地改的是 `mergeCategoryVocab` 当场新建的对象，不污染下发的词表快照，且排序已在合并内完成，不引起 chip 换位。新增 7 条判据全部真跑生产函数体（非正则断言）。
 - **取证（回答 m39401②「第 20 页之后怎么取」）**：已穷尽上游一切入口，证明是结构性封顶——`page` 越界被钳回末页（p21 与 p100 逐字相同）；`limit` 上限 48（更大直接拒）；`offset/cursor/skip/after/start/from/index/pageToken/next/marker/lastId` 十一个位移参数名全部被忽略；`sortBy` 只认 `stars|recent`，两序各翻到尽头并集 798 / 该分类 545,886 = 0.146%；搜索态窗口 1000 且 `category` 被忽略（6 个关键词可新增 4,488 条，但是局部覆盖不是全量）；JSON-LD `ItemList` 每页只给 10 条且各页相同；SSR 页跨 p1..p22 并集仅 58；sitemap 全量约 1.5 万条；备择端点与 facet 参数别名全不接受；行对象 13 个字段无分类归属。**结论：该分类 545,886 条在现有 API 上不可完整取回**，面板报出可达上限与不可达原因。
 - **验证**：`test-skillsmp-category-vocab` 71/0、`test-panel-tail` 99/0、`test-lobehub-category-vocab` 126/0、`test-clawhub-category-vocab` 62/0、`test-modelscope-category-vocab` 181/0（2 skipped）、`test-harvest` 205/0、`test-skillsmp-search` 73/0。
+- 版本 0.5.186⇒0.5.187。
+- **发布凭据（0.5.187 发布闭环）**：commit **cb54c5a**（11 files +118/−26）；tag v0.5.187（轻量 tag，peel=cb54c5ab91b9803aabbbde34b86c6e37e91d3846）；直连 push 被 reset 后按 github-push 技能当场探测，改走本机代理 127.0.0.1:7897 推送成功（master `bc6310a..cb54c5a` + tag 双推，PUSH_EXIT=0）；CI run **46134880140**（headBranch=v0.5.187）success 7m3s，步序 Set up job→checkout→setup-node→Upgrade npm→Show versions→Install dependencies (no scripts)→Run tests (gates the publish)✓→Publish package (trusted publishing)✓；registry 实测 `version=0.5.187`、dist.shasum **f162a95a5bc5e4eda95a537e2fd69b3260b140d0**（本地下载 tarball 262,928B 复算 SHA1 逐字一致，SHA256=7f885fd95c414ea6a8176680e158ba30a6ecf5d73417b6cc87b94d7b74a8ea95）、dist-tags.latest=0.5.187；传播延迟再次实测 ≈40 秒（publish 成功当刻查 registry 404，20s×2 轮询即到——同 0.5.186 教训）；装机 dsh plugin --profile desktop add 0.5.187 exit=0（−0.5.186/+0.5.187，lockfile 298 entries 过），装机后 test-profile-sync **7/0**（no stale copies ✓、mirrors report 0.5.187 ✓）；全链 81 段：head 51 段（chain187.log）除 profile-sync 外全绿（红＝装机镜像滞后，非回归），装机后尾 30 段（chain187tail.log）**30/30 段零红（FAILED_LINES=0）**，profile-sync 段随镜像转绿 ⇒ 81/81 收口；live-verify **RESULT: PASS**（port=54446 自发现、fingerprint=new、rows=14 LIVE-FAIL=0 NOT-TESTED=0 GAP=2 NOT-WARM=0；GAP=「监控」软报 0 条覆盖缺口 + 服务端旧通路 __cat_other 信息项，与 176–186 同形）。
 
 ## 0.5.186
 
@@ -40,7 +42,6 @@
   （profile 与 worktree 逐字节都是新句，唯一命中的是 CHANGELOG 记账本身）⇒ 残留在 **宿主进程内存**：
   宿主 12:18:27 启动、装机 14:33 ⇒ 宿主内加载的还是 0.5.185 码。按 AGENTS.md 我不杀宿主进程；
   **请用户点菜单『重启应用与 Host』后复核**：面板上 ModelScope 分类 hint 应变新白话句、skillsmp 63 类全铺无「其他」。
-- 版本 0.5.185⇒0.5.186。
 - 版本 0.5.185⇒0.5.186。
 - **遗留（下一批）**：① clawhub/trusttools 的「词表里没有「X」」两句要白话化，得同步重订 `test-clawhub-category-vocab.mjs:241` 与 `test-trusttools-category-vocab.mjs:276` 两条正则（两套都在测方侧）；② ModelScope 可达集合外的分类覆盖 = 产品决策待定（实测已证上游无法取全，非实现缺陷）。
 
