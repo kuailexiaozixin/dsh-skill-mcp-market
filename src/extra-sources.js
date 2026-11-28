@@ -248,15 +248,28 @@ export const CLAWHUB_SEARCH_SORT_GETTERS = {
 };
 
 const CLAWHUB_CATALOG_KEY = "clawhub_catalog_v1";
-const CLAWHUB_CATALOG_TTL = 6 * 3600 * 1000;
+// 0.5.191：目录进度的装载 TTL 从 6 小时改为 7 天（用户 m41100「必须确保所有技能被完整
+// 取回」）。旧值 6h 意味着后台泵攒的进度一夜清零——clawhub browse 是 28k+ 的无界游标流，
+// 每轮 40 跳 × 50 行 ≈ 40 分钟，宿主重启隔夜之后一切从头再来，取满永远追不上。
+// makeCache 的 put 每轮刷新 at，活跃链内永不过期；7 天与 VOCAB_TTL 同量级。
+const CLAWHUB_PROGRESS_TTL = 7 * 24 * 3600 * 1000;
+// 泵的每轮跳数与轮间隔：browse 端点每屏 50 行（实测 :271），一跳 ~1s，一轮 12 跳 ≈12–15s；
+// 间隔 30s 与 skillsmp 泵同口径（同链必须严格串行，两个源各自单飞，互不抢游标）。
+// CLAWHUB_MAX_ROUNDS = 翻页通路的既有上界（40，逐毫秒行为不变，
+// test-clawhub-category-vocab Test 10 数着它：病态上游下调用次数必须 ≤60）。
+const CLAWHUB_MAX_ROUNDS = 40;
+const CLAWHUB_PUMP_ROUNDS = 12;
+const CLAWHUB_PUMP_GAP_MS = 30000;
 
 // 浏览端点每屏 50 条并带 nextCursor（JSON 字符串），顺着它累积成本地目录再按页切片：
 // 这样第 2 页、第 20 页拿到的都是真正的新条目，而不是上游的第一屏。
-async function extendClawHubCatalog(cache, need, sortBy = "", category = "", fetchJson = getJsonClawHub) {
+// rounds 是第 6 参（0.5.191）：翻页通路不传、走默认 40（逐毫秒行为不变）；
+// 后台泵传自己的预算，把同一份链实现复用掉，绝不写第二份爬取代码。
+async function extendClawHubCatalog(cache, need, sortBy = "", category = "", fetchJson = getJsonClawHub, rounds = CLAWHUB_MAX_ROUNDS) {
   // 缓存键必须含 category：否则「按分类浏览」会读到上一次全库浏览攒下的目录，
   // 那份目录里混着别的分类的条目，筛过的说法就是假话。
   const catKey = `clawhub_catalog_v1${sortBy ? ":" + sortBy : ""}${category ? ":cat:" + category : ""}`;
-  let state = cache ? await cache.get(catKey, CLAWHUB_CATALOG_TTL) : undefined;
+  let state = cache ? await cache.get(catKey, CLAWHUB_PROGRESS_TTL) : undefined;
   if (!state || !Array.isArray(state.rows)) state = { rows: [], cursor: null, done: false };
   const seen = new Set(state.rows.map((raw) => clawhubIdOf(raw)));
   let guard = 0;
@@ -264,7 +277,7 @@ async function extendClawHubCatalog(cache, need, sortBy = "", category = "", fet
   // 每页换一个 nextCursor」这种病态上游会让 state.rows.length 永远追不上 need，
   // 循环不结束（2026-11-23 注入实测 201 次仍未收敛）。生产里表现为整源挂到 12s
   // 预算被切断，也就是「clawhub 不可达」的另一种成因。
-  const MAX_ROUNDS = 40;
+  const MAX_ROUNDS = rounds;
   while (!state.done && state.rows.length < need && guard < MAX_ROUNDS) {
     guard += 1;
     const cursor = state.cursor ? `&cursor=${encodeURIComponent(state.cursor)}` : "";
@@ -402,6 +415,9 @@ export async function searchClawHub({ query = "", page = 1, pageSize = 24, cache
   // 分类页只攒到「够这一页」的量（size*p）：多攒一页余量看着省翻页，实际把首页延迟
   // 翻倍（13 条/轮 × 4 轮 ≈ 6s vs 2 轮 ≈ 3s），而目录本来就在缓存里累积，翻页是从
   // 断点继续、不是重打。无分类浏览每次回满 50 条，预取便宜，保持 size*(p+2)。
+  // 0.5.191（m41100）：用户翻到哪一面，就把哪一面排进后台补链队列。need 只服务这一页，
+  // 队列才是「 eventually 取满」的驱动源；facetUsed 为空即全库面，同样占席位。
+  noteClawHubDemand(facetUsed);
   const need = facetUsed ? Math.min(2000, size * p) : Math.min(2000, size * (p + 2));
   let state;
   try {
@@ -464,7 +480,7 @@ export async function warmClawHubCatalog(cache, options = {}) {
   // 所以这里只预热一个**有界预算**（默认 1200 行 ≈ 50 页），换来首页之后几十页秒开；
   // 总页数因此是「共约」下界而不是精确值——这是上游能力边界，不是本地缺陷。
   const budget = Math.max(50, Number(options.budget) || 1200);
-  const state0 = cache ? await cache.get(CLAWHUB_CATALOG_KEY, CLAWHUB_CATALOG_TTL) : undefined;
+  const state0 = cache ? await cache.get(CLAWHUB_CATALOG_KEY, CLAWHUB_PROGRESS_TTL) : undefined;
   const seen = new Set((state0?.rows || []).map((raw) => clawhubIdOf(raw)));
   const rows = [...(state0?.rows || [])];
   let cursor = state0?.cursor || null;
@@ -493,6 +509,168 @@ export async function warmClawHubCatalog(cache, options = {}) {
   // 预算用满但游标未尽：done 保持 false，让分页器显示「共约」。
   if (cache) await cache.put(CLAWHUB_CATALOG_KEY, { rows, cursor, done });
   return { rows, done, budget };
+}
+
+// ── 0.5.191 逐源补链泵（clawhub 腿 + 跨源队列）─────────────────────────────
+// 为什么不复用 warmClawHubCatalog：test-warm-budget.mjs Test 3 用五条文本锁 + 五条变异反证
+// 钉死了它的体内形态（含「取页直调 getJsonClawHub、不吃注入」），改它就是一片假红；而它只热
+// 全库那一面（budget 1200 行），分类面根本不在它射程里。泵走可注入的 extendClawHubCatalog，
+// 与翻页通路共用同一份链实现，去重/上界/落盘行为都已被既有套件锁住。
+const CLAWHUB_PUMP_FLIGHTS = new Map();
+
+/**
+ * 推一面 clawhub 目录的一轮：need=Infinity ⇒ 预算只由 rounds 定（翻页通路那些 Math.min(2000,…)
+ * 的封顶是「这一页要多少行」的口径，后台补链不该受它管）。同 catKey 进程内单飞——
+ * 无界游标流同时开两条链会让行交错重复、且游标互相作废。返回 {rows,done,joined}。
+ */
+export async function pumpClawHubCatalog(store, options = {}) {
+  const sortBy = String(options.sortBy || options.sort || "").trim().toLowerCase();
+  const category = String(options.category || "").trim().toLowerCase();
+  const fetchJson = options.fetchJson || getJsonClawHub;
+  const rounds = Math.max(1, Number(options.rounds) || CLAWHUB_PUMP_ROUNDS);
+  const key = `clawhub_catalog_v1${sortBy ? ":" + sortBy : ""}${category ? ":cat:" + category : ""}`;
+  const running = CLAWHUB_PUMP_FLIGHTS.get(key);
+  if (running) {
+    const st = await running;
+    return { rows: st.rows.length, done: st.done, joined: true };
+  }
+  const flight = (async () => {
+    // 落盘发生在链内部（extendClawHubCatalog 每轮 cache.put），泵不再自己写第二份状态。
+    await extendClawHubCatalog(store, Infinity, sortBy, category, fetchJson, rounds);
+    return store ? (await store.get(key, CLAWHUB_PROGRESS_TTL)) || { rows: [], done: false } : { rows: [], done: false };
+  })();
+  CLAWHUB_PUMP_FLIGHTS.set(key, flight);
+  try {
+    const st = await flight;
+    return { rows: st.rows.length, done: st.done, joined: false };
+  } finally {
+    if (CLAWHUB_PUMP_FLIGHTS.get(key) === flight) CLAWHUB_PUMP_FLIGHTS.delete(key);
+  }
+}
+
+/**
+ * 跨源需求队列：席位按 (source, facet) 记。note 去重；next 取队首放回队尾（轮转，一面卡住
+ * 不会饿死其余面）；done 按整条项退场。空 facet ＝ 该源的全库面，同样占一个席位。
+ * 之所以泛化到 source 维度：0.5.190 的队列只有 skillsmp 一家用，两个源挂泵后必须分席，
+ * 否则 clawhub 的分类会把 skillsmp 的队列挤空。
+ */
+export function createCatalogDemand() {
+  const order = [];
+  const norm = (f) => String(f == null ? "" : f).trim().toLowerCase();
+  const slot = (source, facet) => `${String(source || "").trim().toLowerCase()}::${norm(facet)}`;
+  return {
+    note(source, facet) {
+      const item = { source: String(source || "").trim().toLowerCase(), facet: norm(facet) };
+      if (!order.some((o) => o.source === item.source && o.facet === item.facet)) order.push(item);
+      return item;
+    },
+    next() {
+      if (!order.length) return null;
+      const item = order.shift();
+      order.push(item);
+      return { source: item.source, facet: item.facet };
+    },
+    done(item) {
+      if (!item) return;
+      const k = slot(item.source, item.facet);
+      const i = order.findIndex((o) => slot(o.source, o.facet) === k);
+      if (i >= 0) order.splice(i, 1);
+    },
+    peek() { return order.map((o) => ({ source: o.source, facet: o.facet })); },
+    size() { return order.length; },
+  };
+}
+
+const catalogDemandQueue = createCatalogDemand();
+
+/** 翻页时把「用户在意哪一面」记进跨源队列（sources.js 的 handlers 与两个泵共用一份席位）。 */
+export function noteCatalogDemand(source, facet) { return catalogDemandQueue.note(source, facet); }
+export function noteClawHubDemand(facet) { catalogDemandQueue.note("clawhub", facet); }
+
+/**
+ * 通用泵循环：按队列轮转，每轮调 advance(item) 推进一面；advance 报 done 则退场，
+ * 抛错则留在队列下一轮再接（瞬时失败不该踢掉一个待补的面）。maxRounds 到点自退，
+ * 不吊调用方；每轮之间 sleep 一个间隔。返回 {rounds}（实际推进的轮数）。
+ */
+export async function catalogPumpLoop(store, options = {}) {
+  const queue = options.queue || catalogDemandQueue;
+  const advance = options.advance;
+  if (typeof advance !== "function") return { rounds: 0 };
+  const maxRounds = Math.max(1, Number(options.maxRounds) || 1);
+  const sleep = options.sleep || defaultSleep;
+  const gap = Number(options.gapMs) || CLAWHUB_PUMP_GAP_MS;
+  let ran = 0;
+  for (let i = 0; i < maxRounds; i += 1) {
+    const item = queue.next();
+    if (!item) break;
+    try {
+      const r = await advance(item, store);
+      if (r && r.done) queue.done(item);
+    } catch {
+      // 瞬时失败：不退场，下一轮再接。链内的自愈腿（死游标/中毒态）各自负责自己那一段。
+    }
+    ran += 1;
+    if (options.onRound) options.onRound(item);
+    await sleep(gap);
+  }
+  return { rounds: ran };
+}
+
+/** 两个源各自的推进器：把队列项翻译成一次单飞链。 */
+export function clawHubPumpAdvance(options = {}) {
+  return async (item, store) => pumpClawHubCatalog(store, {
+    category: item.facet,
+    sortBy: options.sortBy || "",
+    fetchJson: options.fetchJson,
+    rounds: options.rounds,
+  });
+}
+export function skillsMpPumpAdvance(options = {}) {
+  return async (item, store) => warmSkillsMpCatalog(store, {
+    facet: item.facet,
+    sort: options.sort || "",
+    fetchJson: options.fetchJson,
+    rounds: options.rounds,
+  });
+}
+
+let CLAWHUB_PUMP_TIMER = null;
+
+/**
+ * 宿主启动时挂一次（warmMarketCache 里与 skillsmp 泵并列）：每 CLAWHUB_PUMP_GAP_MS 推一面。
+ * 定时器 unref——后台泵不许阻止宿主退出。clawhub 的词表比目录先落（分类 chip 靠它），
+ * 队列为空时用只读缓存播种，不等网络。
+ */
+export function startClawHubPump(store, options = {}) {
+  if (!store || CLAWHUB_PUMP_TIMER) return { armed: Boolean(CLAWHUB_PUMP_TIMER) };
+  const queue = options.queue || catalogDemandQueue;
+  const arm = () => {
+    CLAWHUB_PUMP_TIMER = setTimeout(async () => {
+      CLAWHUB_PUMP_TIMER = null;
+      try {
+        if (!queue.peek().some((o) => o.source === "clawhub")) {
+          const vocab = await readClawhubCategoryVocabulary({ cache: store });
+          if (vocab && vocab.categories && vocab.categories.length) {
+            for (const c of vocab.categories) queue.note("clawhub", c.slug);
+          } else {
+            // 词表还没落缓存：至少把全库面排上，别让泵空转一整轮。
+            queue.note("clawhub", "");
+          }
+        }
+        await catalogPumpLoop(store, {
+          queue,
+          maxRounds: 1,
+          advance: clawHubPumpAdvance({ fetchJson: options.fetchJson, sortBy: options.sortBy }),
+        });
+      } catch {
+        // 一个 tick 失败不影响下一个：泵是尽力而为的后台进度。
+      }
+      if (!CLAWHUB_PUMP_TIMER) arm();
+    }, CLAWHUB_PUMP_GAP_MS);
+    if (CLAWHUB_PUMP_TIMER && CLAWHUB_PUMP_TIMER.unref) CLAWHUB_PUMP_TIMER.unref();
+  };
+  arm();
+  return { armed: true };
 }
 
 

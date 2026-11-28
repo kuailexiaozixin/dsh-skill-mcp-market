@@ -16,6 +16,7 @@ import {
   searchSkillsMp,
   searchTrustTools,
   startSkillsMpPump,
+  startClawHubPump,
 } from "./extra-sources.js";
 import { safeTempDir, childEnv } from "./home.js";
 
@@ -1012,6 +1013,9 @@ export async function warmMarketCache(cache = fallbackCache) {
   // 推进队列里的一面（队列由用户翻页 + 词表播种）。定时器 unref，不阻止进程退出；
   // 重复调用（test-nocache 无参也走到这里）由 startSkillsMpPump 内部幂等挡住。
   startSkillsMpPump(cache);
+  // 0.5.191：clawhub 挂同一套泵（m41100「确保所有技能被完整取回」）——目录进度 TTL 已改 7 天，
+  // 后台每 30s 推一面，不再依赖用户翻页，也不再一夜清零。同样由内部幂等挡重复。
+  startClawHubPump(cache);
   const results = await Promise.allSettled([
     searchBrowseSh({ query: "", page: 1, pageSize: 24, cache }),
     searchLobeHubSkills({ query: "", page: 1, pageSize: 24, cache }),

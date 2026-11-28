@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.191 — 逐源补链泵：clawhub 接入同一套后台取全机制（m41100 令延续）
+
+- 0.5.190 只给 skillsmp 接上了泵。用户令是「确保**所有**技能被完整取回」，所以本把 clawhub 接进同一机制，并把需求队列泛化成跨源形状。
+- **clawhub 的进度 TTL 同样是致命的**：`CLAWHUB_CATALOG_TTL` 原为 6 小时，而 clawhub browse 是 28k+ 的无界游标流（每屏 50 行，一轮 40 跳≈ 40 分钟）——隔夜从头再来。现改名 `CLAWHUB_PROGRESS_TTL = 7×24h`（与词表 VOCAB_TTL 同量级；链每跳 `cache.put` 都刷新落盘时间戳，活动链内永不过期）。grep 确认全仓测试无一处引用该常量字面值，改名安全。
+- **链预算解耦**：`extendClawHubCatalog` 加第 6 参 `rounds`（默认 `CLAWHUB_MAX_ROUNDS=40`，翻页通路行为逐毫秒不变；category-vocab Test 10 数的就是它）；泵调用传 `need=Infinity`，预算只由 `CLAWHUB_PUMP_ROUNDS=12` 定，间隔 `CLAWHUB_PUMP_GAP_MS=30000`。
+- **跨源需求队列**：`createCatalogDemand()` 按 `(source, facet)` 记席位（note 去重、next 轮转不饿死、done 退场、空 facet（全库面）也占席）；`catalogPumpLoop(store,{queue,maxRounds,advance})` 每轮推一面、取完退场、**瞬时失败不退场**（下一轮接着跑，不把一面永久丢掉）。`clawHubPumpAdvance` / `skillsMpPumpAdvance` 是两个源的推进适配器，循环体只有一份。
+- `pumpClawHubCatalog(store,{category,sortBy,fetchJson,rounds})→{rows,done,joined}`：同进度键进程内单飞（`CLAWHUB_PUMP_FLIGHTS`），第二个调用 await 同一条链并标 joined；状态落盘仍由链内每轮 put 负责，泵不写第二份状态。`startClawHubPump` 挂在 `warmMarketCache`，与 skillsmp 泵同段落，定时器 **unref**（后台泵绝不阻止宿主退出），队列无 clawhub 席位时用词表缓存播种（词表未落则先排全库面，不空转）。
+- `searchClawHub` 浏览态把翻到的面 `noteClawHubDemand(facetUsed)` 记进队列；原本的 `need = Math.min(2000, ...)` 保留——它只服务这一页，「取满」由队列负责。
+- **没有动 warmClawHubCatalog 的形态**：`test-warm-budget` 对它有五条文本锁 + 五条变异反证，本批只把它装载进度的 TTL 换成 7 天常量，其余一字未动（锁照旧 17/0 绿）。
+- TDD：新套件 `test/test-catalog-pump.mjs` 11 组 40 判据（预算受控 / 续推 / 单飞 / 取完后零请求 / 分类键分离 / TTL 天级 / 病态上游有界 / 跨源队列 / 通用循环不饿死不误退 / 源码锁），RED 全红→GREEN，已登记 `test:chain`（82→**83 段**）。取体教训同 clawhub-quality：不能用花括号深度数 blockEnd（签名里的内层弧号会当场归零取到一行假体），改扫「0 列 `}` 行」。
+- 真机 sk35（走生产 `pumpClawHubCatalog`，全新缓存目录）：腿1 四跳 199 行 4.3s、腿2 从落盘游标续推到 399（+200，跨轮零重复）、并发双腿恰一条链（B joined=true，两者同报 549）、分类腿 security=12 / research=100 各走各键不串游标、末态 done=false（未取满诚实报告）。去重口径校准（sk35b）：链内身份键是 `clawhubIdOf`（ownerHandle+slug 对，:274/:287 逐字），549 行按身份键零重复；只按 slug 比对会把「不同作者同名 slug」误记一条重复——探针口径问题，不是生产问题。
+- 测试矩阵全绿：catalog-pump 40/0、clawhub-quality 86/0、clawhub-category-vocab 62/0、warm-budget 17/0、warmup 12/0、sort-server 45/0(3 skip)、nocache 13/0(1 skip=skillhub 上游不可达，与上批同形)、skillsmp-pump 35/0、suite-inventory 12/0、skillsmp-search 138/0、harvest 205/0、panel-harvest 81/0、full-sort 43/0、ux-honesty 62/0、search-fanout-latency 211/0、modelscope-category-vocab 181/0(2 skip)、trusttools-category-vocab 84/0、sort-honesty 12/0、sort-options 35/0(1 skip)、index-runtime 26/0、lobehub-category-vocab 126/0（单独跑落盘取尾）、panel-tail 99/0（单独串行）。
+- 逐源残留处置（区分依赖边界与工程可取全）：modelscope `MS_MAX_PAGES=30` 是**依赖边界**（实测第 31 页起上游 HTTP 500，不是自我设限），中断 hint 保持白话 + 断点续拉；browse.sh 是 CLI 单次窗口，取不到也不计数（如实告知）；lobehub 窗外 214 类 743 条已取全；trusttools 走分类词表 + 本地过滤，无窗口性残留。下一批目标：把泵推到面板可见的持续进度（取全过程可见化）。
+- 仍未收口：取满仍要求宿主持续在线；重启后画面凭据待拍；旧缓存里的中毒终态已由 0.5.189 第三条腿在装载时复位。
+
 ## 0.5.190 — skillsmp 后台补链泵：目录进度不再靠用户翻页驱动（m41100 令主体）
 
 - 用户令「必须确保所有技能被完整取回」。0.5.189 堵死了三条「谎称取完」通路，但取全本身仍只由翻页驱动：`need = size × page`——用户不往深翻，545,886 条/类的目录链就永远停在原地；且进度装载 TTL 只有 6 小时，空闲一夜半截进度直接清零。本批把「取满」变成后台持续过程。
