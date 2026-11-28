@@ -318,6 +318,195 @@ console.log('Test 15: 取证注释必须把 facet 窗口与白名单写成可复
   check('注释引用上游自报 totalAll 实测值', /totalAll/.test(notes) && /532411/.test(notes), notes.slice(0, 200));
   check('注释写明白名单是真子集（63 接受 / 11 拒绝）', /63/.test(notes) && /11/.test(notes) && /(INVALID_CATEGORY|400)/.test(notes), '');
 }
+// ---------------------------------------------------------------- 0.5.188 游标链（用户 m40394）
+// 取证（探针 20/22/23/24/25b/26/27 轮，日志 sk20.log…sk27.log）：
+//   /api/skills?category=<slug>&limit=48&cursor=start  ⇒ pagination 回
+//     {total:545886,totalAll:545886,totalIsExact:true,isCapped:false,cursorPagination:true,
+//      totalPages:11373,hasNext:true,nextCursor:"b1.eyJ2…"}
+//   —— 页码态那个 480（facet）/1200（browse）是 maxResults 自报的**浏览窗口**，不是目录上限。
+//   链走 30 步 ⇒ 720 行零重复，且第 21 步起就跨过旧窗口尽头（旧通路永远取不到那些行）。
+//   游标解出来是 keyset（after:{id,rank}+snapshot），尾带 32 字节签名：改一个字节就被拒
+//   （实测 rank 改写/去尾/翻字节三种都 Traceback）⇒ 只能原样重放、顺序往后走，不能跳页。
+//   limit 在游标态仍是 48 上限（60/96/100 一律被拒）；page 与 cursor 不可同带。
+//   每轮 limit=48 平均 1.95s（10 轮实测 19,496ms）⇒ 545,886 条串行约 6.2 小时，只能随翻随取。
+const mkCursorPage = (n, off, next, extra) => ({
+  skills: Array.from({ length: n }, (u, i) => rawRow(off + i)),
+  filters: { search: '', sortBy: 'stars' },
+  pagination: Object.assign({
+    page: 1, limit: 48, total: 545886, totalAll: 545886, totalIsExact: true,
+    hasNext: true, hasPrev: false, isCapped: false, cursorPagination: true, nextCursor: next,
+  }, extra || {}),
+});
+
+console.log('');
+console.log('Test 16: facet 态带 cache 时起链 cursor=start，480 窗口口径退场');
+{
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-cur-' + Date.now());
+  const r = await searchSkillsMp({
+    query: '', page: 1, pageSize: 24, category: 'debugging', cache: c,
+    fetchJson: async (u) => { urls.push(u); return mkCursorPage(48, 0, 'C2'); },
+  });
+  const sp = paramsOf(urls[0]);
+  console.log('   实测 URL: ' + String(urls[0]) + ' | total=' + String(r.total) + ' pages=' + String(r.totalPages) + ' hint=' + String(r.hint));
+  check('起链带 cursor=start', sp.get('cursor') === 'start', String(urls[0]));
+  check('起链不带 page（实测 page+cursor 同带被上游拒）', sp.get('page') === null, String(urls[0]));
+  check('facet 仍作为服务端参数发出', sp.get('category') === 'debugging', String(urls[0]));
+  check('limit 落在上游接受上限 48', Number(sp.get('limit')) === 48, String(sp.get('limit')));
+  check('游标态总数报上游 totalAll', r.total === 545886, String(r.total));
+  check('游标态不再报窗口页深（旧 480/24=20 退场）', r.totalPages === undefined, String(r.totalPages));
+  check('游标态 windowed=false（480 不再是上限）', r.windowed === false, String(r.windowed));
+  check('游标态 hasMore=true（后面还能取）', r.hasMore === true, String(r.hasMore));
+  check('游标态声明自己是渐进目录', r.catalogProgressive === true, String(r.catalogProgressive));
+  check('hint 不再写「没有翻页入口 / 只让浏览前」', typeof r.hint === 'string' && r.hint.length > 0 && !/没有翻页入口|只让浏览前/.test(r.hint), String(r.hint));
+  check('hint 报出目录条数（与 chip 同源）', /545886/.test(String(r.hint)), String(r.hint));
+  check('本页条数仍受 pageSize 约束', r.items.length === 24, String(r.items.length));
+  check('卡片回填 facet', r.items.every((it) => it.category === 'debugging'), JSON.stringify(r.items.slice(0, 2).map((it) => it.category)));
+  check('serverFacet=true（上游确实按分类筛过）', r.serverFacet === true, String(r.serverFacet));
+  check('只发一次请求（need=24 首页一就够）', urls.length === 1, JSON.stringify(urls));
+}
+
+console.log('');
+console.log('Test 17: 翻页顺着上一轮 nextCursor 往后走，不重复也不跳页');
+{
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-chain-' + Date.now());
+  const fetchJson = async (u) => {
+    urls.push(u);
+    const sp = new URL(u).searchParams;
+    const cur = String(sp.get('cursor'));
+    const idx = cur === 'start' ? 0 : Number(cur.replace(/^C/, ''));
+    return mkCursorPage(48, idx * 48, 'C' + (idx + 1));
+  };
+  const p2 = await searchSkillsMp({ query: '', page: 2, pageSize: 24, category: 'debugging', cache: c, fetchJson });
+  check('第 2 页起链仍走 cursor=start（本地目录还空）', paramsOf(urls[0]).get('cursor') === 'start' && urls.length === 1, JSON.stringify(urls));
+  check('第 2 页给的是第 25–48 行', p2.items.length === 24 && p2.items[0].slug === 'pdf-tool-24' && p2.items[23].slug === 'pdf-tool-47', JSON.stringify(p2.items.map((i) => i.slug).slice(0, 2)));
+  const p3 = await searchSkillsMp({ query: '', page: 3, pageSize: 24, category: 'debugging', cache: c, fetchJson });
+  check('第 3 页带的是上一轮 nextCursor（不是 cursor=start）', paramsOf(urls[1]).get('cursor') === 'C1', String(urls[1]));
+  check('第 3 页请求不带 page', paramsOf(urls[1]).get('page') === null, String(urls[1]));
+  check('第 3 页给的是第 49–72 行', p3.items[0].slug === 'pdf-tool-48' && p3.items[23].slug === 'pdf-tool-71', JSON.stringify(p3.items.map((i) => i.slug).slice(0, 2)));
+  const ids = p2.items.concat(p3.items).map((i) => i.id);
+  check('跨页零重复', new Set(ids).size === ids.length, ids.length + '/' + new Set(ids).size);
+  const p3again = await searchSkillsMp({ query: '', page: 3, pageSize: 24, category: 'debugging', cache: c, fetchJson });
+  check('同一页重复取不再打网络（走页缓存）', urls.length === 2, JSON.stringify(urls));
+  check('重复取内容一致', p3again.items[0].slug === 'pdf-tool-48', p3again.items[0].slug);
+}
+
+console.log('');
+console.log('Test 18: 上游不支持游标时回落旧页码口径，且不多打一次请求');
+{
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-legacy-' + Date.now());
+  const legacy = () => mkData(24, { search: '', sortBy: 'stars' }, { page: 1, limit: 24, total: 480, totalPages: 20, hasNext: true, totalIsExact: true, isCapped: true, maxResults: 480, totalAll: 532411 });
+  const r = await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'debugging', cache: c, fetchJson: async (u) => { urls.push(u); return legacy(); } });
+  console.log('   实测(legacy) 请求数=' + urls.length + ' total=' + String(r.total) + ' pages=' + String(r.totalPages) + ' windowed=' + String(r.windowed));
+  check('legacy 响应只打一次请求（不重复发页码请求）', urls.length === 1, JSON.stringify(urls));
+  check('legacy 回落：total 仍报 totalAll', r.total === 532411, String(r.total));
+  check('legacy 回落：totalPages 仍报窗口深度 20', r.totalPages === 20, String(r.totalPages));
+  check('legacy 回落：windowed 仍为 true', r.windowed === true, String(r.windowed));
+  check('legacy 回落：hint 仍同时含目录数与窗口', /532411/.test(String(r.hint)) && /480/.test(String(r.hint)), String(r.hint));
+  check('legacy 回落：不带 catalogProgressive', r.catalogProgressive === undefined, String(r.catalogProgressive));
+}
+
+console.log('');
+console.log('Test 19: 链不再前进时必须停，且如实说这一页还没取到');
+{
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-stall-' + Date.now());
+  const fetchJson = async (u) => { urls.push(u); return mkCursorPage(48, 0, 'SAME'); };
+  await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'debugging', cache: c, fetchJson });
+  const pDeep = await searchSkillsMp({ query: '', page: 9, pageSize: 24, category: 'debugging', cache: c, fetchJson: async (u) => { urls.push(u); return mkCursorPage(48, 0, 'SAME'); } });
+  const reqs = urls.length;
+  check('上游反复回同一游标 ⇒ 判定目录已到底（不再无限补链）', reqs <= 5, '请求数=' + reqs);
+  check('取不到的深页给空集合而不是假数据', Array.isArray(pDeep.items) && pDeep.items.length === 0, String(pDeep.items.length));
+  check('取不到时如实说明已取到多少条', /48/.test(String(pDeep.hint)), String(pDeep.hint));
+  const c2 = makeCache(safeTempDir() + '/smp-empty-' + Date.now());
+  const r2 = await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'debugging', cache: c2, fetchJson: async () => mkCursorPage(0, 0, null, { hasNext: false, total: 0, totalAll: 0 }) });
+  check('首页就零行时不谎称有目录', r2.items.length === 0 && r2.hasMore === false, 'n=' + r2.items.length + ' hasMore=' + String(r2.hasMore));
+}
+
+console.log('');
+console.log('Test 20: 目录链按 facet/sort 隔离，不同分类不串同一份目录');
+{
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-iso-' + Date.now());
+  const fetchJson = async (u) => { urls.push(u); const sp = new URL(u).searchParams; return mkCursorPage(48, 0, 'C1-' + String(sp.get('category'))); };
+  await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'debugging', cache: c, fetchJson });
+  await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'cli-tools', cache: c, fetchJson });
+  const second = paramsOf(urls[1]);
+  check('换分类重新起链（cursor=start，不带上一分类的游标）', second.get('cursor') === 'start' && second.get('category') === 'cli-tools', String(urls[1]));
+  await searchSkillsMp({ query: '', page: 3, pageSize: 24, category: 'cli-tools', cache: c, fetchJson });
+  check('cli-tools 第 3 页续自己的游标', paramsOf(urls[2]).get('cursor') === 'C1-cli-tools' && paramsOf(urls[2]).get('category') === 'cli-tools', String(urls[2]));
+}
+
+console.log('');
+console.log('Test 22: 链中途的瞬时错误不得当成「分类不存在」，且落盘的半截链要能接上');
+{
+  // 真机 28b 实证：p21 链到中途上游回 `python 取数失败：Traceback`（限流抖动），旧写法一律
+  // 当作分类被拒 ⇒ 悄悄换成全库目录再打 12 轮（25s+），卡片类目与 hint 全被污染。
+  // 只有上游明说 400/INVALID_CATEGORY 才允许去 facet 重走；其余错误原样抛出。
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-transient-' + Date.now());
+  const chainFetch = (failAt) => async (u) => {
+    urls.push(u);
+    if (failAt !== null && urls.length === failAt) throw new Error('python 取数失败：Traceback (most recent call last): timeout');
+    const sp = new URL(u).searchParams;
+    const cur = String(sp.get('cursor'));
+    const idx = cur === 'start' ? 0 : Number(cur.replace(/^C/, ''));
+    return mkCursorPage(48, idx * 48, 'C' + (idx + 1));
+  };
+  let threw = false;
+  try { await searchSkillsMp({ query: '', page: 3, pageSize: 24, category: 'debugging', cache: c, fetchJson: chainFetch(2) }); }
+  catch { threw = true; }
+  check('瞬时错误直接抛出（不悄悄换成全库目录）', threw === true, 'threw=' + threw);
+  check('没有为瞬时错误去掉 category 重走', urls.every((u) => paramsOf(u).get('category') === 'debugging'), JSON.stringify(urls));
+  const before = urls.length;
+  const r2 = await searchSkillsMp({ query: '', page: 3, pageSize: 24, category: 'debugging', cache: c, fetchJson: chainFetch(null) });
+  check('下一次调用从断点续链（带的是已落盘的 nextCursor，不是 start）', paramsOf(urls[before]).get('cursor') === 'C1', String(urls[before]));
+  check('续链后仍按分类筛（facetUsed 没被污染）', r2.facetUsed === 'debugging' && r2.serverFacet === true, String(r2.facetUsed) + '/' + String(r2.serverFacet));
+  check('续链给的是第 49–72 行（本地目录攒到 96 再切第 3 页）', r2.items[0].slug === 'pdf-tool-48' && r2.items[23].slug === 'pdf-tool-71', JSON.stringify(r2.items.map((i) => i.slug).slice(0, 2)));
+}
+
+console.log('');
+console.log('Test 23: 只有明说的 400/INVALID_CATEGORY 才允许去 facet 重走（游标链形状）');
+{
+  const urls = [];
+  const c = makeCache(safeTempDir() + '/smp-400cur-' + Date.now());
+  const fetchJson = async (u) => {
+    urls.push(u);
+    const sp = new URL(u).searchParams;
+    if (sp.get('category') !== null) throw new Error('python 取数失败：urllib.error.HTTPError: HTTP Error 400: Bad Request');
+    const cur = String(sp.get('cursor'));
+    const idx = cur === 'start' ? 0 : Number(cur.replace(/^C/, ''));
+    return mkCursorPage(48, idx * 48, 'C' + (idx + 1));
+  };
+  const r = await searchSkillsMp({ query: '', page: 1, pageSize: 24, category: 'nonexistent-cat', cache: c, fetchJson });
+  check('400 后确实去掉了 category 重走', urls.length === 2 && paramsOf(urls[1]).get('category') === null, JSON.stringify(urls));
+  check('400 拒绝如实回填（facetUsed 空、serverFacet false）', r.facetUsed === '' && r.serverFacet === false, String(r.facetUsed) + '/' + String(r.serverFacet));
+  check('400 拒绝的 hint 说的是分类不存在', /没有「nonexistent-cat」这个分类/.test(String(r.hint)), String(r.hint));
+  check('400 支仍走目录切片（catalogProgressive 在场）', r.catalogProgressive === true, String(r.catalogProgressive));
+}
+
+console.log('');
+console.log('Test 21: 聚合层对渐进目录不得用 ceil(总数/页大小) 造出两万页');
+{
+  const mkProg = (o) => () => Promise.resolve(Object.assign({
+    source: 'skillsmp',
+    items: Array.from({ length: 24 }, (u, i) => ({ id: 'p' + i, name: 'p' + i, source: 'skillsmp', category: 'debugging' })),
+    total: 545886, hasMore: true, totalPages: undefined, serverFacet: true, facetUsed: 'debugging',
+    windowed: false, catalogProgressive: true, hint: '已取到前 48 条',
+  }, o || {}));
+  const r = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: 24, category: 'debugging', cache: makeCache(safeTempDir() + '/smp-agg-' + Date.now()), handlers: { skillsmp: mkProg() }, budgetMs: 5000 });
+  console.log('   实测聚合: total=' + String(r.total) + ' pages=' + String(r.pages) + ' hasMore=' + String(r.hasMore) + ' hints=' + JSON.stringify(r.hints));
+  check('渐进目录：聚合层不报由总数反推的页深', r.pages === undefined, String(r.pages));
+  check('渐进目录：总数照常上报（chip 与 hint 同源不断）', r.total === 545886, String(r.total));
+  check('渐进目录：hasMore 保持 true（还能往后取）', r.hasMore === true, String(r.hasMore));
+  check('渐进目录：serverFacet 不被抹掉', r.serverFacet === true && !r.categoryNote, 'serverFacet=' + r.serverFacet + ' note=' + JSON.stringify(r.categoryNote));
+  check('渐进目录：说明经 hints 通道到达展示层', (r.hints || []).some((h) => /48/.test(String(h))), JSON.stringify(r.hints));
+  const ctl = await searchSkills({ query: '', source: 'skillsmp', page: 1, pageSize: 24, category: 'debugging', cache: makeCache(safeTempDir() + '/smp-ctl-' + Date.now()), handlers: { skillsmp: () => Promise.resolve({ source: 'skillsmp', items: [{ id: 'w1', name: 'w1', source: 'skillsmp' }], total: 545885, totalPages: 20, hasMore: true, serverFacet: true, facetUsed: 'debugging', windowed: true }) }, budgetMs: 5000 });
+  check('对照：窗口封顶源仍夹到 20 页（旧行为不动）', ctl.pages === 20, 'pages=' + String(ctl.pages));
+}
+
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

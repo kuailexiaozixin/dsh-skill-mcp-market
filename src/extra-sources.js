@@ -1007,6 +1007,22 @@ const SKILLSMP_TTL = 10 * 60 * 1000;
 // 所以取证必须走 getJsonEscalating/python 传输。旧实现钳到 50 = 每页宽 48~50 的请求都会被拒。
 const SKILLSMP_MAX_LIMIT = 48;
 const SKILLSMP_UNBOUNDED_NOTE = "skillsmp 没有给出总数，先显示这一页；继续翻页或换个关键词都能看到更多";
+// 0.5.188 顺序游标目录（用户 m40394 点名「480 取不全必须解决」）。取证见 test-skillsmp-search Test 16–21
+// 与探针日志 sk20/22/23/24/25b/26/27.log：
+//   · /api/skills?category=<slug>&limit=48&cursor=start 回 pagination{cursorPagination:true, nextCursor,
+//     isCapped:false, total==totalAll}；页码态那个 480（facet）/1200（browse）只是 maxResults 自报的
+//     浏览窗口，游标态没有这个窗口 —— 链走 30 步 720 行零重复，第 21 步起就取到旧通路永远拿不到的行。
+//   · 游标解出来是 keyset（after:{id,rank}+snapshot），尾带 32 字节完整性签名：改一个字节（rank 改写 /
+//     去尾 / 翻字节三种）一律被拒 ⇒ 只能原样重放、顺序往后走，不能跳页、不能按区间并行切片。
+//   · page 与 cursor 不可同带（实测同带 Traceback）；游标态 limit 上限仍是 48（60/96/100 被拒）；
+//     同一个 nextCursor 可重复使用（30 分钟 exp 内稳定），实测隔 42s 复用旧游标仍能续。
+//   · 成本：limit=48 每轮平均 1.95s（10 轮 19496ms）⇒ debugging 一面 545886 条串行约 6.2 小时，
+//     所以只能「随翻随取」：按 need=size*p 链到够用为止，绝不首屏取全。
+const SKILLSMP_CATALOG_KEY = "{{SECRET_b94gck2c}}";
+const SKILLSMP_CATALOG_TTL = 6 * 3600 * 1000;
+// 单次调用的补链轮数上界：必须真的判断（clawhub 侧 2026-11-23 的教训——guard 存在却从不判断，
+// 注入不收敛的上游能连打 201 次，把整个源拖到 12s 预算被切）。
+const SKILLSMP_CHAIN_ROUNDS = 12;
 // 分类词表：面板的「按分类浏览」入口只能来自 /zh/categories 这份 HTML（编目端点 10 个候选实测全部
 // ENDPOINT_NOT_FOUND），所以这里解析页面锚点，抓取走 pythonText（同一 Cloudflare 指纹门槛）。
 // 词表 TTL 取 7 天：判据不是「上游多久改版」，而是「面板宁可退回页内派生 chip，也不长期贴一份旧词表」。
@@ -1105,6 +1121,95 @@ function skillsmpTarget(raw) {
   // 搜索参数与总数口径的回归测试：test/test-skillsmp-search.mjs。
   // 抓取方法与 searchClawHub 同构：把 json 抓取注入成参数，确定性测试才不用真打 skillsmp。
   // 默认值保持线上行为：Cloudflare 按 TLS 指纹拦抢，只有 CPython urllib 能过。
+/** 上游一行 → 面板一张卡。facet 不在行上（实测行对象 13 键里没有分类字段），只能由请求侧回填。 */
+function skillsMpItemOf(raw, catSlug) {
+  const { repo, branch, skillDir } = skillsmpTarget(raw);
+  return {
+    id: `skillsmp:${raw.id || raw.name}`,
+    slug: raw.name || String(raw.id || ""),
+    name: raw.name || String(raw.id || ""),
+    description: raw.description || "",
+    source: "skillsmp",
+    sourceLabel: "skillsmp",
+    owner: raw.author || "",
+    homepage: raw.githubUrl || "",
+    // parseRepoRef understands `owner/repo@ref`, so the branch rides along here.
+    upstreamUrl: repo ? `${repo}@${branch}` : "",
+    skillDir,
+    ref: branch,
+    // 实测 stars/forks 是仓库真实值（plain 首行 stars=469982、sortBy=recent 首行 1602，forks 同理）；
+    // 同一仓库的多个技能共用该仓库 star 数是上游口径，不是占位符，照实透出。
+    stars: Number(raw.stars) || 0,
+    category: catSlug,
+    installable: Boolean(repo),
+  };
+}
+
+/**
+ * 顺着上游 nextCursor 把「一面分类目录」往本地攒。返回 probed（是否真取到过一包响应）、legacy
+ * （上游这一包不带游标 ⇒ 整条通路退回页码口径）、lastData（legacy 时那包响应，供调用方就地复用，
+ * 不许为同一页再打第二次）。state.rows 按 id 去重：实测同一游标重复取回的是同一批行，而链上零重复。
+ */
+async function extendSkillsMpCatalog(cache, need, facet, sort, fetchJson, options) {
+  const chain = async (f) => {
+    const catKey = `${SKILLSMP_CATALOG_KEY}${f || "any"}${sort ? ":" + sort : ""}`;
+    let state = await cache.get(catKey, SKILLSMP_CATALOG_TTL);
+    if (!state || !Array.isArray(state.rows)) state = { rows: [], cursor: null, done: false, totalAll: 0 };
+    const seen = new Set(state.rows.map((r) => String(r.id || r.name || "")));
+    let legacy = false;
+    let lastData = null;
+    let probed = false;
+    let guard = 0;
+    while (!state.done && state.rows.length < need && guard < SKILLSMP_CHAIN_ROUNDS) {
+      guard += 1;
+      // 起链发 cursor=start 且不带 page（实测 page+cursor 同带被上游拒）。
+      const sp = new URLSearchParams({ limit: String(SKILLSMP_MAX_LIMIT), cursor: String(state.cursor || "start") });
+      if (f) sp.set("category", f);
+      if (sort === "stars") sp.set("sortBy", "stars");
+      else if (sort === "updated") sp.set("sortBy", "recent");
+      const data = await fetchJson(`https://skillsmp.com/api/skills?${sp.toString()}`, options);
+      probed = true;
+      lastData = data;
+      const pg = (data && data.pagination) || {};
+      const rows = Array.isArray(data && data.skills) ? data.skills : [];
+      const all = Number(pg.totalAll);
+      if (Number.isFinite(all) && all > 0) state.totalAll = all;
+      const next = typeof pg.nextCursor === "string" ? pg.nextCursor : "";
+      if (!(pg.cursorPagination === true || next)) { legacy = true; break; }
+      let added = 0;
+      for (const r of rows) {
+        const id = String(r.id || r.name || "");
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        state.rows.push(r);
+        added += 1;
+      }
+      // 停滞判定：本页零行、整页都是重复、没有下一游标、或游标原地不动 —— 四种都算这一面到底。
+      if (!rows.length || !added || !next || next === state.cursor) state.done = true;
+      else state.cursor = next;
+      if (state.totalAll > 0 && state.rows.length >= state.totalAll) state.done = true;
+      // 每轮都落盘：外层聚合预算（12s）到点只是没人再等这个 promise，链本身还会跑完；
+      // 攒到一半被下一次调用接上，比整条链白打强（真机 p21 一跳 11 轮 = 25s，超预算）。
+      await cache.put(catKey, state);
+    }
+    return { state, legacy, lastData, probed };
+  };
+  try {
+    const r = await chain(facet);
+    return { state: r.state, legacy: r.legacy, lastData: r.lastData, probed: r.probed, facetUsed: facet, facetRefused: false };
+  } catch (err) {
+    if (!facet) throw err;
+    // 只有上游明说 400/INVALID_CATEGORY 才是「词表外分类」（实测页面 62 个 slug 被 legacy 接受、
+    // 板块标题类回 400）。真机 28b 实证：链中途的 Traceback（限流抖动）若也去 facet，会悄悄换成
+    // 全库目录再攒十轮 —— 类目串味、耗时翻倍、hint 说谎。其余错误原样抛出，让下一页调用续链。
+    const msg = String((err && err.message) || err);
+    if (!/HTTP Error 400|INVALID_CATEGORY/.test(msg)) throw err;
+    // 词表外的 slug：去掉 facet 重走一次，宁可给全库首页也不整源进 degraded。
+    const r = await chain("");
+    return { state: r.state, legacy: r.legacy, lastData: r.lastData, probed: r.probed, facetUsed: "", facetRefused: true };
+  }
+}
+
 export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cache, sort = "", category = "", fetchJson = getJsonEscalating }) {
   const q = String(query || "").trim();
   const p = Math.max(1, Number(page) || 1);
@@ -1130,48 +1235,73 @@ export async function searchSkillsMp({ query = "", page = 1, pageSize = 24, cach
     // 唯一需要 python 的站点：Cloudflare 按 TLS 指纹拦截，fetch/curl 均 403，只有 CPython urllib 能过。
     pythonFirst: true,
   };
-  let data;
-  let facetUsed = facet;
-  let facetRefused = false;
   const refusedNote = `skillsmp 没有「${facet}」这个分类，已按全部分类显示这一页`;
-  try {
-    data = await fetchJson(`https://skillsmp.com/api/skills?${params.toString()}`, options);
-  } catch (err) {
-    // 页面 63 个可浏览 slug 里 62 个实测被 legacy 接受，板块标题与 documents（探针超时、可浏览性未知）不保证。词表只能从页面解析，
-    // 无法运行时预知，所以被拒时去掉 facet 重发一次：宁可给全库首页并说明，也不许整源进 degraded。
-    if (!facet) throw err;
-    params.delete("category");
-    data = await fetchJson(`https://skillsmp.com/api/skills?${params.toString()}`, options);
-    facetRefused = true;
-    facetUsed = "";
+  // 有缓存且没有关键词 ⇒ 先试顺序游标目录（分类/浏览态取全，见上方取证）。没缓存（旧调用方、
+  // 单测直接注入 fetchJson 的页码形状）照旧走下面那条页码通路，一字不改。
+  let seedData = null;
+  let seedUsed = facet;
+  let seedRefused = false;
+  if (cache && !q) {
+    const cat = await extendSkillsMpCatalog(cache, size * p, facet, sort, fetchJson, options);
+    // 只要上游没退回页码形状就用目录切片——包括「本地目录已攒够、这一轮根本不需要再链」的深页
+    // （真机 0.5.188 首测第 22 页就撞在这里：链没跑 ⇒ probed=false ⇒ 误落页码通路，
+    // 上游把 page=22 钳回第 20 页，把已经破掉的「只剩 480 窗口」旧 hint 又报了一遍）。
+    if (!cat.legacy) {
+      const crows = cat.state.rows;
+      const citems = crows.slice((p - 1) * size, (p - 1) * size + size).map((raw) => skillsMpItemOf(raw, cat.facetUsed));
+      const all = cat.state.totalAll;
+      const done = cat.state.done;
+      const payload = {
+        source: "skillsmp",
+        items: citems,
+        // total 报上游自报的整面目录数（chip 与 hint 同源）；上游没给 totalAll 才退回已取到的条数。
+        total: all > 0 ? all : crows.length,
+        // 取全链没有「窗口」这个概念：没到底就一直有下一页。
+        hasMore: done ? p * size < crows.length : true,
+        totalPages: undefined,
+        serverFacet: facet !== "" && !cat.facetRefused,
+        facetUsed: cat.facetUsed,
+        windowed: false,
+        catalogProgressive: true,
+        hint: cat.facetRefused ? refusedNote : (all > 0
+          ? `skillsmp 这个分类共有 ${all} 条，正按顺序取回，已取到前 ${crows.length} 条；接着翻页会继续往后取，直到 ${all} 条取完`
+          : `skillsmp 已顺游标取到 ${crows.length} 条，接着翻页会继续往后取`),
+      };
+      // 空页不落页缓存：一次上游抖动不该把这页钉死十分钟（与下面 legacy 通路同一口径）。
+      if (citems.length) await cache.put(key, payload);
+      return payload;
+    }
+    if (cat.probed && cat.legacy && p === 1) {
+      // 上游这一包没有游标（旧形状）：就地用已经取回的这包算，绝不为同一页再打第二次请求。
+      seedData = cat.lastData;
+      seedUsed = cat.facetUsed;
+      seedRefused = cat.facetRefused;
+    }
+  }
+  let data;
+  let facetUsed = seedUsed;
+  let facetRefused = seedRefused;
+  if (seedData) {
+    data = seedData;
+  } else {
+    try {
+      data = await fetchJson(`https://skillsmp.com/api/skills?${params.toString()}`, options);
+    } catch (err) {
+      // 页面 63 个可浏览 slug 里 62 个实测被 legacy 接受，板块标题与 documents（探针超时、可浏览性未知）不保证。词表只能从页面解析，
+      // 无法运行时预知，所以被拒时去掉 facet 重发一次：宁可给全库首页并说明，也不许整源进 degraded。
+      if (!facet) throw err;
+      params.delete("category");
+      data = await fetchJson(`https://skillsmp.com/api/skills?${params.toString()}`, options);
+      facetRefused = true;
+      facetUsed = "";
+    }
   }
   const rows = Array.isArray(data.skills) ? data.skills : [];
   // name 没有对应的服务端 sort 键，只能本页升序（本页不是全盘，口径由聚合层给 note）；stars/updated 已交上游。
   sortRawRows(rows, sort, { name: (r) => r.name ?? r.skillName });
-  const items = rows.slice(0, size).map((raw) => {
-    const { repo, branch, skillDir } = skillsmpTarget(raw);
-    return {
-      id: `skillsmp:${raw.id || raw.name}`,
-      slug: raw.name || String(raw.id || ""),
-      name: raw.name || String(raw.id || ""),
-      description: raw.description || "",
-      source: "skillsmp",
-      sourceLabel: "skillsmp",
-      owner: raw.author || "",
-      homepage: raw.githubUrl || "",
-      // parseRepoRef understands `owner/repo@ref`, so the branch rides along here.
-      upstreamUrl: repo ? `${repo}@${branch}` : "",
-      skillDir,
-      ref: branch,
-      // 实测 stars/forks 是仓库真实值（plain 首行 stars=469982、sortBy=recent 首行 1602，forks 同理）；
-      // 同一仓库的多个技能共用该仓库 star 数是上游口径，不是占位符，照实透出。
-      stars: Number(raw.stars) || 0,
-      // 行上没有任何分类字段（实测 16 键里没有 category/topics/tags），分类只能来自本次浏览的 facet，
-      // 由请求侧回填；facet 被上游拒绝时不回填，绝不给卡片安一个上游没承认的分类。
-      category: facetUsed,
-      installable: Boolean(repo),
-    };
-  });
+  // 行上没有分类字段（实测 13 键里没有 category/topics/tags），只能由请求侧回填；
+  // facet 被上游拒绝时回填空串，绝不给卡片安一个上游没承认的分类。
+  const items = rows.slice(0, size).map((raw) => skillsMpItemOf(raw, facetUsed));
   // Upstream decides what counts as a total, not this function. Measured shapes:
   //   browse             total 1200 + totalIsExact:false + isCapped:true + maxResults:1200 -> window cap
   //   facet browse       total 480 + isCapped:true + maxResults:480 + totalAll -> 窗口深度与真实条数是两个数

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.188
+
+- **用户 m40394 令「解决 480 条取不全，否则分类标签不值得保留」——取全已在真机达成。** 封顶只存在于页码模式：第 16 轮把 `/zh/categories/debugging` 页面的 `/_next/static/chunks/*.js`（28 个）逐个挖矿，只有 `2_xzsl546wbko.js` 同时命中 `api/skills`+`pagination`，其调用点露出上游自己的取数构造器 `buildSkillsApiSearchParams` 与 `pagination.nextCursor` 游标通路——此前 14 轮探针全在页码形状上猜参数名，据此得出的「结构性封顶」结论是错的，已修正。
+- **游标形状（全部真机实测）**：起链发 `cursor=start` 且**不带 page**，此后只带上一轮 `pagination.nextCursor`；`page+cursor` 同带一律被拒；游标是 keyset（`after:{id,rank}`+`snapshot`+约 30 分钟过期），base64 解出 JSON 后还跟着 **32 字节尾部签名**——自造/篡改游标全被拒，**只能顺序链枚举，无法随机跳页**；游标态 limit 仍 ≤48；链走 30 步 720 行零重复且跨过旧 480 条尽头仍有新行；实测 1.95s/48 行 ⇒ 545,886 条 ≈6.2 小时串行 ⇒ **必须渐进取全，绝不能首屏取完**。
+- **落码（src/extra-sources.js）**：新增 `extendSkillsMpCatalog` 本地目录累积器（键按 facet+sort 分流，`state={rows,cursor,done,totalAll}`，按 id 去重，每次调用按需最多链 12 轮 ≤576 行，停滞四道＝零行/零新增/游标缺失/游标不变，`totalAll` 取满即终，**每轮落盘**让下次调用续链）；`searchSkillsMp` 的分类/浏览支改由本地目录切片出页——`total` 取上游 `totalAll`（目录数），`totalPages` 如实报未知（未取全前不给假页深），`windowed=false`，新增 `catalogProgressive=true` 声明给聚合层；hint 改为「skillsmp 这个分类共有 X 条，正按顺序取回，已取到前 N 条；接着翻页会继续往后取，直到 X 条取完」。上游 legacy 页码形状（无 cursorPagination/nextCursor）回落原口径，且首请求响应直接作 seedData 复用——同一页绝不打第二次。
+- **修掉两个真机撞出的 bug**：①第 22 页时缓存已攒满 ⇒ 链一轮都不跑 ⇒ 原代码按 `probed` 判分支，误落回页码通路，「没有翻页入口」的谎话复活 ⇒ 分支条件改为 `!cat.legacy`（有缓存目录同样是游标态）；②上游瞬时 Traceback 被 catch 误判成「分类不存在」而去掉 facet 重走链，把全库目录串进了分类页 ⇒ 现在只有 `HTTP Error 400 / INVALID_CATEGORY` 才允许进拒发兜底，其余错误如实上抛。各配判据（Test 22/23）。
+- **聚合层（src/sources.js）**：`catalogProgressive===true` 的源不参与页数反推——545,886 条的目录不再被 ceil 成 22,746 页骗过翻页器（Test 21 锁定；对照 windowed 源照旧夹到声明深度 20 页）。
+- **能力表未动（如实记账）**：`category-capability.js` skillsmp 仍是 `{chipWindow:0, tailExhaustive:false}`——63 个 chip 全铺、从未有「其他」分类，tail 逐类补取路径不是本次改动的受益方；游标取全已可用，是否开启逐类取全另列决策，这两格是旧结论而非新封顶。
+- **验证**：真机三轮（sk28/28b/28c）——**p21 wall=17006ms 十一轮链跨过旧窗口尽头（first=vector-cluster…）**，p22 起 6ms 走目录切片不再落 legacy，p23 续攒到 576 条，hint 全程一致；判据 Test 16–23（起链形状/跨页零重复/legacy 回落/停滞即收/分类隔离/聚合页深/瞬时错误续链/400 如实）；18 套全绿：skillsmp-search 123/0、skillsmp-category-vocab 71/0、harvest 205/0、panel-tail 99/0、lobehub-category-vocab 126/0、clawhub-category-vocab 62/0、full-sort 43/0、clawhub-quality 86/0、ux-honesty 62/0、panel-harvest 81/0、search-fanout-latency 211/0、index-runtime 26/0、trusttools-category-vocab 84/0、modelscope-category-vocab 181/0(2 skip)、sort-honesty 12/0、sort-options 34/0(2 skip)、unjudged-exports 118/0、suite-inventory 12/0。
+- 版本 0.5.187⇒0.5.188。
+
 ## 0.5.187
 
 - **用户 m31212① 收尾 + m39401 两问：界面提示彻底去工程黑话，并修掉「chip 数与提示语数不一致」。**

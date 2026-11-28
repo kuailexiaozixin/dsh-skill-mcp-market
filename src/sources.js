@@ -825,7 +825,11 @@ export async function foldFanResults({ entries, wanted, degraded, query, p, size
     // 页数判定：handler 给了数字就用它；没给但有真实 total 就用 total 反推；
     // 两者都没有（clawhub 无界流把 total/totalPages 都置 undefined）才算「未知」。
     const declared = result && typeof result.totalPages === "number" ? Number(result.totalPages) : null;
-    const srcPages = declared !== null ? declared
+    // catalogProgressive：这一页来自「还能一直往后取」的顺序游标目录。它的 total 是整面目录的
+    // 条数，但已取回的行远少于它，用 ceil(total/size) 反推页深等于凭空造出两万页——页深只能由
+    // 目录自己报（取全后 handler 才给数字），这里如实算「未知」。
+    const srcPages = result && result.catalogProgressive === true ? null
+      : declared !== null ? declared
       : srcTotal > 0 ? Math.ceil(srcTotal / size)
       : null;
     if (srcPages === null) pagesUnknown = true;
